@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ESNext",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
@@ -31,6 +31,9 @@
   ],
   "exclude": [
     "node_modules",
-    "dist"
+    "dist",
+    "src/demos",
+    "src/test-scripts",
+    "src/debug"
   ]
 }
