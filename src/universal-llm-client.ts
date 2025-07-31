@@ -1241,7 +1241,7 @@ export class AIModel {
     }
   }
 
-  static async getModels(apiType: Exclude<AIModelApiType, AIModelApiType.Google>, url: string, apiKey?: string): Promise<string[]> {
+  static async getModels(apiType: AIModelApiType, url: string, apiKey?: string): Promise<string[]> {
     // Create a temporary instance to fetch models
     const startTime = Date.now();
     const client = new AIModel({model: 'null', apiType, url, apiKey, timeout: 500, retries: 1});
