@@ -1,9 +1,7 @@
-import test, {describe} from 'node:test';
+import {describe, test} from 'node:test';
 import * as assert from 'node:assert';
 import {AIModel, AIModelApiType, AIModelType} from "../index.js";
-import {MockAgent} from 'undici';
 import {createTestAgent, testProviders} from './common.js';
-
 
 
 describe('AIModel Initialization', () => {
