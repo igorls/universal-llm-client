@@ -1236,7 +1236,9 @@ export class AIModel {
         return models.map((model: any) => model.id || model.name || model);
       }
     } catch (error: any) {
-      console.warn(`Failed to discover models for ${this.options.apiType} provider at ${this.options.url}:`, error.message);
+      if (this.debug) {
+        console.warn(`Failed to discover models for ${this.options.apiType} provider at ${this.options.url}:`, error.message);
+      }
       return [];
     }
   }
@@ -1246,15 +1248,7 @@ export class AIModel {
     const startTime = Date.now();
     const client = new AIModel({model: 'null', apiType, url, apiKey, timeout: 500, retries: 1});
     try {
-      const models = await client.getHostModels();
-      const duration = Date.now() - startTime;
-      if (models.length > 0) {
-        // Only log success in debug mode to reduce noise
-        if (client.debug) {
-          console.log(`✅ Found ${models.length} models on ${apiType} provider at ${url} (${duration}ms)`);
-        }
-      }
-      return models;
+      return await client.getHostModels();
     } catch (error) {
       const duration = Date.now() - startTime;
       // Only log failures if they take longer than expected (connection issues)
