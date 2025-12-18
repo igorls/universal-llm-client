@@ -7,6 +7,7 @@ export enum AIModelApiType {
     Ollama = 'ollama',
     OpenAI = 'openai',
     Google = 'google',
+    LlamaCpp = 'llamacpp',
 }
 
 export interface AIModelOptions {

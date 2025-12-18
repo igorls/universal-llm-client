@@ -20,6 +20,7 @@
  * - Ollama (http://localhost:11434)
  * - OpenAI API (https://api.openai.com/v1)
  * - LM Studio (http://localhost:1234/v1)
+ * - LlamaCpp (http://localhost:8080/v1)
  * - Google Gemini API (https://generativelanguage.googleapis.com/v1beta)
  * - Any OpenAI-compatible API
  *
@@ -209,7 +210,7 @@ export class AIModel {
         parameters: tool.function.parameters
       }));
     } else {
-      // OpenAI format
+      // OpenAI and LlamaCpp format
       return tools;
     }
   }
@@ -221,7 +222,7 @@ export class AIModel {
    * - Check here if tools aren't being detected from LLM responses
    */
   private async convertToolCallsFromProvider(response: any): Promise<LLMToolCall[] | undefined> {
-    if (this.options.apiType === 'ollama' || this.options.apiType === 'openai') {
+    if (this.options.apiType === 'ollama' || this.options.apiType === 'openai' || this.options.apiType === 'llamacpp') {
       const rawToolCalls = response.message?.tool_calls || response.choices?.[0]?.message?.tool_calls;
 
       if (rawToolCalls && rawToolCalls.length > 0) {
@@ -289,7 +290,7 @@ export class AIModel {
           }
         };
       } else {
-        return call; // OpenAI and Google expect string arguments
+        return call; // OpenAI, LlamaCpp and Google expect string arguments
       }
     });
   }
@@ -497,6 +498,18 @@ export class AIModel {
       return;
     }
 
+    // LlamaCpp doesn't strictly require model checking as it often runs a single model
+    // but we can try to check if the server is up
+    if (this.options.apiType === AIModelApiType.LlamaCpp) {
+      try {
+        await this.makeRequest('/health'); // Common health endpoint, or just check models
+        this.debugLog(`LlamaCpp server is reachable.`);
+      } catch (e) {
+        // Fallback to model list check if health check fails or isn't standard
+        this.debugLog(`LlamaCpp health check failed, trying model list.`);
+      }
+    }
+
     try {
       const models = await this.listModels();
       const modelExists = models.some((model: any) => {
@@ -511,6 +524,12 @@ export class AIModel {
         if (this.options.apiType === AIModelApiType.Ollama) {
           console.log(`Model ${this.options.model} not found. Attempting to pull...`);
           await this.pullOllamaModel();
+        } else if (this.options.apiType === AIModelApiType.LlamaCpp) {
+          // For LlamaCpp, the model might be loaded on start and have a generic name or the name we passed
+          // If listModels returns something, but not our specific model name, we might still want to proceed
+          // if the user knows what they are doing. However, strict checking is safer.
+          // Often LlamaCpp server runs ONE model, and listModels returns it.
+          console.warn(`Model ${this.options.model} not found in LlamaCpp model list. Available: ${models.map((m: any) => m.id).join(', ')}. Proceeding anyway as LlamaCpp often serves one model.`);
         } else {
           throw new Error(`Model ${this.options.model} not available on OpenAI-compatible server`);
         }
@@ -518,6 +537,10 @@ export class AIModel {
         console.log(`✅ 🤖 Model [${this.options.model}] is ready.`);
       }
     } catch (error) {
+      if (this.options.apiType === AIModelApiType.LlamaCpp) {
+        console.warn(`Failed to verify LlamaCpp model readiness, but proceeding: ${(error as Error).message}`);
+        return;
+      }
       console.error(`Failed to ensure model readiness:`, error);
       throw error;
     }
@@ -829,7 +852,8 @@ export class AIModel {
         };
         break;
       }
-      case AIModelApiType.OpenAI: {
+      case AIModelApiType.OpenAI:
+      case AIModelApiType.LlamaCpp: {
         endpoint = '/v1/embeddings';
         requestBody = {
           model: this.options.model,
@@ -878,7 +902,8 @@ export class AIModel {
           }
           break;
         }
-        case AIModelApiType.OpenAI: {
+        case AIModelApiType.OpenAI:
+        case AIModelApiType.LlamaCpp: {
           if (response.data && response.data.length > 0) {
             embeddings = response.data.map((item: any) => item.embedding || []);
           }

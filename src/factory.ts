@@ -43,6 +43,29 @@ export class AIModelFactory {
     }
 
     /**
+     * Create a LlamaCpp chat model instance
+     * Note: LlamaCpp servers typically ignore the model parameter as they load a single model at startup.
+     */
+    static createLlamaCppChatModel(
+        model: string = 'default',
+        url: string = 'http://localhost:8080/v1',
+        options?: Partial<AIModelOptions>
+    ): AIModel {
+        return new AIModel({
+            model,
+            url,
+            apiType: AIModelApiType.LlamaCpp,
+            modelType: AIModelType.Chat,
+            defaultParameters: {
+                max_tokens: 1024,
+                temperature: 0.7,
+                ...options?.defaultParameters
+            },
+            ...options
+        });
+    }
+
+    /**
      * Create an Ollama embedding model instance
      */
     static createOllamaEmbeddingModel(
@@ -72,6 +95,24 @@ export class AIModelFactory {
             model,
             url,
             apiType: AIModelApiType.OpenAI,
+            modelType: AIModelType.Embedding,
+            defaultParameters: {},
+            ...options
+        });
+    }
+
+    /**
+     * Create a LlamaCpp embedding model instance
+     */
+    static createLlamaCppEmbeddingModel(
+        model: string = 'default',
+        url: string = 'http://localhost:8080/v1',
+        options?: Partial<AIModelOptions>
+    ): AIModel {
+        return new AIModel({
+            model,
+            url,
+            apiType: AIModelApiType.LlamaCpp,
             modelType: AIModelType.Embedding,
             defaultParameters: {},
             ...options
