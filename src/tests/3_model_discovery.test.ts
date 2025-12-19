@@ -1,7 +1,6 @@
-import {describe, test,} from 'node:test';
-import {strictEqual} from "node:assert";
-import {AIModel, AIModelApiType} from "../index.js";
-import {expect} from 'bun:test';
+import { describe, test, } from 'node:test';
+import { strictEqual } from "node:assert";
+import { AIModel, AIModelApiType } from "../index.js";
 
 
 describe('Model Discovery', () => {

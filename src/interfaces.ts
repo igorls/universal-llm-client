@@ -36,9 +36,31 @@ export interface AIModelOptions {
     };
 }
 
+// ===== Multimodal Content Types for Vision Support =====
+
+export interface LLMTextContent {
+    type: 'text';
+    text: string;
+}
+
+export interface LLMImageContent {
+    type: 'image_url';
+    image_url: {
+        url: string; // Can be data:image/jpeg;base64,... or http(s):// URL
+        detail?: 'auto' | 'low' | 'high'; // Optional detail level
+    };
+}
+
+export type LLMContentPart = LLMTextContent | LLMImageContent;
+
+// Content can be a simple string OR an array of multimodal parts
+export type LLMMessageContent = string | LLMContentPart[];
+
+// ===== Chat Message Types =====
+
 export interface LLMChatMessage {
     role: 'system' | 'user' | 'assistant' | 'tool';
-    content: string;
+    content: LLMMessageContent;
     tool_call_id?: string; // For tool response messages
     tool_calls?: LLMToolCall[]; // For assistant messages with tool calls
 }
@@ -156,6 +178,11 @@ export interface GooglePart {
         name: string;
         response: Record<string, any>;
     };
+    // Vision support for Google
+    inlineData?: {
+        mimeType: string;
+        data: string; // base64
+    };
 }
 
 export interface GoogleContent {
@@ -224,4 +251,35 @@ export interface TokenUsageInfo {
 export interface LLMChatResponse {
     message: LLMChatMessage;
     usage?: TokenUsageInfo;
+}
+
+// ===== Helper Functions for Multimodal Content =====
+
+/**
+ * Create a text content part
+ */
+export function textContent(text: string): LLMTextContent {
+    return { type: 'text', text };
+}
+
+/**
+ * Create an image content part from base64 data
+ */
+export function imageContent(base64Data: string, mimeType: string = 'image/jpeg', detail?: 'auto' | 'low' | 'high'): LLMImageContent {
+    const url = base64Data.startsWith('data:') ? base64Data : `data:${mimeType};base64,${base64Data}`;
+    return {
+        type: 'image_url',
+        image_url: { url, detail }
+    };
+}
+
+/**
+ * Create a multimodal user message with text and images
+ */
+export function multimodalMessage(text: string, images: string[], mimeType: string = 'image/jpeg'): LLMChatMessage {
+    const content: LLMContentPart[] = [
+        textContent(text),
+        ...images.map(img => imageContent(img, mimeType))
+    ];
+    return { role: 'user', content };
 }

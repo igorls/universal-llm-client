@@ -134,7 +134,7 @@ describe('Tools Functionality', () => {
         assert.ok(response);
         assert.strictEqual(response.message.role, 'assistant');
         assert.ok(response.message.content);
-        assert.ok(response.message.content.includes('San Francisco'));
+        assert.ok(typeof response.message.content === 'string' && response.message.content.includes('San Francisco'));
 
         await client.dispose();
     });
@@ -272,7 +272,7 @@ describe('Tools Functionality', () => {
         assert.ok(response);
         assert.strictEqual(response.message.role, 'assistant');
         assert.ok(response.message.content);
-        assert.ok(response.message.content.includes('London'));
+        assert.ok(typeof response.message.content === 'string' && response.message.content.includes('London'));
 
         await client.dispose();
     });

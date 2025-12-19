@@ -28,15 +28,20 @@
  * @version 1.1.0
  */
 
-import {Agent, Dispatcher, request} from 'undici';
+import { Agent, Dispatcher, request } from 'undici';
 import {
   AIModelApiType,
   AIModelOptions,
   AIModelType,
   GoogleContent,
+  GooglePart,
   GoogleResponse,
   LLMChatMessage,
   LLMChatResponse,
+  LLMContentPart,
+  LLMImageContent,
+  LLMMessageContent,
+  LLMTextContent,
   LLMToolCall,
   LLMToolDefinition,
   OllamaResponse,
@@ -46,7 +51,7 @@ import {
   ToolHandler,
   ToolRegistry
 } from './interfaces.js';
-import {parseToolCallsFromContent} from './tool-call-stream-parser.js';
+import { parseToolCallsFromContent } from './tool-call-stream-parser.js';
 
 export class AIModel {
   options: AIModelOptions;
@@ -97,6 +102,70 @@ export class AIModel {
       this.ownsAgent = true; // We created this agent, so we can dispose it
       this.debugLog('Created new undici agent for HTTP requests');
     }
+  }
+
+  // ===== Multimodal Content Helpers =====
+
+  /**
+   * Extracts text content from a message, handling both string and multimodal array formats
+   */
+  private extractTextContent(content: LLMMessageContent): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    // Extract text from multimodal content array
+    return content
+      .filter((part): part is LLMTextContent => part.type === 'text')
+      .map(part => part.text)
+      .join('\n');
+  }
+
+  /**
+   * Checks if content contains images
+   */
+  private hasImages(content: LLMMessageContent): boolean {
+    if (typeof content === 'string') return false;
+    return content.some(part => part.type === 'image_url');
+  }
+
+  /**
+   * Converts multimodal content to OpenAI/LlamaCpp format
+   * If content is a string and no conversion needed, returns as-is
+   * If content is multimodal, returns the array format
+   */
+  private convertToOpenAIContent(content: LLMMessageContent): string | LLMContentPart[] {
+    // OpenAI and LlamaCpp accept both string and array formats
+    return content;
+  }
+
+  /**
+   * Converts multimodal content to Google format (GooglePart[])
+   */
+  private convertToGoogleParts(content: LLMMessageContent): GooglePart[] {
+    if (typeof content === 'string') {
+      return [{ text: content }];
+    }
+
+    return content.map(part => {
+      if (part.type === 'text') {
+        return { text: part.text };
+      } else if (part.type === 'image_url') {
+        // Convert OpenAI image_url format to Google inlineData format
+        const url = part.image_url.url;
+        const base64Match = url.match(/^data:([^;]+);base64,(.+)$/);
+        if (base64Match) {
+          return {
+            inlineData: {
+              mimeType: base64Match[1],
+              data: base64Match[2]
+            }
+          };
+        }
+        // For http URLs, we'd need to fetch - for now just return as text placeholder
+        return { text: `[Image: ${url}]` };
+      }
+      return { text: '' };
+    });
   }
 
   /**
@@ -310,8 +379,8 @@ export class AIModel {
       return messages
         .filter(msg => msg.role !== 'system')
         .map(msg => ({
-          role: msg.role === 'assistant' ? 'model' : 'user',
-          parts: [{text: msg.content}]
+          role: msg.role === 'assistant' ? 'model' as const : 'user' as const,
+          parts: this.convertToGoogleParts(msg.content)
         }));
     }
   }
@@ -326,28 +395,43 @@ export class AIModel {
     if (systemMessages.length === 0) {
       // No system messages, proceed normally
       return nonSystemMessages.map(msg => ({
-        role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{text: msg.content}]
+        role: msg.role === 'assistant' ? 'model' as const : 'user' as const,
+        parts: this.convertToGoogleParts(msg.content)
       }));
     }
 
     // Combine system instructions with the first user message
-    const systemInstruction = systemMessages.map(msg => msg.content).join('\n\n');
+    const systemInstruction = systemMessages.map(msg => this.extractTextContent(msg.content)).join('\n\n');
     const result: GoogleContent[] = [];
     let systemInstructionAdded = false;
 
     for (const msg of nonSystemMessages) {
       if (msg.role === 'user' && !systemInstructionAdded) {
-        // Add system instruction to the first user message
-        result.push({
-          role: 'user',
-          parts: [{text: `${systemInstruction}\n\n${msg.content}`}]
-        });
+        // Add system instruction to the first user message, preserving images
+        const textContent = this.extractTextContent(msg.content);
+        const combinedText = `${systemInstruction}\n\n${textContent}`;
+
+        if (this.hasImages(msg.content)) {
+          // Preserve images while prepending system instruction
+          const parts = this.convertToGoogleParts(msg.content);
+          const textPartIndex = parts.findIndex(p => p.text !== undefined);
+          if (textPartIndex >= 0) {
+            parts[textPartIndex] = { text: combinedText };
+          } else {
+            parts.unshift({ text: combinedText });
+          }
+          result.push({ role: 'user', parts });
+        } else {
+          result.push({
+            role: 'user',
+            parts: [{ text: combinedText }]
+          });
+        }
         systemInstructionAdded = true;
       } else {
         result.push({
-          role: msg.role === 'assistant' ? 'model' : 'user',
-          parts: [{text: msg.content}]
+          role: msg.role === 'assistant' ? 'model' as const : 'user' as const,
+          parts: this.convertToGoogleParts(msg.content)
         });
       }
     }
@@ -370,7 +454,7 @@ export class AIModel {
     if (systemMessages.length === 0) {
       return undefined;
     }
-    return systemMessages.map(msg => msg.content).join('\n\n');
+    return systemMessages.map(msg => this.extractTextContent(msg.content)).join('\n\n');
   }
 
   /**
@@ -611,7 +695,7 @@ export class AIModel {
     // Validate that this model supports chat operations
     this.validateModelType(AIModelType.Chat);
 
-    const mergedParams = {...this.options.defaultParameters, ...parameters};
+    const mergedParams = { ...this.options.defaultParameters, ...parameters };
     const tools = options?.tools || this.getToolDefinitions();
     const hasTools = tools.length > 0;
     const maxRounds = options?.maxToolExecutionRounds ?? 3; // Default to 3 rounds
@@ -620,7 +704,7 @@ export class AIModel {
     if (options?.executeTools && currentDepth >= maxRounds) {
       console.warn(`Maximum tool execution rounds (${maxRounds}) reached. Stopping tool execution to prevent infinite loops.`);
       // Continue without executeTools to get a final response
-      options = {...options, executeTools: false};
+      options = { ...options, executeTools: false };
     }
 
     let requestBody: any;
@@ -656,7 +740,7 @@ export class AIModel {
       const systemInstruction = this.extractGoogleSystemInstruction(messages);
       if (systemInstruction) {
         googleRequest.systemInstruction = {
-          parts: [{text: systemInstruction}]
+          parts: [{ text: systemInstruction }]
         };
       }
 
@@ -797,7 +881,7 @@ export class AIModel {
         return this.chatInternal(updatedMessages, parameters, options, currentDepth + 1);
       }
 
-      return {message: assistantMessage, usage};
+      return { message: assistantMessage, usage };
     } catch (error) {
       console.error(`Chat request failed:`, error);
       throw error;
@@ -869,7 +953,7 @@ export class AIModel {
           requestBody = {
             model: `models/${this.options.model}`,
             content: {
-              parts: [{text: text[0]}]
+              parts: [{ text: text[0] }]
             }
           };
         } else {
@@ -878,7 +962,7 @@ export class AIModel {
           const requests = text.map(t => ({
             model: `models/${this.options.model}`,
             content: {
-              parts: [{text: t}]
+              parts: [{ text: t }]
             }
           }));
           requestBody = {
@@ -940,7 +1024,7 @@ export class AIModel {
     // Validate that this model supports chat operations
     this.validateModelType(AIModelType.Chat);
 
-    const mergedParams = {...this.options.defaultParameters, ...parameters};
+    const mergedParams = { ...this.options.defaultParameters, ...parameters };
 
     let requestBody: any;
     let endpoint: string;
@@ -967,7 +1051,7 @@ export class AIModel {
       const systemInstruction = this.extractGoogleSystemInstruction(messages);
       if (systemInstruction) {
         requestBody.systemInstruction = {
-          parts: [{text: systemInstruction}]
+          parts: [{ text: systemInstruction }]
         };
       }
     } else {
@@ -1014,7 +1098,7 @@ export class AIModel {
         let buffer = '';
 
         for await (const chunk of response.body) {
-          const text = decoder.decode(chunk, {stream: true});
+          const text = decoder.decode(chunk, { stream: true });
           buffer += text;
 
           // Try to extract complete JSON objects from the buffer
@@ -1077,7 +1161,7 @@ export class AIModel {
         this.debugLog(`Processing SSE stream for ${this.options.apiType}...`);
         for await (const chunk of response.body) {
           this.debugLog(`Raw chunk received: ${chunk.length} bytes`);
-          const text = decoder.decode(chunk, {stream: true});
+          const text = decoder.decode(chunk, { stream: true });
           this.debugLog(`Decoded text: "${text}"`);
           const lines = text.split('\n').filter(line => line.trim());
           this.debugLog(`Found ${lines.length} lines to process`);
@@ -1212,7 +1296,7 @@ export class AIModel {
   async getModelInfo(): Promise<any> {
     try {
       if (this.options.apiType === 'ollama') {
-        const response = await this.makeRequest(`/api/show`, {name: this.options.model}, 'POST');
+        const response = await this.makeRequest(`/api/show`, { name: this.options.model }, 'POST');
         return response;
       } else {
         const models = await this.listModels();
@@ -1271,7 +1355,7 @@ export class AIModel {
   static async getModels(apiType: AIModelApiType, url: string, apiKey?: string): Promise<string[]> {
     // Create a temporary instance to fetch models
     const startTime = Date.now();
-    const client = new AIModel({model: 'null', apiType, url, apiKey, timeout: 500, retries: 1});
+    const client = new AIModel({ model: 'null', apiType, url, apiKey, timeout: 500, retries: 1 });
     try {
       return await client.getHostModels();
     } catch (error) {
