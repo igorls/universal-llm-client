@@ -2,7 +2,7 @@
  * Tool utilities and pre-built tools for the Universal LLM Client
  */
 
-import { LLMFunction, ToolHandler } from './interfaces.js';
+import type { LLMFunction, ToolHandler } from './interfaces.js';
 
 export class ToolBuilder {
     /**
@@ -54,21 +54,21 @@ export class ToolBuilder {
                     if (sanitized !== args.expression) {
                         return { error: 'Invalid characters in expression. Only numbers and +, -, *, /, () allowed.' };
                     }
-                    
+
                     const result = Function(`"use strict"; return (${sanitized})`)();
                     if (typeof result !== 'number' || !isFinite(result)) {
                         return { error: 'Invalid mathematical expression' };
                     }
-                    
-                    return { 
+
+                    return {
                         expression: args.expression,
                         result: result,
                         formatted: `${args.expression} = ${result}`
                     };
                 } catch (error) {
-                    return { 
+                    return {
                         error: 'Invalid mathematical expression',
-                        message: (error as Error).message 
+                        message: (error as Error).message
                     };
                 }
             }
@@ -101,7 +101,7 @@ export class ToolBuilder {
                 const format = args.format || 'full';
 
                 let formatted: string;
-                
+
                 try {
                     switch (format) {
                         case 'iso':
@@ -216,9 +216,9 @@ export class ToolBuilder {
         /**
          * Text processing tool
          */
-        textProcessor: ToolBuilder.createTool<{ 
-            text: string; 
-            operation: 'uppercase' | 'lowercase' | 'title' | 'reverse' | 'count' | 'words' 
+        textProcessor: ToolBuilder.createTool<{
+            text: string;
+            operation: 'uppercase' | 'lowercase' | 'title' | 'reverse' | 'count' | 'words'
         }>(
             'text_processor',
             'Process text with various operations',
@@ -241,33 +241,33 @@ export class ToolBuilder {
 
                 switch (operation) {
                     case 'uppercase':
-                        return { 
+                        return {
                             original: text,
                             result: text.toUpperCase(),
                             operation: 'uppercase'
                         };
                     case 'lowercase':
-                        return { 
+                        return {
                             original: text,
                             result: text.toLowerCase(),
                             operation: 'lowercase'
                         };
                     case 'title':
-                        return { 
+                        return {
                             original: text,
-                            result: text.replace(/\w\S*/g, (txt) => 
+                            result: text.replace(/\w\S*/g, (txt) =>
                                 txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
                             ),
                             operation: 'title'
                         };
                     case 'reverse':
-                        return { 
+                        return {
                             original: text,
                             result: text.split('').reverse().join(''),
                             operation: 'reverse'
                         };
                     case 'count':
-                        return { 
+                        return {
                             original: text,
                             characters: text.length,
                             charactersNoSpaces: text.replace(/\s/g, '').length,
@@ -277,7 +277,7 @@ export class ToolBuilder {
                         };
                     case 'words':
                         const words = text.trim().split(/\s+/);
-                        return { 
+                        return {
                             original: text,
                             words: words,
                             count: words.length,
@@ -292,8 +292,8 @@ export class ToolBuilder {
         /**
          * Memory storage tool - Add information to RAG system
          */
-        storeMemory: ToolBuilder.createTool<{ 
-            content: string; 
+        storeMemory: ToolBuilder.createTool<{
+            content: string;
             category: string;
             importance?: 'low' | 'medium' | 'high';
             context?: string;
@@ -328,11 +328,11 @@ export class ToolBuilder {
                 try {
                     // Note: This is a placeholder - in a real implementation, you'd inject ChromaDBService
                     console.log('🧠 Storing memory:', args);
-                    
+
                     // Simulated storage logic
                     const memoryId = `memory_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
                     const confidence = args.importance === 'high' ? 0.9 : args.importance === 'medium' ? 0.7 : 0.5;
-                    
+
                     return {
                         success: true,
                         memoryId,
@@ -359,8 +359,8 @@ export class ToolBuilder {
         /**
          * Memory retrieval tool - Search for relevant information
          */
-        searchMemory: ToolBuilder.createTool<{ 
-            query: string; 
+        searchMemory: ToolBuilder.createTool<{
+            query: string;
             category?: string;
             limit?: number;
         }>(
@@ -391,7 +391,7 @@ export class ToolBuilder {
                 try {
                     // Note: This is a placeholder - in a real implementation, you'd inject ChromaDBService
                     console.log('🔍 Searching memory for:', args.query);
-                    
+
                     // Simulated search logic
                     const mockMemories = [
                         {
@@ -402,7 +402,7 @@ export class ToolBuilder {
                             context: 'Retrieved from memory system'
                         }
                     ];
-                    
+
                     return {
                         success: true,
                         query: args.query,
@@ -427,8 +427,8 @@ export class ToolBuilder {
         /**
          * Memory analysis tool - Analyze if current conversation contains valuable information
          */
-        analyzeConversation: ToolBuilder.createTool<{ 
-            conversationText: string; 
+        analyzeConversation: ToolBuilder.createTool<{
+            conversationText: string;
             previousContext?: string;
         }>(
             'analyze_conversation',
@@ -449,10 +449,10 @@ export class ToolBuilder {
             async (args) => {
                 try {
                     console.log('🔬 Analyzing conversation for valuable information...');
-                    
+
                     const text = args.conversationText.toLowerCase();
-                    const insights:any[] = [];
-                    
+                    const insights: any[] = [];
+
                     // Simple heuristics to identify valuable information
                     const patterns = [
                         { pattern: /my name is|i'm called|call me/i, category: 'personal_info', importance: 'high' },
@@ -464,14 +464,14 @@ export class ToolBuilder {
                         { pattern: /i'm good at|i can|my skill/i, category: 'skills', importance: 'medium' },
                         { pattern: /remember that|important|don't forget/i, category: 'other', importance: 'high' }
                     ];
-                    
+
                     for (const { pattern, category, importance } of patterns) {
                         if (pattern.test(text)) {
                             // Extract relevant sentences
-                            const sentences = args.conversationText.split(/[.!?]+/).filter(s => 
+                            const sentences = args.conversationText.split(/[.!?]+/).filter(s =>
                                 s.trim().length > 10 && pattern.test(s)
                             );
-                            
+
                             for (const sentence of sentences) {
                                 insights.push({
                                     content: sentence.trim(),
@@ -483,14 +483,14 @@ export class ToolBuilder {
                             }
                         }
                     }
-                    
+
                     return {
                         success: true,
                         analysis: {
                             totalInsights: insights.length,
                             worthStoring: insights.length > 0,
                             insights: insights.slice(0, 5), // Limit to top 5
-                            recommendation: insights.length > 0 
+                            recommendation: insights.length > 0
                                 ? `Found ${insights.length} pieces of valuable information worth storing`
                                 : 'No particularly valuable information detected for storage'
                         }
@@ -537,7 +537,7 @@ export class ToolExecutor {
         validator: (args: T) => boolean | string
     ) {
         const originalHandler = tool.handler;
-        
+
         return {
             ...tool,
             handler: async (args: T) => {
@@ -549,7 +549,7 @@ export class ToolExecutor {
                         type: 'validation_error'
                     };
                 }
-                
+
                 return originalHandler(args);
             }
         };
@@ -563,13 +563,13 @@ export class ToolExecutor {
         timeoutMs: number = 5000
     ) {
         const originalHandler = tool.handler;
-        
+
         return {
             ...tool,
             handler: async (args: any) => {
                 return Promise.race([
                     originalHandler(args),
-                    new Promise((_, reject) => 
+                    new Promise((_, reject) =>
                         setTimeout(() => reject(new Error(`Tool execution timed out after ${timeoutMs}ms`)), timeoutMs)
                     )
                 ]).catch(error => ({

@@ -1,6 +1,6 @@
-import {AIModelApiType, AIModelOptions, AIModelType} from "./interfaces.js";
-import {AIModel} from "./universal-llm-client.js";
-import {ToolBuilder} from "./tools.js";
+import { AIModelApiType, type AIModelOptions, AIModelType } from "./interfaces.js";
+import { AIModel } from "./universal-llm-client.js";
+import { ToolBuilder } from "./tools.js";
 
 /**
  * Utility functions for creating pre-configured model instances

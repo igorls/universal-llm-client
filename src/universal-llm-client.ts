@@ -31,25 +31,25 @@
 import { Agent, Dispatcher, request } from 'undici';
 import {
   AIModelApiType,
-  AIModelOptions,
+  type AIModelOptions,
   AIModelType,
-  GoogleContent,
-  GooglePart,
-  GoogleResponse,
-  LLMChatMessage,
-  LLMChatResponse,
-  LLMContentPart,
-  LLMImageContent,
-  LLMMessageContent,
-  LLMTextContent,
-  LLMToolCall,
-  LLMToolDefinition,
-  OllamaResponse,
-  OpenAIResponse,
-  TokenUsageInfo,
-  ToolExecutionResult,
-  ToolHandler,
-  ToolRegistry
+  type GoogleContent,
+  type GooglePart,
+  type GoogleResponse,
+  type LLMChatMessage,
+  type LLMChatResponse,
+  type LLMContentPart,
+  type LLMImageContent,
+  type LLMMessageContent,
+  type LLMTextContent,
+  type LLMToolCall,
+  type LLMToolDefinition,
+  type OllamaResponse,
+  type OpenAIResponse,
+  type TokenUsageInfo,
+  type ToolExecutionResult,
+  type ToolHandler,
+  type ToolRegistry
 } from './interfaces.js';
 import { parseToolCallsFromContent } from './tool-call-stream-parser.js';
 
@@ -154,12 +154,16 @@ export class AIModel {
         const url = part.image_url.url;
         const base64Match = url.match(/^data:([^;]+);base64,(.+)$/);
         if (base64Match) {
-          return {
-            inlineData: {
-              mimeType: base64Match[1],
-              data: base64Match[2]
-            }
-          };
+          const mimeType = base64Match[1];
+          const data = base64Match[2];
+          if (mimeType && data) {
+            return {
+              inlineData: {
+                mimeType,
+                data
+              }
+            };
+          }
         }
         // For http URLs, we'd need to fetch - for now just return as text placeholder
         return { text: `[Image: ${url}]` };
@@ -466,7 +470,10 @@ export class AIModel {
     }
 
     const candidate = response.candidates[0];
-    const content = candidate.content.parts.map(part => part.text).join('');
+    if (!candidate?.content?.parts) {
+      throw new Error('Malformed Google API response: missing content parts');
+    }
+    const content = candidate.content.parts.map(part => part.text || '').join('');
 
     return {
       role: 'assistant',
@@ -784,8 +791,6 @@ export class AIModel {
     try {
       const response = await this.makeRequest(endpoint, requestBody, 'POST');
 
-      // Remove the console.log that prints the full response
-
       let assistantMessage: LLMChatMessage;
       let usage: TokenUsageInfo | undefined;
 
@@ -828,11 +833,11 @@ export class AIModel {
       } else {
         const openaiResponse = response as OpenAIResponse;
         if (openaiResponse.choices && openaiResponse.choices.length > 0) {
-          const choice = openaiResponse.choices[0];
+          const choice = openaiResponse.choices[0]!;
           const toolCalls = await this.convertToolCallsFromProvider(response);
           assistantMessage = {
-            role: choice.message.role as 'assistant',
-            content: choice.message.content || '',
+            role: (choice.message?.role || 'assistant') as 'assistant',
+            content: choice.message?.content || '',
             tool_calls: toolCalls
           };
 
@@ -914,7 +919,10 @@ export class AIModel {
    */
   async embed(text: string): Promise<number[]> {
     const result = await this.embedArray([text]);
-    return result[0];
+    if (!result || result.length === 0) {
+      throw new Error('No embeddings returned');
+    }
+    return result[0]!;
   }
 
   /**
@@ -1020,7 +1028,7 @@ export class AIModel {
    * - Enable debug mode to see detailed streaming logs
    * - Check here if streaming responses aren't being processed correctly
    */
-  async* chatStream(messages: LLMChatMessage[], parameters?: Record<string, any>): AsyncGenerator<string, void, unknown> {
+  async * chatStream(messages: LLMChatMessage[], parameters?: Record<string, any>): AsyncGenerator<string, void, unknown> {
     // Validate that this model supports chat operations
     this.validateModelType(AIModelType.Chat);
 

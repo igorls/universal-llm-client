@@ -4,7 +4,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { LLMToolCall } from './interfaces.js';
+import type { LLMToolCall } from './interfaces.js';
 
 export interface ToolCallEvent {
     type: 'tool_call' | 'text' | 'thinking' | 'error';
@@ -55,11 +55,16 @@ export class ToolCallStreamParser extends EventEmitter {
 
         // Collect events during processing
         const originalEmit = this.emit.bind(this);
-        this.emit = function(event: string, data?: any) {
+        this.emit = function (event: string, data?: any) {
             if (event === 'toolCallEvent') {
                 events.push(data);
-                eventCounts[data.type]++;
-                
+                const type = data.type;
+                if (eventCounts[type] !== undefined) {
+                    eventCounts[type]++;
+                } else {
+                    eventCounts[type] = 1;
+                }
+
                 if (data.type === 'tool_call' && data.toolCall) {
                     toolCalls.push(data.toolCall);
                 } else if (data.type === 'text' && data.content) {
@@ -98,7 +103,7 @@ export class ToolCallStreamParser extends EventEmitter {
             events,
             stats: {
                 totalToolCalls: toolCalls.length,
-                totalTextBlocks: eventCounts.text,
+                totalTextBlocks: eventCounts.text || 0,
                 processingTimeMs,
                 parsingErrors,
                 eventCounts
@@ -112,14 +117,14 @@ export class ToolCallStreamParser extends EventEmitter {
      */
     processToken(token: string): void {
         this.buffer += token;
-        
+
         // Process all complete structures in the buffer
         let iterations = 0;
         const maxIterations = 100; // Prevent infinite loops
-        
+
         while (this.buffer.length > 0 && iterations < maxIterations) {
             iterations++;
-            
+
             try {
                 const processed = this.processBuffer();
                 if (!processed.consumed) {
@@ -139,7 +144,7 @@ export class ToolCallStreamParser extends EventEmitter {
                 this.buffer = this.buffer.substring(1);
             }
         }
-        
+
         if (iterations >= maxIterations) {
             this.emit('warning', `Parser hit max iterations limit. Buffer: "${this.buffer.substring(0, 100)}..."`);
         }
@@ -168,18 +173,20 @@ export class ToolCallStreamParser extends EventEmitter {
 
     private processBuffer(): { event?: ToolCallEvent; consumed: boolean } {
         // 1. Check for LM Studio XML-style tool calls: <tool_call>...</tool_call>
-        const xmlToolCallMatch = this.buffer.match(/^([^<]*)<tool_call>\s*({[^}]*(?:{[^}]*}[^}]*)*})\s*<\/tool_call>/s);
+        const xmlToolCallMatch = this.buffer.match(/^([^<]*)<tool_call>\s*({[^}]*(?:{[^}]*(?:{[^}]*}[^}]*)*[^}]*)*})\s*<\/tool_call>/s);
         if (xmlToolCallMatch) {
-            const beforeTag = xmlToolCallMatch[1].trim();
+            const beforeTag = (xmlToolCallMatch[1] || '').trim();
             const toolCallJson = xmlToolCallMatch[2];
+            if (!toolCallJson) return { consumed: false }; // Should not happen with regex match
+
             this.buffer = this.buffer.substring(xmlToolCallMatch[0].length);
-            
+
             if (beforeTag) {
                 // Return the text before the tag first, will process the tag on next call
                 this.buffer = `<tool_call>${toolCallJson}</tool_call>${this.buffer}`;
                 return { event: { type: 'text', content: beforeTag, timestamp: Date.now() }, consumed: true };
             }
-            
+
             const toolCall = this.parseToolCallJson(toolCallJson);
             if (toolCall) {
                 return { event: { type: 'tool_call', toolCall, timestamp: Date.now() }, consumed: true };
@@ -189,10 +196,10 @@ export class ToolCallStreamParser extends EventEmitter {
         // 2. Check for thinking/reasoning tags: <think>...</think>
         const thinkMatch = this.buffer.match(/^([^<]*)<think>(.*?)<\/think>/s);
         if (thinkMatch) {
-            const beforeTag = thinkMatch[1].trim();
-            const thinkingContent = thinkMatch[2].trim();
+            const beforeTag = (thinkMatch[1] || '').trim();
+            const thinkingContent = (thinkMatch[2] || '').trim();
             this.buffer = this.buffer.substring(thinkMatch[0].length);
-            
+
             if (beforeTag) {
                 // Return the text before the tag first, will process the tag on next call
                 this.buffer = `<think>${thinkingContent}</think>${this.buffer}`;
@@ -202,18 +209,20 @@ export class ToolCallStreamParser extends EventEmitter {
         }
 
         // 3. Check for plain JSON tool calls (no XML wrapper)
-        const jsonToolCallMatch = this.buffer.match(/^([^{]*)({"name":\s*"[^"]+"\s*,\s*"arguments":\s*{[^}]*(?:{[^}]*}[^}]*)*}[^}]*})/);
+        const jsonToolCallMatch = this.buffer.match(/^([^{]*)({"name":\s*"[^"]+"\s*,\s*"arguments":\s*{[^}]*(?:{[^}]*(?:{[^}]*}[^}]*)*[^}]*)*})/);
         if (jsonToolCallMatch) {
-            const beforeJson = jsonToolCallMatch[1].trim();
+            const beforeJson = (jsonToolCallMatch[1] || '').trim();
             const toolCallJson = jsonToolCallMatch[2];
+            if (!toolCallJson) return { consumed: false }; // Should not happen with regex match
+
             this.buffer = this.buffer.substring(jsonToolCallMatch[0].length);
-            
+
             if (beforeJson) {
                 // Return the text before the JSON first, will process the JSON on next call
                 this.buffer = toolCallJson + this.buffer;
                 return { event: { type: 'text', content: beforeJson, timestamp: Date.now() }, consumed: true };
             }
-            
+
             const toolCall = this.parseToolCallJson(toolCallJson);
             if (toolCall) {
                 return { event: { type: 'tool_call', toolCall, timestamp: Date.now() }, consumed: true };
@@ -227,7 +236,7 @@ export class ToolCallStreamParser extends EventEmitter {
             nextTagIndex >= 0 ? nextTagIndex : Infinity,
             nextJsonIndex >= 0 ? nextJsonIndex : Infinity
         );
-        
+
         if (nextStructuredIndex > 0 && nextStructuredIndex !== Infinity) {
             const looseText = this.buffer.substring(0, nextStructuredIndex).trim();
             this.buffer = this.buffer.substring(nextStructuredIndex);
@@ -249,7 +258,7 @@ export class ToolCallStreamParser extends EventEmitter {
     private parseToolCallJson(jsonString: string): LLMToolCall | null {
         try {
             const parsed = JSON.parse(jsonString);
-            
+
             if (parsed.name && typeof parsed.name === 'string') {
                 return {
                     id: `call_${Date.now()}_${this.currentToolCallId++}`,
@@ -267,7 +276,7 @@ export class ToolCallStreamParser extends EventEmitter {
                 timestamp: Date.now()
             });
         }
-        
+
         return null;
     }
 
