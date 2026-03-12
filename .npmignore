@@ -1,0 +1,14 @@
+# Source and tests
+src/
+tests/
+.env
+.env.example
+
+# Config
+tsconfig.json
+bun.lock
+.gitignore
+
+# IDE
+.vscode/
+.idea/

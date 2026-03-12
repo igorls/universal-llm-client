@@ -1,18 +1,14 @@
 {
-  "name": "@akaito/universal-llm-client",
-  "version": "1.0.0",
+  "name": "universal-llm-client",
+  "version": "3.0.0",
   "type": "module",
-  "description": "A high-performance, state-of-the-art universal client for Large Language Models that supports multiple API providers, including Ollama and OpenAI-compatible endpoints.",
+  "description": "A universal LLM client with transparent provider failover, streaming tool execution, pluggable reasoning, and native observability.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    },
-    "./factory": {
-      "import": "./dist/factory.js",
-      "types": "./dist/factory.d.ts"
     },
     "./interfaces": {
       "import": "./dist/interfaces.js",
@@ -21,6 +17,18 @@
     "./tools": {
       "import": "./dist/tools.js",
       "types": "./dist/tools.d.ts"
+    },
+    "./auditor": {
+      "import": "./dist/auditor.js",
+      "types": "./dist/auditor.d.ts"
+    },
+    "./stream-decoder": {
+      "import": "./dist/stream-decoder.js",
+      "types": "./dist/stream-decoder.d.ts"
+    },
+    "./http": {
+      "import": "./dist/http.js",
+      "types": "./dist/http.d.ts"
     }
   },
   "files": [
@@ -29,20 +37,15 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "npm run clean && npm run compile",
+    "build": "bun run clean && bun run compile",
     "clean": "rimraf dist",
     "compile": "tsc --project tsconfig.json",
     "dev": "tsc --watch --project tsconfig.json",
-    "prepublishOnly": "npm run build",
-    "test": "npm run build && npm run test:node",
-    "test:node": "node --test __tests__/1-initialization-node.test.js __tests__/dependency-injection-node.test.js",
-    "test:fast": "npm run build && node --test __tests__/fast-tests-node.test.js",
-    "test:full": "node --test __tests__/1-initialization-node.test.js __tests__/dependency-injection-node.test.js __tests__/mockagent-integration-node.test.js",
-    "test:node:watch": "node --test --watch __tests__/**/*-node.test.js",
-    "test:node:coverage": "npm run build && node --test --experimental-test-coverage __tests__/**/*-node.test.js",
+    "prepublishOnly": "bun run build",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit --strict",
-    "prepack": "npm run build"
+    "prepack": "bun run build"
   },
   "keywords": [
     "llm",
@@ -51,35 +54,38 @@
     "openai",
     "ollama",
     "google-gemini",
-    "chat-completion",
-    "embeddings",
-    "undici",
-    "http-client",
+    "vertex-ai",
+    "universal",
+    "failover",
     "streaming",
     "tool-calling",
     "function-calling",
+    "mcp",
+    "observability",
     "typescript",
-    "esm",
-    "nodejs"
+    "esm"
   ],
-  "dependencies": {
-    "undici": "^7.16.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@types/node": "^24.0.14",
+    "@types/node": "^22.0.0",
     "rimraf": "^6.0.1",
     "typescript": "^5.8.3"
   },
   "peerDependencies": {
-    "@types/node": ">=20.0.0"
+    "@modelcontextprotocol/sdk": ">=1.24.0"
+  },
+  "peerDependenciesMeta": {
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    }
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0",
+    "bun": ">=1.0.0"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/igorls/aura-companion.git",
-    "directory": "backend/src/universal-llm-client"
+    "url": "https://github.com/igorls/universal-llm-client.git"
   }
 }

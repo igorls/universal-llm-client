@@ -1,3 +1,14 @@
+/**
+ * Universal LLM Client v3 — Core Interfaces
+ *
+ * All types, enums, and helper functions used throughout the library.
+ * Zero dependencies — pure TypeScript types.
+ */
+
+// ============================================================================
+// Enums
+// ============================================================================
+
 export enum AIModelType {
     Chat = 'chat',
     Embedding = 'embedding',
@@ -7,36 +18,105 @@ export enum AIModelApiType {
     Ollama = 'ollama',
     OpenAI = 'openai',
     Google = 'google',
+    Vertex = 'vertex',
     LlamaCpp = 'llamacpp',
 }
 
-export interface AIModelOptions {
-    model: string;
-    modelType?: AIModelType;
-    url: string;
-    hostname?: string;
-    apiType: AIModelApiType
-    defaultParameters?: Record<string, any>;
-    thinking?: boolean;
-    // Request timeout
-    timeout?: number;
-    // Number of retries for failed requests
-    retries?: number;
-    apiKey?: string; // For OpenAI-compatible APIs that require authentication
-    debug?: boolean; // Enable verbose debugging logs
-    // Undici Agent configuration (useful for testing)
-    agentOptions?: {
-        connections?: number;
-        pipelining?: number;
-        keepAliveTimeout?: number;
-        keepAliveMaxTimeout?: number;
-        headersTimeout?: number;
-        bodyTimeout?: number;
-        connectTimeout?: number;
-    };
+// ============================================================================
+// Model Metadata
+// ============================================================================
+
+export interface ModelMetadata {
+    /** Model name as reported by provider */
+    model?: string;
+    /** Context window size in tokens */
+    contextLength: number;
+    /** Model architecture (e.g., "llama", "mistral3") */
+    architecture?: string;
+    /** Parameter count */
+    parameterCount?: number;
+    /** Model capabilities reported by provider (e.g., "tools", "vision", "thinking") */
+    capabilities?: string[];
 }
 
-// ===== Multimodal Content Types for Vision Support =====
+// ============================================================================
+// Provider Configuration (user-facing)
+// ============================================================================
+
+export interface ProviderConfig {
+    /** Provider type */
+    type: AIModelApiType | 'ollama' | 'openai' | 'google' | 'vertex' | 'llamacpp';
+    /** Provider endpoint URL (has sensible defaults per type) */
+    url?: string;
+    /** API key or Bearer token */
+    apiKey?: string;
+    /** Override model name for this specific provider */
+    model?: string;
+    /** Explicit priority (default: array order, lower = higher priority) */
+    priority?: number;
+    /** Vertex AI region (e.g., "us-central1") */
+    region?: string;
+    /** Google API version (default: "v1beta") */
+    apiVersion?: 'v1' | 'v1beta';
+}
+
+// ============================================================================
+// AIModel Configuration (user-facing)
+// ============================================================================
+
+export interface AIModelConfig {
+    /** Model name (used across all providers unless overridden) */
+    model: string;
+    /** Ordered list of providers (first = highest priority) */
+    providers: ProviderConfig[];
+    /** Default parameters for all requests (temperature, top_p, etc.) */
+    defaultParameters?: Record<string, unknown>;
+    /** Enable thinking/reasoning mode */
+    thinking?: boolean;
+    /** Request timeout in ms (default: 30000) */
+    timeout?: number;
+    /** Retries per provider before failover (default: 2) */
+    retries?: number;
+    /** Observability hooks */
+    auditor?: import('./auditor.js').Auditor;
+    /** Enable debug logging */
+    debug?: boolean;
+}
+
+// ============================================================================
+// Internal Client Options
+// ============================================================================
+
+export interface LLMClientOptions {
+    /** Model name */
+    model: string;
+    /** Base URL for the API */
+    url: string;
+    /** API type for protocol variations */
+    apiType: AIModelApiType;
+    /** Model type (chat or embedding) */
+    modelType?: AIModelType;
+    /** Default parameters for requests */
+    defaultParameters?: Record<string, unknown>;
+    /** Enable thinking/reasoning mode */
+    thinking?: boolean;
+    /** Request timeout in ms */
+    timeout?: number;
+    /** Number of retries for failed requests */
+    retries?: number;
+    /** API key for authenticated endpoints */
+    apiKey?: string;
+    /** Enable debug logging */
+    debug?: boolean;
+    /** Vertex AI region */
+    region?: string;
+    /** Google API version */
+    apiVersion?: 'v1' | 'v1beta';
+}
+
+// ============================================================================
+// Multimodal Content Types
+// ============================================================================
 
 export interface LLMTextContent {
     type: 'text';
@@ -46,32 +126,43 @@ export interface LLMTextContent {
 export interface LLMImageContent {
     type: 'image_url';
     image_url: {
-        url: string; // Can be data:image/jpeg;base64,... or http(s):// URL
-        detail?: 'auto' | 'low' | 'high'; // Optional detail level
+        url: string;
+        detail?: 'auto' | 'low' | 'high';
     };
 }
 
 export type LLMContentPart = LLMTextContent | LLMImageContent;
-
-// Content can be a simple string OR an array of multimodal parts
 export type LLMMessageContent = string | LLMContentPart[];
 
-// ===== Chat Message Types =====
+// ============================================================================
+// Chat Message Types
+// ============================================================================
 
 export interface LLMChatMessage {
     role: 'system' | 'user' | 'assistant' | 'tool';
     content: LLMMessageContent;
-    tool_call_id?: string; // For tool response messages
-    tool_calls?: LLMToolCall[]; // For assistant messages with tool calls
+    tool_call_id?: string;
+    tool_calls?: LLMToolCall[];
 }
+
+// ============================================================================
+// Tool Types
+// ============================================================================
 
 export interface LLMToolCall {
     id: string;
     type: 'function';
     function: {
         name: string;
-        arguments: string; // JSON string
+        arguments: string;
     };
+    /**
+     * Gemini 3.x thought signature — encrypted reasoning context.
+     * Must be echoed back exactly when sending conversation history
+     * during multi-turn function calling. Mandatory for Gemini 3,
+     * optional for Gemini 2.5, ignored by other providers.
+     */
+    thoughtSignature?: string;
 }
 
 export interface LLMFunction {
@@ -79,7 +170,7 @@ export interface LLMFunction {
     description: string;
     parameters: {
         type: 'object';
-        properties: Record<string, any>;
+        properties?: Record<string, unknown>;
         required?: string[];
     };
 }
@@ -89,36 +180,76 @@ export interface LLMToolDefinition {
     function: LLMFunction;
 }
 
-export interface LLMTool {
-    name: string;
-    description: string;
-    parameters?: Record<string, any>;
-}
-
-export interface LLMChatRequest {
-    messages: LLMChatMessage[];
-    parameters?: Record<string, any>;
-    tools?: LLMToolDefinition[];
-    tool_choice?: 'none' | 'auto' | 'required' | { type: 'function'; function: { name: string } };
-}
-
-// Tool execution result
 export interface ToolExecutionResult {
     tool_call_id: string;
-    output: any;
+    output: unknown;
     error?: string;
+    duration?: number;
 }
 
-// Tool handler type
-export type ToolHandler = (args: any) => Promise<any> | any;
+export type ToolHandler = (args: unknown) => Promise<unknown> | unknown;
 
-// Tool registry
+export interface ToolRegistryEntry {
+    definition: LLMFunction;
+    handler: ToolHandler;
+}
+
 export interface ToolRegistry {
-    [toolName: string]: {
-        definition: LLMFunction;
-        handler: ToolHandler;
-    };
+    [toolName: string]: ToolRegistryEntry;
 }
+
+// ============================================================================
+// Chat Options (per-call overrides)
+// ============================================================================
+
+export interface ChatOptions {
+    /** Override temperature */
+    temperature?: number;
+    /** Max tokens to generate */
+    maxTokens?: number;
+    /** Tool definitions (auto-populated from registry if not set) */
+    tools?: LLMToolDefinition[];
+    /** Tool choice mode */
+    toolChoice?: 'none' | 'auto' | 'required';
+    /** Additional provider-specific parameters */
+    parameters?: Record<string, unknown>;
+    /** Enable/disable tool execution for chatWithTools */
+    executeTools?: boolean;
+    /** Maximum tool execution rounds (default: 10) */
+    maxIterations?: number;
+    /** Stream decoder type */
+    decoder?: import('./stream-decoder.js').DecoderType;
+}
+
+// ============================================================================
+// Token Usage
+// ============================================================================
+
+export interface TokenUsageInfo {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+}
+
+// ============================================================================
+// Response Types
+// ============================================================================
+
+export interface LLMChatResponse {
+    message: LLMChatMessage;
+    /** Reasoning/thinking content from the model (if supported) */
+    reasoning?: string;
+    /** Token usage info */
+    usage?: TokenUsageInfo;
+    /** Tool execution trace (populated by chatWithTools) */
+    toolExecutions?: ToolExecutionResult[];
+    /** Which provider served this response */
+    provider?: string;
+}
+
+// ============================================================================
+// Provider Response Types (internal)
+// ============================================================================
 
 export interface OllamaResponse {
     model: string;
@@ -126,9 +257,14 @@ export interface OllamaResponse {
     message: {
         role: string;
         content: string;
+        thinking?: string;
         tool_calls?: LLMToolCall[];
     };
     done: boolean;
+    prompt_eval_count?: number;
+    eval_count?: number;
+    prompt_eval_duration?: number;
+    eval_duration?: number;
 }
 
 export interface OpenAIResponse {
@@ -145,6 +281,11 @@ export interface OpenAIResponse {
         };
         finish_reason: string;
     }>;
+    usage?: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+    };
 }
 
 export interface OllamaModelInfo {
@@ -168,21 +309,26 @@ export interface OpenAIModelInfo {
     owned_by: string;
 }
 
+// ============================================================================
+// Google API Types
+// ============================================================================
+
 export interface GooglePart {
     text?: string;
     functionCall?: {
         name: string;
-        args: Record<string, any>;
+        args: Record<string, unknown>;
     };
     functionResponse?: {
         name: string;
-        response: Record<string, any>;
+        response: Record<string, unknown>;
     };
-    // Vision support for Google
     inlineData?: {
         mimeType: string;
-        data: string; // base64
+        data: string;
     };
+    /** Gemini 3.x thought signature — must be echoed back on functionCall parts */
+    thoughtSignature?: string;
 }
 
 export interface GoogleContent {
@@ -196,6 +342,9 @@ export interface GoogleGenerationConfig {
     maxOutputTokens?: number;
     topK?: number;
     topP?: number;
+    thinkingConfig?: {
+        thinkingBudget?: number;
+    };
 }
 
 export interface GoogleFunctionDeclaration {
@@ -203,7 +352,7 @@ export interface GoogleFunctionDeclaration {
     description: string;
     parameters: {
         type: 'object';
-        properties: Record<string, any>;
+        properties: Record<string, unknown>;
         required?: string[];
     };
 }
@@ -218,6 +367,7 @@ export interface GoogleToolConfig {
 export interface GoogleRequest {
     contents: GoogleContent[];
     generationConfig?: GoogleGenerationConfig;
+    systemInstruction?: { parts: Array<{ text: string }> };
     tools?: Array<{
         functionDeclarations: GoogleFunctionDeclaration[];
     }>;
@@ -242,44 +392,54 @@ export interface GoogleResponse {
     };
 }
 
-export interface TokenUsageInfo {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-}
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
-export interface LLMChatResponse {
-    message: LLMChatMessage;
-    usage?: TokenUsageInfo;
-}
-
-// ===== Helper Functions for Multimodal Content =====
-
-/**
- * Create a text content part
- */
+/** Create a text content part */
 export function textContent(text: string): LLMTextContent {
     return { type: 'text', text };
 }
 
-/**
- * Create an image content part from base64 data
- */
-export function imageContent(base64Data: string, mimeType: string = 'image/jpeg', detail?: 'auto' | 'low' | 'high'): LLMImageContent {
-    const url = base64Data.startsWith('data:') ? base64Data : `data:${mimeType};base64,${base64Data}`;
+/** Create an image content part from base64 data or URL */
+export function imageContent(
+    base64DataOrUrl: string,
+    mimeType: string = 'image/jpeg',
+    detail?: 'auto' | 'low' | 'high',
+): LLMImageContent {
+    const url = base64DataOrUrl.startsWith('data:') || base64DataOrUrl.startsWith('http')
+        ? base64DataOrUrl
+        : `data:${mimeType};base64,${base64DataOrUrl}`;
     return {
         type: 'image_url',
-        image_url: { url, detail }
+        image_url: { url, detail },
     };
 }
 
-/**
- * Create a multimodal user message with text and images
- */
-export function multimodalMessage(text: string, images: string[], mimeType: string = 'image/jpeg'): LLMChatMessage {
+/** Create a multimodal user message with text and images */
+export function multimodalMessage(
+    text: string,
+    images: string[],
+    mimeType: string = 'image/jpeg',
+): LLMChatMessage {
     const content: LLMContentPart[] = [
         textContent(text),
-        ...images.map(img => imageContent(img, mimeType))
+        ...images.map(img => imageContent(img, mimeType)),
     ];
     return { role: 'user', content };
+}
+
+/** Extract text content from a message content value */
+export function extractTextContent(content: LLMMessageContent): string {
+    if (typeof content === 'string') return content;
+    return content
+        .filter((part): part is LLMTextContent => part.type === 'text')
+        .map(part => part.text)
+        .join('');
+}
+
+/** Check if message content contains images */
+export function hasImages(content: LLMMessageContent): boolean {
+    if (typeof content === 'string') return false;
+    return content.some(part => part.type === 'image_url');
 }
