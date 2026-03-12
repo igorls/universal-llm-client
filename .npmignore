@@ -12,3 +12,7 @@ bun.lock
 # IDE
 .vscode/
 .idea/
+.gemini/
+
+# Meta
+.npmignore

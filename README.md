@@ -38,7 +38,7 @@ const response = await model.chat([
 
 | Provider | Type | Notes |
 |---|---|---|
-| **Ollama** | `ollama` | Local or cloud models, NDJSON streaming, model pulling |
+| **Ollama** | `ollama` | Local or cloud models, NDJSON streaming, model pulling, vision/multimodal |
 | **OpenAI** | `openai` | GPT-4o, o3, etc. Also works with OpenRouter, Groq, LM Studio, vLLM |
 | **Google AI Studio** | `google` | Gemini models, system instructions, multimodal |
 | **Vertex AI** | `vertex` | Same as Google AI but with regional endpoints and Bearer tokens |
@@ -360,14 +360,14 @@ interface Auditor {
 ## Architecture
 
 ```
-@akaito/universal-llm-client
+universal-llm-client
 ├── AIModel          ← Public API (the only class you import)
 ├── Router           ← Internal failover engine
 ├── BaseLLMClient    ← Abstract client with tool execution
 ├── Providers
 │   ├── OllamaClient
-│   ├── OpenAICompatibleClient
-│   └── GoogleClient (AI Studio + Vertex AI)
+│   ├── OpenAICompatibleClient  (OpenAI, OpenRouter, Groq, LM Studio, vLLM, LlamaCpp)
+│   └── GoogleClient            (AI Studio + Vertex AI)
 ├── StreamDecoder    ← Pluggable reasoning strategies
 ├── Auditor          ← Observability interface
 ├── MCPToolBridge    ← MCP server integration

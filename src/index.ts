@@ -4,7 +4,7 @@
  * A universal LLM client with transparent provider failover,
  * streaming tool execution, pluggable reasoning, and native observability.
  *
- * @module @akaito/universal-llm-client
+ * @module universal-llm-client
  */
 
 // ============================================================================

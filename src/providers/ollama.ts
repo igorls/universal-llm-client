@@ -314,24 +314,58 @@ export class OllamaClient extends BaseLLMClient {
     // Internals
     // ========================================================================
 
-    private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {
+    private convertMessages(messages: LLMChatMessage[]): Record<string, unknown>[] {
         return messages.map(msg => {
+            const converted: Record<string, unknown> = { role: msg.role };
+
+            // Handle multimodal content (array of text + image parts)
+            if (Array.isArray(msg.content)) {
+                const textParts: string[] = [];
+                const images: string[] = [];
+
+                for (const part of msg.content) {
+                    if (part.type === 'text') {
+                        textParts.push(part.text);
+                    } else if (part.type === 'image_url' && part.image_url?.url) {
+                        // Extract base64 data from data URL or use raw base64
+                        const url = part.image_url.url;
+                        if (url.startsWith('data:')) {
+                            // data:image/jpeg;base64,XXXX → extract XXXX
+                            const base64Data = url.split(',')[1];
+                            if (base64Data) images.push(base64Data);
+                        } else if (url.startsWith('http')) {
+                            // Ollama doesn't support URLs directly — skip
+                            // (caller should download and convert to base64)
+                            this.debugLog('Ollama vision: skipping URL image, use base64 instead');
+                        } else {
+                            // Assume raw base64
+                            images.push(url);
+                        }
+                    }
+                }
+
+                converted['content'] = textParts.join('\n');
+                if (images.length > 0) {
+                    converted['images'] = images;
+                }
+            } else {
+                converted['content'] = msg.content ?? '';
+            }
+
             // Ollama needs tool call arguments as objects, not strings
             if (msg.tool_calls?.length) {
-                return {
-                    ...msg,
-                    tool_calls: msg.tool_calls.map(tc => ({
-                        ...tc,
-                        function: {
-                            ...tc.function,
-                            arguments: typeof tc.function.arguments === 'string'
-                                ? (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })()
-                                : tc.function.arguments,
-                        },
-                    })),
-                };
+                converted['tool_calls'] = msg.tool_calls.map(tc => ({
+                    ...tc,
+                    function: {
+                        ...tc.function,
+                        arguments: typeof tc.function.arguments === 'string'
+                            ? (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })()
+                            : tc.function.arguments,
+                    },
+                }));
             }
-            return msg;
+
+            return converted;
         });
     }
 

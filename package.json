@@ -1,6 +1,6 @@
 {
   "name": "universal-llm-client",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "type": "module",
   "description": "A universal LLM client with transparent provider failover, streaming tool execution, pluggable reasoning, and native observability.",
   "main": "./dist/index.js",
@@ -34,6 +34,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -83,9 +84,14 @@
     "node": ">=22.0.0",
     "bun": ">=1.0.0"
   },
+  "author": "Igor Lins e Silva",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/igorls/universal-llm-client.git"
+  },
+  "homepage": "https://github.com/igorls/universal-llm-client#readme",
+  "bugs": {
+    "url": "https://github.com/igorls/universal-llm-client/issues"
   }
 }
