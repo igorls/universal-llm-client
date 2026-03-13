@@ -1,0 +1,68 @@
+{
+  "milestone": "provider-implementations",
+  "round": 1,
+  "status": "pass",
+  "assertionsSummary": {
+    "total": 14,
+    "passed": 14,
+    "failed": 0,
+    "blocked": 0
+  },
+  "passedAssertions": [
+    "VAL-PROVIDER-OPENAI-001",
+    "VAL-PROVIDER-OPENAI-002",
+    "VAL-PROVIDER-OPENAI-003",
+    "VAL-PROVIDER-OPENAI-005",
+    "VAL-PROVIDER-OLLAMA-001",
+    "VAL-PROVIDER-OLLAMA-002",
+    "VAL-PROVIDER-OLLAMA-003",
+    "VAL-PROVIDER-OLLAMA-004",
+    "VAL-PROVIDER-GOOGLE-001",
+    "VAL-PROVIDER-GOOGLE-002",
+    "VAL-PROVIDER-GOOGLE-003",
+    "VAL-PROVIDER-GOOGLE-004",
+    "VAL-PROVIDER-GOOGLE-006",
+    "VAL-CROSS-002"
+  ],
+  "failedAssertions": [],
+  "blockedAssertions": [],
+  "appliedUpdates": [
+    {
+      "target": "structured-output.ts",
+      "description": "Fixed Google schema transformation to remove 'additionalProperties' which Gemini doesn't support",
+      "source": "flow-report"
+    },
+    {
+      "target": "user-testing.md",
+      "description": "Updated smoke tests for Ollama and Google structured output validation",
+      "source": "setup"
+    },
+    {
+      "target": "smoke-test-ollama-structured.ts",
+      "description": "Created Ollama structured output smoke test file",
+      "source": "setup"
+    },
+    {
+      "target": "smoke-test-google-structured.ts",
+      "description": "Created Google structured output smoke test file",
+      "source": "setup"
+    }
+  ],
+  "previousRound": null,
+  "validationDetails": {
+    "method": "automated-smoke-tests",
+    "environment": {
+      "ollama": "http://localhost:11434",
+      "llamacpp": "http://blade14:8080/v1",
+      "google": "gemini-3.1-flash-lite-preview"
+    },
+    "testCommands": [
+      "bun test (270 unit tests passed)",
+      "bun run typecheck (passed)",
+      "bun run build (passed)",
+      "bun run tests/smoke/smoke-test-ollama-structured.ts (8/8 passed)",
+      "bun run tests/smoke/smoke-test-google-structured.ts (9/9 passed)",
+      "OPENAI_API_URL=http://blade14:8080/v1 bun run tests/smoke/smoke-test-openai-structured.ts (8/8 passed)"
+    ]
+  }
+}

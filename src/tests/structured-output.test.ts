@@ -858,6 +858,48 @@ describe('Google Schema Transformation (VAL-PROVIDER-GOOGLE-006)', () => {
             expect(result.enum).toEqual(['active', 'inactive', 'pending']);
         });
 
+        it('removes additionalProperties for Google (not supported)', () => {
+            const input: JSONSchema = {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                },
+                additionalProperties: false,
+            };
+            
+            const result = stripUnsupportedFeatures(input, 'google');
+            
+            expect(result.additionalProperties).toBeUndefined();
+        });
+
+        it('removes additionalProperties as object schema for Google', () => {
+            const input: JSONSchema = {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                },
+                additionalProperties: { type: 'string' },
+            };
+            
+            const result = stripUnsupportedFeatures(input, 'google');
+            
+            expect(result.additionalProperties).toBeUndefined();
+        });
+
+        it('keeps additionalProperties for other providers', () => {
+            const input: JSONSchema = {
+                type: 'object',
+                properties: {
+                    name: { type: 'string' },
+                },
+                additionalProperties: false,
+            };
+            
+            const result = stripUnsupportedFeatures(input, 'openai');
+            
+            expect(result.additionalProperties).toBe(false);
+        });
+
         it('preserves description', () => {
             const input: JSONSchema = {
                 type: 'object',

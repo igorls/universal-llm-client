@@ -396,6 +396,8 @@ const GOOGLE_UNSUPPORTED_FEATURES = [
     'maximum',
     'exclusiveMinimum',
     'exclusiveMaximum',
+    // Google doesn't support additionalProperties in response schema
+    'additionalProperties',
 ] as const;
 
 /**
@@ -460,11 +462,6 @@ export function stripUnsupportedFeatures(
         if (Array.isArray(schemas)) {
             (result as Record<string, unknown>)[key] = schemas.map(s => stripUnsupportedFeatures(s, provider));
         }
-    }
-
-    // Handle additionalProperties
-    if (typeof result.additionalProperties === 'object' && result.additionalProperties !== null) {
-        result.additionalProperties = stripUnsupportedFeatures(result.additionalProperties as JSONSchema, provider);
     }
 
     return result;
