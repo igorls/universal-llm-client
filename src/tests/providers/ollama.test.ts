@@ -2,12 +2,19 @@
  * Ollama Provider Unit Tests
  *
  * Tests the OllamaClient's message conversion logic, specifically
- * the multimodal/vision path and tool call argument handling.
+ * the multimodal/vision path, tool call argument handling, and
+ * structured output via format parameter.
+ *
+ * Validates assertions:
+ * - VAL-PROVIDER-OLLAMA-001: format Parameter with JSON Schema
+ * - VAL-PROVIDER-OLLAMA-003: Vision with Base64 Extraction
+ * - VAL-PROVIDER-OLLAMA-004: format "json" vs Schema
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { z } from 'zod';
 import { OllamaClient } from '../../providers/ollama.js';
-import type { LLMClientOptions, LLMChatMessage } from '../../interfaces.js';
+import type { LLMClientOptions, LLMChatMessage, ChatOptions } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 
 // ============================================================================
@@ -337,6 +344,566 @@ describe('OllamaClient', () => {
             expect(result.message.tool_calls).toHaveLength(1);
             expect(result.message.tool_calls![0]!.id).toBeTruthy();
             expect(result.message.tool_calls![0]!.id.length).toBeGreaterThan(0);
+        });
+    });
+
+    // ========================================================================
+    // VAL-PROVIDER-OLLAMA-001: format Parameter with JSON Schema
+    // ========================================================================
+
+    describe('structured output format parameter', () => {
+        test('includes format with JSON Schema when schema provided', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"name": "Test", "age": 30}' },
+            });
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate a user' },
+            ], options);
+
+            const body = getBody()!;
+            expect(body['format']).toBeDefined();
+            // Ollama format is an object with the schema
+            const format = body['format'] as Record<string, unknown>;
+            expect(format['type']).toBe('object');
+            expect(format['properties']).toBeDefined();
+        });
+
+        test('converts Zod schema to JSON Schema in format', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"name": "Test", "age": 25}' },
+            });
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+                age: z.number().optional(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate a user' },
+            ], options);
+
+            const body = getBody()!;
+            const format = body['format'] as Record<string, unknown>;
+
+            expect(format['type']).toBe('object');
+            expect(format['properties']).toBeDefined();
+            const properties = format['properties'] as Record<string, unknown>;
+            expect(properties['name']).toEqual({ type: 'string' });
+            expect(properties['age']).toEqual({ type: 'number' });
+            // Required should only include non-optional fields
+            expect(format['required']).toEqual(['name']);
+        });
+
+        test('accepts raw JSON Schema in format', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"id": "123", "count": 5}' },
+            });
+            const client = createClient();
+
+            const jsonSchema = {
+                type: 'object' as const,
+                properties: {
+                    id: { type: 'string' as const },
+                    count: { type: 'number' as const },
+                },
+                required: ['id'],
+            };
+
+            const options: ChatOptions = {
+                jsonSchema,
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options);
+
+            const body = getBody()!;
+            const format = body['format'] as Record<string, unknown>;
+
+            expect(format['type']).toBe('object');
+            expect(format['properties']).toBeDefined();
+            const properties = format['properties'] as Record<string, unknown>;
+            expect(properties['id']).toEqual({ type: 'string' });
+            expect(properties['count']).toEqual({ type: 'number' });
+        });
+
+        test('handles nested object schemas', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"name": "Alice", "address": {"street": "123 Main St", "city": "NYC"}}' },
+            });
+            const client = createClient();
+
+            const AddressSchema = z.object({
+                street: z.string(),
+                city: z.string(),
+            });
+
+            const UserSchema = z.object({
+                name: z.string(),
+                address: AddressSchema,
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options);
+
+            const body = getBody()!;
+            const format = body['format'] as Record<string, unknown>;
+
+            expect(format['type']).toBe('object');
+            const properties = format['properties'] as Record<string, unknown>;
+            const addressSchema = properties['address'] as Record<string, unknown>;
+            expect(addressSchema['type']).toBe('object');
+            expect(addressSchema['properties']).toBeDefined();
+        });
+
+        test('handles array schemas', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"users": [{"name": "Alice", "email": "alice@example.com"}]}' },
+            });
+            const client = createClient();
+
+            const UserListSchema = z.object({
+                users: z.array(z.object({
+                    name: z.string(),
+                    email: z.string(),
+                })),
+            });
+
+            const options: ChatOptions = {
+                schema: UserListSchema,
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options);
+
+            const body = getBody()!;
+            const format = body['format'] as Record<string, unknown>;
+
+            expect(format['type']).toBe('object');
+            const properties = format['properties'] as Record<string, unknown>;
+            const usersSchema = properties['users'] as Record<string, unknown>;
+            expect(usersSchema['type']).toBe('array');
+            expect(usersSchema['items']).toBeDefined();
+        });
+
+        test('handles enum schemas', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"status": "active"}' },
+            });
+            const client = createClient();
+
+            const StatusSchema = z.object({
+                status: z.enum(['active', 'inactive', 'pending']),
+            });
+
+            const options: ChatOptions = {
+                schema: StatusSchema,
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options);
+
+            const body = getBody()!;
+            const format = body['format'] as Record<string, unknown>;
+
+            const properties = format['properties'] as Record<string, unknown>;
+            const statusSchema = properties['status'] as Record<string, unknown>;
+            expect(statusSchema['type']).toBe('string');
+            expect(statusSchema['enum']).toEqual(['active', 'inactive', 'pending']);
+        });
+    });
+
+    // ========================================================================
+    // VAL-PROVIDER-OLLAMA-004: format "json" vs Schema
+    // ========================================================================
+
+    describe('format json (simple mode)', () => {
+        test('supports format: "json" string for simple JSON mode', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"key": "value"}' },
+            });
+            const client = createClient();
+
+            const options: ChatOptions = {
+                responseFormat: { type: 'json_object' },
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate JSON' },
+            ], options);
+
+            const body = getBody()!;
+            // Ollama uses format: "json" for simple JSON mode
+            expect(body['format']).toBe('json');
+        });
+
+        test('json mode does not include schema in request', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: { role: 'assistant', content: '{"key": "value"}' },
+            });
+            const client = createClient();
+
+            const options: ChatOptions = {
+                responseFormat: { type: 'json_object' },
+            };
+
+            await client.chat([
+                { role: 'user', content: 'Generate JSON' },
+            ], options);
+
+            const body = getBody()!;
+            // format should be a string, not an object with schema
+            expect(typeof body['format']).toBe('string');
+            expect(body['format']).toBe('json');
+        });
+    });
+
+    // ========================================================================
+    // Response Validation
+    // ========================================================================
+
+    describe('structured response validation', () => {
+        test('validates response JSON against schema', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: '{"name": "Bob", "age": 25}',
+                },
+            });
+
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            const response = await client.chat([
+                { role: 'user', content: 'Generate a user' },
+            ], options);
+
+            // If we got here without error, validation passed
+            expect(response.message.content).toBe('{"name": "Bob", "age": 25}');
+        });
+
+        test('throws StructuredOutputError on invalid JSON response', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: 'not valid json at all',
+                },
+            });
+
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await expect(client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options)).rejects.toThrow('Failed to parse');
+        });
+
+        test('throws StructuredOutputError on schema validation failure', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: '{"name": "Bob", "age": "not a number"}',
+                },
+            });
+
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await expect(client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options)).rejects.toThrow('Validation failed');
+        });
+
+        test('includes raw output in validation error', async () => {
+            const rawOutput = '{"name": 123}';
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: rawOutput,
+                },
+            });
+
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            try {
+                await client.chat([
+                    { role: 'user', content: 'Generate' },
+                ], options);
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(Error);
+                if (error instanceof Error && 'rawOutput' in error) {
+                    expect((error as { rawOutput: string }).rawOutput).toBe(rawOutput);
+                }
+            }
+        });
+
+        test('handles null content in response gracefully', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: null as unknown as string,
+                },
+            });
+
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await expect(client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options)).rejects.toThrow();
+        });
+
+        test('handles empty string content', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: '',
+                },
+            });
+
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+            };
+
+            await expect(client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options)).rejects.toThrow();
+        });
+    });
+
+    // ========================================================================
+    // VAL-PROVIDER-OLLAMA-003: Vision with Base64 Extraction + format
+    // ========================================================================
+
+    describe('vision with structured output', () => {
+        test('includes both format and images array in request', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: '{"objects": ["cat", "keyboard"], "scene": "office"}',
+                },
+            });
+            const client = createClient();
+
+            const DescriptionSchema = z.object({
+                objects: z.array(z.string()),
+                scene: z.string(),
+            });
+
+            const messages: LLMChatMessage[] = [{
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'Describe this image' },
+                    { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,IMGDATA' } },
+                ],
+            }];
+
+            const options: ChatOptions = {
+                schema: DescriptionSchema,
+            };
+
+            await client.chat(messages, options);
+
+            const body = getBody()!;
+            const sent = body['messages'] as Record<string, unknown>[];
+
+            // Should have format with schema
+            expect(body['format']).toBeDefined();
+            const format = body['format'] as Record<string, unknown>;
+            expect(format['type']).toBe('object');
+
+            // Should have images extracted from data URL
+            expect(sent[0]!['images']).toEqual(['IMGDATA']);
+        });
+
+        test('validates structured output response with vision', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: '{"objects": ["cat", "keyboard"], "scene": "office"}',
+                },
+            });
+
+            const client = createClient();
+
+            const DescriptionSchema = z.object({
+                objects: z.array(z.string()),
+                scene: z.string(),
+            });
+
+            const messages: LLMChatMessage[] = [{
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'Describe' },
+                    { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,ABC' } },
+                ],
+            }];
+
+            const options: ChatOptions = {
+                schema: DescriptionSchema,
+            };
+
+            const response = await client.chat(messages, options);
+
+            expect(response.message.content).toBe('{"objects": ["cat", "keyboard"], "scene": "office"}');
+        });
+    });
+
+    // ========================================================================
+    // No schema option (regular chat)
+    // ========================================================================
+
+    describe('regular chat without schema', () => {
+        test('does not include format when no schema provided', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+
+            await client.chat([
+                { role: 'user', content: 'Hello' },
+            ]);
+
+            const body = getBody()!;
+            expect(body['format']).toBeUndefined();
+        });
+
+        test('chat without schema returns raw response', async () => {
+            mockFetchAndCapture();
+            const client = createClient();
+
+            const response = await client.chat([
+                { role: 'user', content: 'Hello' },
+            ]);
+
+            expect(response.message.content).toBe('test response');
+            expect(response.message.role).toBe('assistant');
+        });
+    });
+
+    // ========================================================================
+    // Schema with Tools (should be mutually exclusive)
+    // ========================================================================
+
+    describe('schema with tools', () => {
+        test('throws error when both schema and tools provided', async () => {
+            const client = createClient();
+
+            const UserSchema = z.object({
+                name: z.string(),
+            });
+
+            const options: ChatOptions = {
+                schema: UserSchema,
+                tools: [{
+                    type: 'function',
+                    function: {
+                        name: 'test_tool',
+                        description: 'A test tool',
+                        parameters: {
+                            type: 'object',
+                            properties: {},
+                        },
+                    },
+                }],
+            };
+
+            // The error message should contain "structured output" and "tools"
+            await expect(client.chat([
+                { role: 'user', content: 'Test' },
+            ], options)).rejects.toThrow();
+
+            // Also check for specific error message content
+            try {
+                await client.chat([{ role: 'user', content: 'Test' }], options);
+            } catch (error) {
+                expect(error).toBeInstanceOf(Error);
+                const message = (error as Error).message.toLowerCase();
+                expect(message).toContain('structured output');
+                expect(message).toContain('tools');
+            }
         });
     });
 });

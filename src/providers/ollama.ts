@@ -3,12 +3,24 @@
  *
  * Implements BaseLLMClient for Ollama's native API.
  * Supports chat, streaming (NDJSON), embeddings, model discovery,
- * and context length detection via /api/show.
+ * context length detection via /api/show, and structured output.
+ *
+ * Structured Output Assertions:
+ * - VAL-PROVIDER-OLLAMA-001: format parameter with JSON Schema
+ * - VAL-PROVIDER-OLLAMA-003: Vision with base64 extraction alongside format
+ * - VAL-PROVIDER-OLLAMA-004: format "json" vs schema modes
  */
 
+import { z } from 'zod';
 import { BaseLLMClient } from '../client.js';
 import { httpRequest, httpStream, parseNDJSON, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
+import {
+    StructuredOutputError,
+    zodToJsonSchema,
+    normalizeJsonSchema,
+    type JSONSchema,
+} from '../structured-output.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -39,6 +51,14 @@ export class OllamaClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<LLMChatResponse> {
+        // Validate: schema and tools cannot be used together
+        if ((options?.schema || options?.jsonSchema) && options?.tools) {
+            throw new Error(
+                'Structured output and tools cannot be used together. ' +
+                'Use either schema/jsonSchema for structured output OR tools for function calling.'
+            );
+        }
+
         const url = `${this.options.url}/api/chat`;
         const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
 
@@ -55,6 +75,15 @@ export class OllamaClient extends BaseLLMClient {
 
         if (this.options.thinking) {
             body['think'] = true;
+        }
+
+        // Handle structured output via format parameter
+        const schemaOptions = this.extractSchemaOptions(options);
+        if (schemaOptions) {
+            body['format'] = this.buildFormatParameter(schemaOptions);
+        } else if (options?.responseFormat) {
+            // Legacy json_object mode - map to Ollama's "json" format
+            body['format'] = 'json';
         }
 
         const start = Date.now();
@@ -93,10 +122,18 @@ export class OllamaClient extends BaseLLMClient {
             },
         }));
 
+        // Get content, handling potential null
+        const content = data.message.content || data.message.thinking || '';
+
+        // Validate response against schema if provided
+        if (schemaOptions?.schema) {
+            this.validateStructuredResponse(content, schemaOptions.schema);
+        }
+
         const result: LLMChatResponse = {
             message: {
                 role: 'assistant',
-                content: data.message.content || data.message.thinking || '',
+                content,
                 tool_calls: toolCalls,
             },
             reasoning: data.message.content ? data.message.thinking : undefined,
@@ -388,5 +425,94 @@ export class OllamaClient extends BaseLLMClient {
         if (options?.temperature !== undefined) params['temperature'] = options.temperature;
         if (options?.maxTokens !== undefined) params['num_predict'] = options.maxTokens;
         return params;
+    }
+
+    // ========================================================================
+    // Structured Output Helpers
+    // ========================================================================
+
+    /**
+     * Extract schema options from ChatOptions.
+     * Returns null if no schema is provided.
+     */
+    private extractSchemaOptions(options?: ChatOptions): (ChatOptions & { schema: z.ZodType<unknown> }) | null {
+        if (!options) return null;
+
+        if (options.schema) {
+            return {
+                ...options,
+                schema: options.schema,
+            };
+        }
+
+        if (options.jsonSchema) {
+            // For raw JSON Schema, create a passthrough schema for validation
+            // Actual format is used for request, validation uses z.unknown()
+            return {
+                ...options,
+                jsonSchema: options.jsonSchema,
+                schema: z.unknown(),
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Build Ollama format parameter from schema options.
+     * Ollama accepts:
+     * - format: "json" for simple JSON mode
+     * - format: { ...schema } for structured output with JSON Schema
+     */
+    private buildFormatParameter(options: ChatOptions): string | JSONSchema {
+        if (options.jsonSchema) {
+            // Use raw JSON Schema
+            return normalizeJsonSchema(options.jsonSchema);
+        }
+
+        if (options.schema) {
+            // Convert Zod schema to JSON Schema
+            return zodToJsonSchema(options.schema);
+        }
+
+        // Should not happen if extractSchemaOptions worked correctly
+        return 'json';
+    }
+
+    /**
+     * Validate structured response against Zod schema.
+     * Throws StructuredOutputError on failure.
+     */
+    private validateStructuredResponse(content: string, schema: z.ZodType<unknown>): void {
+        // Handle empty or null content
+        if (!content) {
+            throw new StructuredOutputError(
+                'Empty response from LLM',
+                { rawOutput: content }
+            );
+        }
+
+        // Parse JSON
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(content);
+        } catch (error) {
+            const syntaxError = error instanceof SyntaxError
+                ? error
+                : new SyntaxError(String(error));
+            throw new StructuredOutputError(
+                `Failed to parse JSON: ${syntaxError.message}`,
+                { rawOutput: content, cause: syntaxError }
+            );
+        }
+
+        // Validate against schema
+        const result = schema.safeParse(parsed);
+        if (!result.success) {
+            throw new StructuredOutputError(
+                `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
+                { rawOutput: content, cause: result.error }
+            );
+        }
     }
 }
