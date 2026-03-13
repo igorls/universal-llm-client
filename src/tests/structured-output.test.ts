@@ -17,11 +17,16 @@ import {
     type StructuredOutputFailure,
     type JSONSchema,
     isStructuredOutputSuccess,
+    isStructuredOutputFailure,
     // Schema conversion functions
     zodToJsonSchema,
     normalizeJsonSchema,
     convertToProviderSchema,
     stripUnsupportedFeatures,
+    // Validation functions
+    parseStructured,
+    tryParseStructured,
+    validateStructuredOutput,
 } from '../structured-output.js';
 
 // ============================================================================
@@ -889,5 +894,403 @@ describe('Google Schema Transformation (VAL-PROVIDER-GOOGLE-006)', () => {
             expect(emailProp.pattern).toBeUndefined();
             expect(emailProp.type).toBe('string');
         });
+    });
+});
+
+// ============================================================================
+// Validation Logic Tests (VAL-SCHEMA-005, VAL-SCHEMA-006, VAL-SCHEMA-007)
+// ============================================================================
+
+describe('Validation Logic (VAL-SCHEMA-005)', () => {
+    describe('parseStructured', () => {
+        it('returns parsed object when JSON is valid and matches schema', () => {
+            const schema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+            
+            const rawOutput = '{"name": "Alice", "age": 30}';
+            const result = parseStructured(schema, rawOutput);
+            
+            expect(result).toEqual({ name: 'Alice', age: 30 });
+        });
+
+        it('returns parsed object for complex nested schema', () => {
+            const addressSchema = z.object({
+                street: z.string(),
+                city: z.string(),
+            });
+            const personSchema = z.object({
+                name: z.string(),
+                address: addressSchema,
+            });
+            
+            const rawOutput = '{"name": "Bob", "address": {"street": "123 Main", "city": "NYC"}}';
+            const result = parseStructured(personSchema, rawOutput);
+            
+            expect(result).toEqual({
+                name: 'Bob',
+                address: { street: '123 Main', city: 'NYC' },
+            });
+        });
+
+        it('throws StructuredOutputError when JSON fails schema validation', () => {
+            const schema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+            
+            // Missing 'age' field
+            const rawOutput = '{"name": "Alice"}';
+            
+            expect(() => parseStructured(schema, rawOutput)).toThrow(StructuredOutputError);
+        });
+
+        it('throws StructuredOutputError with rawOutput when schema validation fails', () => {
+            const schema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+            
+            // 'age' is string instead of number
+            const rawOutput = '{"name": "Alice", "age": "thirty"}';
+            
+            try {
+                parseStructured(schema, rawOutput);
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(StructuredOutputError);
+                if (error instanceof StructuredOutputError) {
+                    expect(error.rawOutput).toBe(rawOutput);
+                    expect(error.cause).toBeInstanceOf(z.ZodError);
+                }
+            }
+        });
+
+        it('throws StructuredOutputError with ZodError as cause on validation failure', () => {
+            const schema = z.object({
+                email: z.string().email(),
+            });
+            
+            const rawOutput = '{"email": "not-an-email"}';
+            
+            try {
+                parseStructured(schema, rawOutput);
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(StructuredOutputError);
+                if (error instanceof StructuredOutputError) {
+                    expect(error.cause).toBeInstanceOf(z.ZodError);
+                    const zodError = error.cause as z.ZodError;
+                    expect(zodError.errors.length).toBeGreaterThan(0);
+                }
+            }
+        });
+    });
+
+    describe('Malformed JSON Handling (VAL-SCHEMA-006)', () => {
+        it('throws StructuredOutputError on malformed JSON', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = 'not valid json at all';
+            
+            expect(() => parseStructured(schema, rawOutput)).toThrow(StructuredOutputError);
+        });
+
+        it('includes raw output in error for malformed JSON', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = '{"name": "incomplete"';
+            
+            try {
+                parseStructured(schema, rawOutput);
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(StructuredOutputError);
+                if (error instanceof StructuredOutputError) {
+                    expect(error.rawOutput).toBe(rawOutput);
+                    expect(error.cause).toBeDefined();
+                    expect(error.cause).toBeInstanceOf(SyntaxError);
+                }
+            }
+        });
+
+        it('handles completely empty output', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = '';
+            
+            try {
+                parseStructured(schema, rawOutput);
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(StructuredOutputError);
+                if (error instanceof StructuredOutputError) {
+                    expect(error.rawOutput).toBe('');
+                }
+            }
+        });
+
+        it('handles null JSON value', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = 'null';
+            
+            expect(() => parseStructured(schema, rawOutput)).toThrow(StructuredOutputError);
+        });
+
+        it('handles array when object expected', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = '["not", "an", "object"]';
+            
+            try {
+                parseStructured(schema, rawOutput);
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(StructuredOutputError);
+                if (error instanceof StructuredOutputError) {
+                    expect(error.rawOutput).toBe(rawOutput);
+                    expect(error.cause).toBeInstanceOf(z.ZodError);
+                }
+            }
+        });
+    });
+});
+
+describe('tryParseStructured (VAL-SCHEMA-007)', () => {
+    describe('Success Path', () => {
+        it('returns { ok: true, value } on success', () => {
+            const schema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+            
+            const rawOutput = '{"name": "Alice", "age": 30}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.value).toEqual({ name: 'Alice', age: 30 });
+            }
+        });
+
+        it('never throws on success', () => {
+            const schema = z.object({ value: z.number() });
+            const rawOutput = '{"value": 42}';
+            
+            // Should not throw, should return result object
+            expect(() => tryParseStructured(schema, rawOutput)).not.toThrow();
+            
+            const result = tryParseStructured(schema, rawOutput);
+            expect(result.ok).toBe(true);
+        });
+
+        it('handles optional fields correctly', () => {
+            const schema = z.object({
+                name: z.string(),
+                email: z.string().email().optional(),
+            });
+            
+            const rawOutput = '{"name": "Bob"}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.value).toEqual({ name: 'Bob' });
+            }
+        });
+
+        it('validates nested objects', () => {
+            const schema = z.object({
+                user: z.object({
+                    name: z.string(),
+                    address: z.object({
+                        city: z.string(),
+                    }),
+                }),
+            });
+            
+            const rawOutput = '{"user": {"name": "Carol", "address": {"city": "NYC"}}}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.value).toEqual({
+                    user: { name: 'Carol', address: { city: 'NYC' } },
+                });
+            }
+        });
+
+        it('validates arrays', () => {
+            const schema = z.object({
+                items: z.array(z.string()),
+            });
+            
+            const rawOutput = '{"items": ["a", "b", "c"]}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.value).toEqual({ items: ['a', 'b', 'c'] });
+            }
+        });
+
+        it('validates enums', () => {
+            const schema = z.object({
+                status: z.enum(['active', 'inactive']),
+            });
+            
+            const rawOutput = '{"status": "active"}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(true);
+            if (result.ok) {
+                expect(result.value).toEqual({ status: 'active' });
+            }
+        });
+    });
+
+    describe('Failure Path', () => {
+        it('returns { ok: false, error, rawOutput } on validation failure', () => {
+            const schema = z.object({
+                name: z.string(),
+                age: z.number(),
+            });
+            
+            // Missing 'age' field
+            const rawOutput = '{"name": "Alice"}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.error).toBeInstanceOf(StructuredOutputError);
+                expect(result.rawOutput).toBe(rawOutput);
+            }
+        });
+
+        it('returns { ok: false, ... } on malformed JSON', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = 'not json';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.error).toBeInstanceOf(StructuredOutputError);
+                expect(result.rawOutput).toBe(rawOutput);
+            }
+        });
+
+        it('never throws, always returns result object', () => {
+            const schema = z.object({ name: z.string() });
+            
+            // Test with invalid JSON
+            expect(() => tryParseStructured(schema, 'invalid')).not.toThrow();
+            
+            // Test with schema validation failure
+            expect(() => tryParseStructured(schema, '{"age": 30}')).not.toThrow();
+            
+            // Test with type mismatch
+            expect(() => tryParseStructured(schema, '{"name": 123}')).not.toThrow();
+        });
+
+        it('includes ZodError as cause in failure result', () => {
+            const schema = z.object({
+                email: z.string().email(),
+            });
+            
+            const rawOutput = '{"email": "not-an-email"}';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.error.cause).toBeInstanceOf(z.ZodError);
+            }
+        });
+
+        it('includes SyntaxError as cause for malformed JSON', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = '{"incomplete": ';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.error.cause).toBeInstanceOf(SyntaxError);
+            }
+        });
+
+        it('handles empty string input', () => {
+            const schema = z.object({ name: z.string() });
+            const rawOutput = '';
+            const result = tryParseStructured(schema, rawOutput);
+            
+            expect(result.ok).toBe(false);
+            if (!result.ok) {
+                expect(result.rawOutput).toBe('');
+            }
+        });
+    });
+
+    describe('Type Narrowing', () => {
+        it('narrows type correctly with ok check', () => {
+            const schema = z.object({ name: z.string() });
+            const result = tryParseStructured(schema, '{"name": "test"}');
+            
+            // TypeScript should narrow the type correctly
+            if (result.ok) {
+                // result.value is User type
+                const name: string = result.value.name;
+                expect(name).toBe('test');
+            } else {
+                // This branch should not execute
+                expect(true).toBe(false);
+            }
+        });
+
+        it('isStructuredOutputFailure works correctly', () => {
+            const schema = z.object({ name: z.string() });
+            const successResult = tryParseStructured(schema, '{"name": "test"}');
+            const failureResult = tryParseStructured(schema, 'invalid json');
+            
+            expect(isStructuredOutputSuccess(successResult)).toBe(true);
+            expect(isStructuredOutputFailure(successResult)).toBe(false);
+            expect(isStructuredOutputSuccess(failureResult)).toBe(false);
+            expect(isStructuredOutputFailure(failureResult)).toBe(true);
+        });
+    });
+});
+
+describe('validateStructuredOutput', () => {
+    it('validates output against Zod schema', () => {
+        const schema = z.object({
+            name: z.string(),
+            count: z.number(),
+        });
+        
+        const data = { name: 'test', count: 5 };
+        const result = validateStructuredOutput(schema, data);
+        
+        expect(result).toEqual(data);
+    });
+
+    it('throws StructuredOutputError on validation failure', () => {
+        const schema = z.object({
+            name: z.string(),
+            count: z.number(),
+        });
+        
+        const data = { name: 'test', count: 'not a number' };
+        
+        expect(() => validateStructuredOutput(schema, data)).toThrow(StructuredOutputError);
+    });
+
+    it('includes raw output in error for failed validation', () => {
+        const schema = z.object({ name: z.string() });
+        const rawOutput = '{"name": 123}';
+        
+        try {
+            validateStructuredOutput(schema, JSON.parse(rawOutput), rawOutput);
+            expect(true).toBe(false); // Should not reach here
+        } catch (error) {
+            expect(error).toBeInstanceOf(StructuredOutputError);
+            if (error instanceof StructuredOutputError) {
+                expect(error.rawOutput).toBe(rawOutput);
+            }
+        }
     });
 });

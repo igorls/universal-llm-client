@@ -141,4 +141,8 @@ export {
     convertToProviderSchema,
     stripUnsupportedFeatures,
     getJsonSchema,
+    // Validation functions
+    parseStructured,
+    tryParseStructured,
+    validateStructuredOutput,
 } from './structured-output.js';

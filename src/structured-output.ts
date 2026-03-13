@@ -516,6 +516,146 @@ export function convertToProviderSchema<T>(
 }
 
 // ============================================================================
+// Validation Functions
+// ============================================================================
+
+/**
+ * Parse and validate structured output from raw LLM response text.
+ *
+ * This function:
+ * 1. Parses JSON from the raw output string
+ * 2. Validates the parsed data against the Zod schema
+ * 3. Throws StructuredOutputError on failure
+ *
+ * @param schema The Zod schema to validate against
+ * @param rawOutput The raw string output from the LLM
+ * @returns The validated and typed data
+ * @throws StructuredOutputError if JSON parsing fails or schema validation fails
+ *
+ * @example
+ * ```typescript
+ * const schema = z.object({ name: z.string(), age: z.number() });
+ * const rawOutput = '{"name": "Alice", "age": 30}';
+ * const result = parseStructured(schema, rawOutput); // { name: "Alice", age: 30 }
+ * ```
+ */
+export function parseStructured<T>(
+    schema: z.ZodType<T>,
+    rawOutput: string,
+): T {
+    // Step 1: Parse JSON
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(rawOutput);
+    } catch (error) {
+        // JSON parsing failed - wrap in StructuredOutputError
+        const syntaxError = error instanceof SyntaxError
+            ? error
+            : new SyntaxError(String(error));
+        throw new StructuredOutputError(
+            `Failed to parse JSON: ${syntaxError.message}`,
+            { rawOutput, cause: syntaxError },
+        );
+    }
+
+    // Step 2: Validate against Zod schema
+    const result = schema.safeParse(parsed);
+    if (!result.success) {
+        // Schema validation failed - throw with ZodError as cause
+        throw new StructuredOutputError(
+            `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
+            { rawOutput, cause: result.error },
+        );
+    }
+
+    return result.data;
+}
+
+/**
+ * Try to parse and validate structured output, returning a result object.
+ *
+ * This is the non-throwing variant of `parseStructured`. Instead of throwing
+ * on validation failure, it returns a result object with `ok: false` and
+ * the error details.
+ *
+ * @param schema The Zod schema to validate against
+ * @param rawOutput The raw string output from the LLM
+ * @returns A result object: `{ ok: true, value }` on success, `{ ok: false, error, rawOutput }` on failure
+ *
+ * @example
+ * ```typescript
+ * const schema = z.object({ name: z.string(), age: z.number() });
+ *
+ * // Success case
+ * const result1 = tryParseStructured(schema, '{"name": "Alice", "age": 30}');
+ * if (result1.ok) {
+ *   console.log(result1.value.name); // "Alice"
+ * }
+ *
+ * // Failure case
+ * const result2 = tryParseStructured(schema, 'invalid json');
+ * if (!result2.ok) {
+ *   console.log(result2.error.message); // Error message
+ *   console.log(result2.rawOutput); // Original output
+ * }
+ * ```
+ */
+export function tryParseStructured<T>(
+    schema: z.ZodType<T>,
+    rawOutput: string,
+): StructuredOutputResult<T> {
+    try {
+        const value = parseStructured(schema, rawOutput);
+        return { ok: true, value };
+    } catch (error) {
+        if (error instanceof StructuredOutputError) {
+            return {
+                ok: false,
+                error,
+                rawOutput,
+            };
+        }
+        // Re-throw unexpected errors
+        throw error;
+    }
+}
+
+/**
+ * Validate already-parsed data against a Zod schema.
+ *
+ * This is useful when you have already parsed JSON and need to validate
+ * it against a schema, with optional raw output for error messages.
+ *
+ * @param schema The Zod schema to validate against
+ * @param data The parsed data to validate
+ * @param rawOutput Optional raw output string for error messages
+ * @returns The validated and typed data
+ * @throws StructuredOutputError if schema validation fails
+ *
+ * @example
+ * ```typescript
+ * const schema = z.object({ name: z.string(), age: z.number() });
+ * const data = JSON.parse('{"name": "Alice", "age": 30}');
+ * const result = validateStructuredOutput(schema, data); // { name: "Alice", age: 30 }
+ * ```
+ */
+export function validateStructuredOutput<T>(
+    schema: z.ZodType<T>,
+    data: unknown,
+    rawOutput?: string,
+): T {
+    const result = schema.safeParse(data);
+    if (!result.success) {
+        const rawData = rawOutput ?? JSON.stringify(data);
+        throw new StructuredOutputError(
+            `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
+            { rawOutput: rawData, cause: result.error },
+        );
+    }
+    return result.data;
+}
+
+// ============================================================================
 // Re-exports for Convenience
 // ============================================================================
 
