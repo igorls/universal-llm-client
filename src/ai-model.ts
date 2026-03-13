@@ -27,6 +27,10 @@ import { OllamaClient } from './providers/ollama.js';
 import { OpenAICompatibleClient } from './providers/openai.js';
 import { GoogleClient } from './providers/google.js';
 import { BaseLLMClient } from './client.js';
+import {
+    type StructuredOutputResult,
+} from './structured-output.js';
+import { z } from 'zod';
 
 // ============================================================================
 // Default Provider URLs
@@ -99,6 +103,74 @@ export class AIModel {
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         return yield* this.router.chatStream(messages, options);
+    }
+
+    // ========================================================================
+    // Structured Output
+    // ========================================================================
+
+    /**
+     * Generate structured output from the LLM with automatic failover.
+     * Validates the response against the provided Zod schema.
+     * Throws StructuredOutputError on validation failure.
+     *
+     * @template T The type inferred from the Zod schema
+     * @param schema Zod schema for validation
+     * @param messages Chat messages to send
+     * @param options Additional options (temperature, maxTokens, etc.)
+     * @returns Promise resolving to validated structured output
+     * @throws StructuredOutputError if JSON parsing fails or schema validation fails
+     *
+     * @example
+     * ```typescript
+     * const UserSchema = z.object({
+     *   name: z.string(),
+     *   age: z.number(),
+     * });
+     *
+     * const user = await model.generateStructured(UserSchema, [
+     *   { role: 'user', content: 'Generate a user profile' },
+     * ]);
+     * // user.name: string, user.age: number
+     * ```
+     */
+    async generateStructured<T>(
+        schema: z.ZodType<T>,
+        messages: LLMChatMessage[],
+        options?: ChatOptions,
+    ): Promise<T> {
+        return this.router.generateStructured(schema, messages, options);
+    }
+
+    /**
+     * Try to generate structured output, returning a result object instead of throwing.
+     * Same as generateStructured but returns { ok: true, value } on success
+     * and { ok: false, error, rawOutput } on failure.
+     *
+     * @template T The type inferred from the Zod schema
+     * @param schema Zod schema for validation
+     * @param messages Chat messages to send
+     * @param options Additional options (temperature, maxTokens, etc.)
+     * @returns StructuredOutputResult<T> - either success with value or failure with error
+     *
+     * @example
+     * ```typescript
+     * const result = await model.tryParseStructured(UserSchema, messages);
+     *
+     * if (result.ok) {
+     *   console.log('User:', result.value.name);
+     * } else {
+     *   console.log('Error:', result.error.message);
+     *   console.log('Raw output:', result.rawOutput);
+     * }
+     * ```
+     */
+    async tryParseStructured<T>(
+        schema: z.ZodType<T>,
+        messages: LLMChatMessage[],
+        options?: ChatOptions,
+    ): Promise<StructuredOutputResult<T>> {
+        return this.router.tryParseStructured(schema, messages, options);
     }
 
     // ========================================================================

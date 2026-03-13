@@ -21,6 +21,12 @@ import type {
     ModelMetadata,
 } from './interfaces.js';
 import type { DecodedEvent } from './stream-decoder.js';
+import {
+    zodToJsonSchema,
+    parseStructured,
+    type StructuredOutputResult,
+} from './structured-output.js';
+import { z } from 'zod';
 
 // ============================================================================
 // Types
@@ -305,6 +311,88 @@ export class Router {
             client => client.getModelInfo(),
             'getModelInfo',
         );
+    }
+
+    // ========================================================================
+    // Structured Output Methods
+    // ========================================================================
+
+    /**
+     * Generate structured output from the LLM with automatic failover.
+     * Validates the response against the provided Zod schema.
+     * Throws StructuredOutputError on validation failure.
+     *
+     * @template T The type inferred from the Zod schema
+     * @param schema Zod schema for validation
+     * @param messages Chat messages to send
+     * @param options Additional options (temperature, maxTokens, etc.)
+     * @returns Validated structured output
+     * @throws StructuredOutputError if validation fails
+     */
+    async generateStructured<T>(
+        schema: z.ZodType<T>,
+        messages: LLMChatMessage[],
+        options?: ChatOptions,
+    ): Promise<T> {
+        // Convert Zod schema to JSON Schema for providers
+        const jsonSchema = zodToJsonSchema(schema);
+
+        // Build ChatOptions with schema
+        const structuredOptions: ChatOptions = {
+            ...options,
+            jsonSchema,
+        };
+
+        // Execute with failover
+        const response = await this.execute(
+            client => client.chat(messages, structuredOptions),
+            'generateStructured',
+        );
+
+        // Parse and validate the response
+        const content = typeof response.message.content === 'string'
+            ? response.message.content
+            : response.message.content
+                .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+                .map(part => part.text)
+                .join('');
+
+        // This will throw StructuredOutputError on failure
+        return parseStructured(schema, content);
+    }
+
+    /**
+     * Try to generate structured output, returning a result object instead of throwing.
+     * Same as generateStructured but returns { ok: true, value } on success
+     * and { ok: false, error, rawOutput } on failure.
+     *
+     * @template T The type inferred from the Zod schema
+     * @param schema Zod schema for validation
+     * @param messages Chat messages to send
+     * @param options Additional options (temperature, maxTokens, etc.)
+     * @returns StructuredOutputResult<T> - either success with value or failure with error
+     */
+    async tryParseStructured<T>(
+        schema: z.ZodType<T>,
+        messages: LLMChatMessage[],
+        options?: ChatOptions,
+    ): Promise<StructuredOutputResult<T>> {
+        try {
+            const value = await this.generateStructured(schema, messages, options);
+            return { ok: true, value };
+        } catch (error) {
+            // If error is already a StructuredOutputError, use it directly
+            if (error instanceof Error && 'rawOutput' in error) {
+                return {
+                    ok: false,
+                    error: error as unknown as import('./structured-output.js').StructuredOutputError,
+                    rawOutput: (error as unknown as { rawOutput: string }).rawOutput,
+                };
+            }
+
+            // Unexpected error - re-throw
+            throw error;
+        }
     }
 
     // ========================================================================
