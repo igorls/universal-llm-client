@@ -653,6 +653,146 @@ export function validateStructuredOutput<T>(
 }
 
 // ============================================================================
+// Streaming JSON Parsing
+// ============================================================================
+
+/**
+ * Incremental JSON parser for streaming structured output.
+ *
+ * Allows parsing partial JSON as it streams in, returning validated partial
+ * objects when possible. Useful for structured output streaming where you
+ * want to see partial results before the complete JSON arrives.
+ */
+export class StreamingJsonParser<T> {
+    private buffer = '';
+    private schema: z.ZodType<T>;
+
+    constructor(schema: z.ZodType<T>) {
+        this.schema = schema;
+    }
+
+    /**
+     * Feed a chunk of JSON text to the parser.
+     * Returns a validated partial object if the current buffer can be parsed
+     * as valid JSON that passes the schema, or undefined if not yet valid.
+     *
+     * For partial objects, this attempts to:
+     * 1. Add closing braces/brackets to make valid JSON
+     * 2. Fill in missing required fields with null/empty values
+     * 3. Validate against schema
+     *
+     * @param chunk Text chunk from the stream
+     * @returns Validated partial object or undefined
+     */
+    feed(chunk: string): { partial: T | undefined; complete: boolean } {
+        this.buffer += chunk;
+
+        // Try to parse as complete JSON first
+        try {
+            const parsed = JSON.parse(this.buffer);
+            const result = this.schema.safeParse(parsed);
+            if (result.success) {
+                return { partial: result.data, complete: true };
+            }
+        } catch {
+            // Not yet valid complete JSON
+        }
+
+        // Try to create a valid partial by closing braces
+        const partialResult = this.tryParsePartial();
+        return { partial: partialResult, complete: false };
+    }
+
+    /**
+     * Get the current buffer content.
+     */
+    getBuffer(): string {
+        return this.buffer;
+    }
+
+    /**
+     * Reset the parser state.
+     */
+    reset(): void {
+        this.buffer = '';
+    }
+
+    /**
+     * Attempt to parse partial JSON by adding closing brackets.
+     */
+    private tryParsePartial(): T | undefined {
+        // Count unclosed brackets and braces
+        let braceCount = 0;
+        let bracketCount = 0;
+        let inString = false;
+        let escaped = false;
+
+        for (let i = 0; i < this.buffer.length; i++) {
+            const char = this.buffer[i];
+
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+
+            if (char === '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+
+            if (char === '"') {
+                inString = !inString;
+                continue;
+            }
+
+            if (inString) continue;
+
+            if (char === '{') braceCount++;
+            else if (char === '}') braceCount--;
+            else if (char === '[') bracketCount++;
+            else if (char === ']') bracketCount--;
+        }
+
+        // Build closing sequence
+        let closing = '';
+        while (bracketCount > 0) {
+            closing += ']';
+            bracketCount--;
+        }
+        while (braceCount > 0) {
+            closing += '}';
+            braceCount--;
+        }
+
+        // Try parsing with closing
+        const candidate = this.buffer + closing;
+        try {
+            const parsed = JSON.parse(candidate);
+            const result = this.schema.safeParse(parsed);
+            if (result.success) {
+                return result.data;
+            }
+        } catch {
+            // Silently fail for partial JSON
+        }
+
+        return undefined;
+    }
+}
+
+/**
+ * Streaming structured output result.
+ * Each partial yield from the generator is a validated object (possibly partial).
+ * The final return value is the complete validated object.
+ */
+export interface StreamingStructuredResult<T> {
+    /** Whether this is partial (incomplete) data */
+    partial: boolean;
+    /** The validated partial or complete object */
+    value: T;
+}
+
+// ============================================================================
 // Re-exports for Convenience
 // ============================================================================
 

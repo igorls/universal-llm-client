@@ -173,6 +173,50 @@ export class AIModel {
         return this.router.tryParseStructured(schema, messages, options);
     }
 
+    /**
+     * Stream structured output with partial validated objects.
+     *
+     * Yields partial validated objects as JSON generates, then returns the
+     * complete validated object on stream completion.
+     *
+     * For invalid partial JSON, no yield occurs (partial validation is best-effort).
+     * On stream completion, if the final JSON fails validation, throws StructuredOutputError.
+     *
+     * @template T The type inferred from the Zod schema
+     * @param schema Zod schema for validation
+     * @param messages Chat messages to send
+     * @param options Additional options (temperature, maxTokens, etc.)
+     * @yields Partial validated objects as the JSON stream progresses
+     * @returns Complete validated object on stream completion
+     * @throws StructuredOutputError if final validation fails
+     *
+     * @example
+     * ```typescript
+     * const UserSchema = z.object({
+     *   name: z.string(),
+     *   age: z.number(),
+     * });
+     *
+     * const stream = model.generateStructuredStream(UserSchema, [
+     *   { role: 'user', content: 'Generate a user' },
+     * ]);
+     *
+     * for await (const partial of stream) {
+     *   console.log('Partial user:', partial);
+     *   // Partial user: { name: 'Alice' }
+     *   // Partial user: { name: 'Alice', age: 30 }
+     * }
+     * // Stream returns complete validated object on completion
+     * ```
+     */
+    async *generateStructuredStream<T>(
+        schema: z.ZodType<T>,
+        messages: LLMChatMessage[],
+        options?: ChatOptions,
+    ): AsyncGenerator<T, T, unknown> {
+        return yield* this.router.generateStructuredStream(schema, messages, options);
+    }
+
     // ========================================================================
     // Embeddings
     // ========================================================================

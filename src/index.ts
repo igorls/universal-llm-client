@@ -147,4 +147,7 @@ export {
     parseStructured,
     tryParseStructured,
     validateStructuredOutput,
+    // Streaming parser
+    StreamingJsonParser,
+    type StreamingStructuredResult,
 } from './structured-output.js';

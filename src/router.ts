@@ -26,6 +26,7 @@ import {
     zodToJsonSchema,
     parseStructured,
     StructuredOutputError,
+    StreamingJsonParser,
     type StructuredOutputResult,
 } from './structured-output.js';
 import { z } from 'zod';
@@ -501,6 +502,87 @@ export class Router {
             // Unexpected error - re-throw
             throw error;
         }
+    }
+
+    /**
+     * Stream structured output with partial validated objects.
+     *
+     * Yields partial validated objects as JSON generates, then returns the
+     * complete validated object on stream completion.
+     *
+     * For invalid partial JSON, no yield occurs (partial validation is best-effort).
+     * On stream completion, if the final JSON fails validation, throws StructuredOutputError.
+     *
+     * @template T The type inferred from the Zod schema
+     * @param schema Zod schema for validation
+     * @param messages Chat messages to send
+     * @param options Additional options (temperature, maxTokens, etc.)
+     * @yields Partial validated objects as the JSON stream progresses
+     * @returns Complete validated object on stream completion
+     * @throws StructuredOutputError if final validation fails
+     *
+     * @example
+     * ```typescript
+     * const stream = model.generateStructuredStream(UserSchema, messages);
+     *
+     * for await (const partial of stream) {
+     *   console.log('Partial:', partial); // Partial validated object
+     * }
+     *
+     * // Note: async generators don't have a simple way to get the return value
+     * // The last partial yielded will be the complete object when complete: true
+     * ```
+     */
+    async *generateStructuredStream<T>(
+        schema: z.ZodType<T>,
+        messages: LLMChatMessage[],
+        options?: ChatOptions,
+    ): AsyncGenerator<T, T, unknown> {
+        // Convert Zod schema to JSON Schema for providers
+        const jsonSchema = zodToJsonSchema(schema);
+
+        // Build ChatOptions with schema
+        const structuredOptions: ChatOptions = {
+            ...options,
+            jsonSchema,
+        };
+
+        // Stream with failover
+        const stream = this.executeStream(
+            client => client.chatStream(messages, structuredOptions),
+            'generateStructuredStream',
+        );
+
+        // Accumulate text and yield partial validated objects
+        const parser = new StreamingJsonParser<T>(schema);
+        let fullContent = '';
+        let lastYielded: T | undefined;
+
+        for await (const event of stream) {
+            // Only process text events
+            if (event.type !== 'text') continue;
+
+            fullContent += event.content;
+
+            // Try to parse partial JSON
+            const result = parser.feed(event.content);
+
+            // Yield if we got a valid partial and it's different from last
+            if (result.partial !== undefined) {
+                // Only yield if different from last (avoid duplicate yields)
+                if (lastYielded === undefined || JSON.stringify(result.partial) !== JSON.stringify(lastYielded)) {
+                    lastYielded = result.partial;
+                    yield result.partial;
+                }
+            }
+        }
+
+        // Parse and validate the complete content
+        // This will throw StructuredOutputError on failure
+        const complete = parseStructured(schema, fullContent);
+
+        // Return the complete validated object
+        return complete;
     }
 
     // ========================================================================
