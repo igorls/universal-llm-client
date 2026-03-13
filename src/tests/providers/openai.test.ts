@@ -681,6 +681,310 @@ describe('OpenAICompatibleClient Structured Output', () => {
     });
 
     // ========================================================================
+    // VAL-PROVIDER-OPENAI-003: Vision with Structured Output
+    // ========================================================================
+
+    describe('vision with structured output', () => {
+        test('includes image_url content parts with response_format in request', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"description": "A colorful image with flowers", "objects": ["flower", "vase", "table"]}',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const DescriptionSchema = z.object({
+                description: z.string(),
+                objects: z.array(z.string()),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'Describe this image' },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/jpeg;base64,IMGDATA' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: DescriptionSchema,
+            };
+
+            await client.chat(messages, options);
+
+            const body = getBody()!;
+            
+            // Should have response_format with structured output
+            expect(body['response_format']).toBeDefined();
+            const responseFormat = body['response_format'] as Record<string, unknown>;
+            expect(responseFormat['type']).toBe('json_schema');
+
+            // Should preserve image_url content parts
+            const sentMessages = body['messages'] as Array<Record<string, unknown>>;
+            expect(sentMessages).toHaveLength(1);
+            expect(sentMessages[0]!['role']).toBe('user');
+
+            const content = sentMessages[0]!['content'] as Array<Record<string, unknown>>;
+            expect(content).toHaveLength(2);
+            
+            // Text part
+            expect(content[0]!['type']).toBe('text');
+            expect(content[0]!['text']).toBe('Describe this image');
+
+            // Image part
+            expect(content[1]!['type']).toBe('image_url');
+            expect(content[1]!['image_url']).toEqual({ url: 'data:image/jpeg;base64,IMGDATA' });
+        });
+
+        test('handles multiple images with structured output', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"comparison": "The images show different scenes"}',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const ComparisonSchema = z.object({
+                comparison: z.string(),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'Compare these images' },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/png;base64,IMG1' } },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/png;base64,IMG2' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: ComparisonSchema,
+            };
+
+            await client.chat(messages, options);
+
+            const body = getBody()!;
+            
+            // Should have response_format with structured output
+            expect(body['response_format']).toBeDefined();
+
+            // Should preserve all image_url content parts
+            const sentMessages = body['messages'] as Array<Record<string, unknown>>;
+            const content = sentMessages[0]!['content'] as Array<Record<string, unknown>>;
+            
+            expect(content).toHaveLength(3);
+            expect(content[0]!['type']).toBe('text');
+            expect(content[1]!['type']).toBe('image_url');
+            expect(content[1]!['image_url']).toEqual({ url: 'data:image/png;base64,IMG1' });
+            expect(content[2]!['type']).toBe('image_url');
+            expect(content[2]!['image_url']).toEqual({ url: 'data:image/png;base64,IMG2' });
+        });
+
+        test('validates structured output response with vision', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"description": "A sunset over mountains", "colors": ["orange", "purple", "blue"]}',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const ImageAnalysisSchema = z.object({
+                description: z.string(),
+                colors: z.array(z.string()),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'Analyze this image' },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/jpeg;base64,SUNSET' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: ImageAnalysisSchema,
+            };
+
+            const response = await client.chat(messages, options);
+
+            // Should validate and return successfully
+            expect(response.message.content).toBe('{"description": "A sunset over mountains", "colors": ["orange", "purple", "blue"]}');
+        });
+
+        test('supports http image URLs with structured output', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"description": "An image from the web"}',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const DescriptionSchema = z.object({
+                description: z.string(),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'Describe this image' },
+                    { type: 'image_url' as const, image_url: { url: 'https://example.com/image.jpg' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: DescriptionSchema,
+            };
+
+            await client.chat(messages, options);
+
+            const body = getBody()!;
+            const sentMessages = body['messages'] as Array<Record<string, unknown>>;
+            const content = sentMessages[0]!['content'] as Array<Record<string, unknown>>;
+
+            // OpenAI accepts HTTP URLs directly (unlike Ollama which needs base64)
+            expect(content[1]!['type']).toBe('image_url');
+            expect(content[1]!['image_url']).toEqual({ url: 'https://example.com/image.jpg' });
+            
+            // And response_format should still be set
+            expect(body['response_format']).toBeDefined();
+        });
+
+        test('supports image_url with detail parameter and structured output', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"objects": ["car", "tree", "building"]}',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const DescriptionSchema = z.object({
+                objects: z.array(z.string()),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'List objects in this image' },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/jpeg;base64,IMG', detail: 'high' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: DescriptionSchema,
+            };
+
+            await client.chat(messages, options);
+
+            const body = getBody()!;
+            const sentMessages = body['messages'] as Array<Record<string, unknown>>;
+            const content = sentMessages[0]!['content'] as Array<Record<string, unknown>>;
+
+            // Should preserve detail parameter
+            expect(content[1]!['image_url']).toEqual({ url: 'data:image/jpeg;base64,IMG', detail: 'high' });
+            expect(body['response_format']).toBeDefined();
+        });
+
+        test('returns validated object on successful vision + structured output', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"count": 3, "items": ["cat", "dog", "bird"]}',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const VisionSchema = z.object({
+                count: z.number(),
+                items: z.array(z.string()),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'Count items' },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/png;base64,IMG' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: VisionSchema,
+            };
+
+            // Should not throw - response passes validation
+            const result = await client.chat(messages, options);
+            expect(result.message.content).toBe('{"count": 3, "items": ["cat", "dog", "bird"]}');
+        });
+
+        test('throws StructuredOutputError on invalid vision response', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"count": "not a number"}', // Invalid - count should be number
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const VisionSchema = z.object({
+                count: z.number(),
+            });
+
+            const messages = [{
+                role: 'user' as const,
+                content: [
+                    { type: 'text' as const, text: 'Count items' },
+                    { type: 'image_url' as const, image_url: { url: 'data:image/png;base64,IMG' } },
+                ] as const,
+            }];
+
+            const options: ChatOptions = {
+                schema: VisionSchema,
+            };
+
+            await expect(client.chat(messages, options)).rejects.toThrow('Validation failed');
+        });
+    });
+
+    // ========================================================================
     // Complex Schemas
     // ========================================================================
 
