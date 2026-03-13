@@ -118,3 +118,19 @@ export {
     type MCPServerConfig,
     type MCPTool,
 } from './mcp.js';
+
+// ============================================================================
+// Structured Output
+// ============================================================================
+
+export {
+    StructuredOutputError,
+    type StructuredOutputErrorOptions,
+    type StructuredOutputOptions,
+    type StructuredOutputResult,
+    type StructuredOutputSuccess,
+    type StructuredOutputFailure,
+    type JSONSchema,
+    isStructuredOutputSuccess,
+    isStructuredOutputFailure,
+} from './structured-output.js';
