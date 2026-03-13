@@ -911,35 +911,54 @@ describe('AIModel', () => {
         });
     });
 
-    describe('output and tools mutual exclusivity (VAL-API-005)', () => {
+    describe('output and tools combined usage (VAL-API-005)', () => {
         const TestSchema = z.object({
             result: z.string(),
         });
 
-        it('throws error when both output and tools are provided', async () => {
-            const model = new AIModel(createTestConfig());
+        it('allows both output and tools in the same request', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"result": "structured response"}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
 
-            expect(
-                model.chat([{ role: 'user', content: 'test' }], {
-                    output: { schema: TestSchema },
-                    tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
-                })
-            ).rejects.toThrow('output and tools cannot be used together');
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([{ role: 'user', content: 'test' }], {
+                output: { schema: TestSchema },
+                tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
+            });
+
+            // When the model returns content (not tool calls), structured output should be validated
+            expect(response.structured?.result).toBe('structured response');
         });
 
-        it('throws error with tools incompatible error message', async () => {
-            const model = new AIModel(createTestConfig());
+        it('skips validation when response contains tool calls', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: {
+                        role: 'assistant',
+                        content: '',
+                        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'test', arguments: '{}' } }],
+                    },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
 
-            try {
-                await model.chat([{ role: 'user', content: 'test' }], {
-                    output: { schema: TestSchema },
-                    tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
-                });
-                expect(true).toBe(false); // Should not reach here
-            } catch (error) {
-                expect(error).toBeInstanceOf(Error);
-                expect((error as Error).message).toContain('output and tools cannot be used together');
-            }
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([{ role: 'user', content: 'test' }], {
+                output: { schema: TestSchema },
+                tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
+            });
+
+            // Response should contain tool calls without throwing validation errors
+            expect(response.message.tool_calls).toBeDefined();
+            expect(response.message.tool_calls!.length).toBe(1);
         });
 
         it('works with output only (no tools)', async () => {

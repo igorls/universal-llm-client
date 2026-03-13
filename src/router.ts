@@ -255,13 +255,13 @@ export class Router {
     // ========================================================================
 
     /**
-     * Validate that output and tools are not used together.
-     * Throws an error if both are provided.
+     * @deprecated No longer needed — structured output and tools can now be used together.
      */
-    private validateOutputAndTools(options?: ChatOptions): void {
-        if (options?.output && options?.tools && options.tools.length > 0) {
-            throw new Error('output and tools cannot be used together. Structured output and tool calling are mutually exclusive.');
-        }
+    private validateOutputAndTools(_options?: ChatOptions): void {
+        // Structured output and tools are now allowed together.
+        // When both are provided, the provider sends both the schema constraint
+        // and tool definitions. If the model responds with tool calls,
+        // validation is skipped. If it responds with content, the schema is validated.
     }
 
     /**
@@ -322,8 +322,8 @@ export class Router {
         });
 
         // Build ChatOptions with schema for the provider
-        // Remove output and tools (schema and tools are mutually exclusive)
-        const { output: _, tools: __, ...restOptions } = options;
+        // Keep tools if provided — structured output and tools can work together
+        const { output: _, ...restOptions } = options;
         const structuredOptions: ChatOptions = {
             ...restOptions,
             // Use jsonSchema for the provider
@@ -339,6 +339,12 @@ export class Router {
             client => client.chat(messages, structuredOptions),
             'chatWithStructuredOutput',
         );
+
+        // If the response contains tool calls, skip validation and return as-is
+        // (the tool calling loop will handle the tool calls)
+        if (response.message.tool_calls && response.message.tool_calls.length > 0) {
+            return response as LLMChatResponse<T>;
+        }
 
         // Extract text content from response
         const content = typeof response.message.content === 'string'

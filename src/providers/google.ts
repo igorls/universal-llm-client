@@ -100,13 +100,7 @@ export class GoogleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<LLMChatResponse> {
-        // Validate: schema and tools cannot be used together
-        if ((options?.schema || options?.jsonSchema) && options?.tools) {
-            throw new Error(
-                'Structured output and tools cannot be used together. ' +
-                'Use either schema/jsonSchema for structured output OR tools for function calling.'
-            );
-        }
+        // Structured output and tools can now be used together.\n        // The provider sends both responseSchema and tools in the request.\n        // The Router handles skipping validation when the response contains tool calls.
 
         const url = this.getChatUrl();
         const body = this.buildRequestBody(messages, options);

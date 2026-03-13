@@ -276,7 +276,16 @@ describe('GoogleClient Structured Output', () => {
             expect(result.message.content).toBe('{"name": "Bob", "age": "not a number"}');
         });
 
-        test('throws error when both schema and tools are provided', async () => {
+        test('sends both schema and tools in the request', async () => {
+            const getBody = mockFetchAndCapture({
+                candidates: [{
+                    content: {
+                        parts: [{ text: '{"name": "Alice"}' }],
+                        role: 'model',
+                    },
+                    index: 0,
+                }],
+            });
             const client = createClient();
 
             const UserSchema = z.object({ name: z.string() });
@@ -288,9 +297,17 @@ describe('GoogleClient Structured Output', () => {
                 }],
             };
 
-            await expect(client.chat([
+            const result = await client.chat([
                 { role: 'user', content: 'Test' },
-            ], options)).rejects.toThrow('Structured output and tools cannot be used together');
+            ], options);
+
+            const body = getBody();
+            expect(body).not.toBeNull();
+            // Both generationConfig.responseSchema and tools should be present
+            const genConfig = (body as Record<string, unknown>).generationConfig as Record<string, unknown>;
+            expect(genConfig.responseSchema).toBeDefined();
+            expect((body as Record<string, unknown>).tools).toBeDefined();
+            expect(result.message.content).toBe('{"name": "Alice"}');
         });
     });
 

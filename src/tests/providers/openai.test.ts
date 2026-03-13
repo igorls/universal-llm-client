@@ -641,11 +641,12 @@ describe('OpenAICompatibleClient Structured Output', () => {
     });
 
     // ========================================================================
-    // Schema with Tools (should be mutually exclusive)
+    // Schema with Tools (allowed together)
     // ========================================================================
 
     describe('schema with tools', () => {
-        test('throws error when both schema and tools provided', async () => {
+        test('sends both response_format and tools in the request', async () => {
+            const getBody = mockFetchAndCapture();
             const client = createClient();
 
             const UserSchema = z.object({
@@ -667,20 +668,17 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 }],
             };
 
-            // The error message should contain "structured output" and "tools"
-            await expect(client.chat([
+            await client.chat([
                 { role: 'user', content: 'Test' },
-            ], options)).rejects.toThrow();
-            
-            // Also check for specific error message content
-            try {
-                await client.chat([{ role: 'user', content: 'Test' }], options);
-            } catch (error) {
-                expect(error).toBeInstanceOf(Error);
-                const message = (error as Error).message.toLowerCase();
-                expect(message).toContain('structured output');
-                expect(message).toContain('tools');
-            }
+            ], options);
+
+            const body = getBody();
+            expect(body).not.toBeNull();
+
+            // Both response_format and tools should be present
+            expect(body!.response_format).toBeDefined();
+            expect(body!.tools).toBeDefined();
+            expect((body!.tools as unknown[]).length).toBe(1);
         });
     });
 
