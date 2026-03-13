@@ -62,7 +62,7 @@ describe('StructuredOutputError', () => {
 
     it('has cause property for Zod validation errors', () => {
         const zodError = new z.ZodError([
-            { code: 'invalid_type', expected: 'string', received: 'number', path: ['name'] },
+            { code: 'invalid_type', expected: 'string', path: ['name'], message: 'Invalid input: expected string, received number' },
         ]);
         const error = new StructuredOutputError('Validation failed', {
             rawOutput: '{"name": 123}',
@@ -182,7 +182,7 @@ describe('StructuredOutputResult', () => {
     describe('Failure case', () => {
         it('has ok: false, error, and rawOutput properties', () => {
             const zodError = new z.ZodError([
-                { code: 'invalid_type', expected: 'string', received: 'number', path: ['name'] },
+                { code: 'invalid_type', expected: 'string', path: ['name'], message: 'Invalid input: expected string, received number' },
             ]);
             const result: StructuredOutputFailure<User> = {
                 ok: false,
@@ -697,9 +697,11 @@ describe('Primitive Schemas', () => {
     it('converts Zod union schema', () => {
         const schema = z.union([z.string(), z.number()]);
         const jsonSchema = zodToJsonSchema(schema);
-        
-        // For primitive unions, zod-to-json-schema uses type array
-        expect(jsonSchema.type).toEqual(['string', 'number']);
+        // Zod 4 native z.toJSONSchema uses anyOf for unions
+        expect(jsonSchema.anyOf).toEqual([
+            { type: 'string' },
+            { type: 'number' },
+        ]);
     });
 
     it('converts Zod record schema', () => {
@@ -715,8 +717,11 @@ describe('Primitive Schemas', () => {
         const jsonSchema = zodToJsonSchema(schema);
         
         expect(jsonSchema.type).toBe('array');
-        expect(jsonSchema.minItems).toBe(2);
-        expect(jsonSchema.maxItems).toBe(2);
+        // Zod 4 native z.toJSONSchema uses items array for tuples
+        expect(jsonSchema.items).toEqual([
+            { type: 'string' },
+            { type: 'number' },
+        ]);
     });
 });
 
@@ -1024,7 +1029,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
                 if (error instanceof StructuredOutputError) {
                     expect(error.cause).toBeInstanceOf(z.ZodError);
                     const zodError = error.cause as z.ZodError;
-                    expect(zodError.errors.length).toBeGreaterThan(0);
+                    expect(zodError.issues.length).toBeGreaterThan(0);
                 }
             }
         });

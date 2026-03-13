@@ -6,12 +6,10 @@
  * streaming, embeddings, and system prompt handling.
  */
 
-import { z } from 'zod';
 import { BaseLLMClient } from '../client.js';
 import { httpRequest, httpStream } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
-    StructuredOutputError,
     zodToJsonSchema,
     normalizeJsonSchema,
     stripUnsupportedFeatures,
@@ -129,19 +127,6 @@ export class GoogleClient extends BaseLLMClient {
         });
 
         const result = this.parseGoogleResponse(response.data);
-
-        // Validate response against schema if provided
-        const schemaOptions = this.extractSchemaOptions(options);
-        if (schemaOptions?.schema) {
-            // Extract text content from response
-            const textContent = typeof result.message.content === 'string'
-                ? result.message.content
-                : result.message.content
-                    ?.filter((p): p is LLMTextContent => p.type === 'text')
-                    .map(p => p.text)
-                    .join('') ?? '';
-            this.validateStructuredResponse(textContent, schemaOptions.schema);
-        }
 
         this.auditor.record({
             timestamp: Date.now(),
@@ -572,70 +557,4 @@ export class GoogleClient extends BaseLLMClient {
         };
     }
 
-    // ========================================================================
-    // Structured Output Helpers
-    // ========================================================================
-
-    /**
-     * Extract schema options from ChatOptions.
-     * Returns null if no schema is provided.
-     */
-    private extractSchemaOptions(options?: ChatOptions): (ChatOptions & { schema: z.ZodType<unknown> }) | null {
-        if (!options) return null;
-
-        if (options.schema) {
-            return {
-                ...options,
-                schema: options.schema,
-            };
-        }
-
-        if (options.jsonSchema) {
-            // For raw JSON Schema, create a passthrough schema for validation
-            return {
-                ...options,
-                jsonSchema: options.jsonSchema,
-                schema: z.unknown(),
-            };
-        }
-
-        return null;
-    }
-
-    /**
-     * Validate structured response against Zod schema.
-     * Throws StructuredOutputError on failure.
-     */
-    private validateStructuredResponse(content: string, schema: z.ZodType<unknown>): void {
-        // Handle empty or null content
-        if (!content) {
-            throw new StructuredOutputError(
-                'Empty response from LLM',
-                { rawOutput: content }
-            );
-        }
-
-        // Parse JSON
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(content);
-        } catch (error) {
-            const syntaxError = error instanceof SyntaxError
-                ? error
-                : new SyntaxError(String(error));
-            throw new StructuredOutputError(
-                `Failed to parse JSON: ${syntaxError.message}`,
-                { rawOutput: content, cause: syntaxError }
-            );
-        }
-
-        // Validate against schema
-        const result = schema.safeParse(parsed);
-        if (!result.success) {
-            throw new StructuredOutputError(
-                `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
-                { rawOutput: content, cause: result.error }
-            );
-        }
-    }
 }

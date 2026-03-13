@@ -344,7 +344,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(response.message.content).toBe('{"name": "Bob", "age": 25}');
         });
 
-        test('throws StructuredOutputError on invalid JSON response', async () => {
+        test('provider does NOT validate response (validation is centralized in Router)', async () => {
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
                 choices: [{
@@ -367,12 +367,14 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — validation is done at Router level
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow('Failed to parse');
+            ], options);
+            expect(response.message.content).toBe('not valid json at all');
         });
 
-        test('throws StructuredOutputError on schema validation failure', async () => {
+        test('provider returns raw response even on schema mismatch (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
                 choices: [{
@@ -396,12 +398,14 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — validation is done at Router level
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow('Validation failed');
+            ], options);
+            expect(response.message.content).toBe('{"name": "Bob", "age": "not a number"}');
         });
 
-        test('includes raw output in validation error', async () => {
+        test('includes raw output in response when schema provided', async () => {
             const rawOutput = '{"name": 123}';
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
@@ -425,17 +429,11 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: UserSchema,
             };
 
-            try {
-                await client.chat([
-                    { role: 'user', content: 'Generate' },
-                ], options);
-                expect(true).toBe(false); // Should not reach here
-            } catch (error) {
-                expect(error).toBeInstanceOf(Error);
-                if (error instanceof Error && 'rawOutput' in error) {
-                    expect((error as { rawOutput: string }).rawOutput).toBe(rawOutput);
-                }
-            }
+            // Provider returns raw response — Router handles validation
+            const response = await client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options);
+            expect(response.message.content).toBe(rawOutput);
         });
     });
 
@@ -520,7 +518,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
     // ========================================================================
 
     describe('error handling', () => {
-        test('handles null content in response gracefully', async () => {
+        test('provider returns raw response for null content (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
                 choices: [{
@@ -543,12 +541,14 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — returns raw response
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow();
+            ], options);
+            expect(response.message.content).toBe('');
         });
 
-        test('handles empty string content', async () => {
+        test('provider returns raw response for empty content (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
                 choices: [{
@@ -571,12 +571,14 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — returns raw response
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow();
+            ], options);
+            expect(response.message.content).toBe('');
         });
 
-        test('validates response against schema when schema provided', async () => {
+        test('provider returns raw response for schema mismatch (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
                 choices: [{
@@ -600,9 +602,11 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — returns raw response
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow();
+            ], options);
+            expect(response.message.content).toBe('{"name": "test"}');
         });
     });
 
@@ -980,7 +984,9 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 schema: VisionSchema,
             };
 
-            await expect(client.chat(messages, options)).rejects.toThrow('Validation failed');
+            // Provider should NOT throw — validation is done at Router level
+            const result = await client.chat(messages, options);
+            expect(result.message.content).toBe('{"count": "not a number"}');
         });
     });
 

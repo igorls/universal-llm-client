@@ -397,7 +397,6 @@ export class Router {
                 timestamp: Date.now(),
                 type: 'structured_response',
                 provider: response.provider ?? 'router',
-                model: response.message.role,
                 duration: Date.now() - start,
                 schemaName,
                 usage: response.usage,
@@ -435,6 +434,15 @@ export class Router {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+        // Structured output via output parameter is not supported on streaming
+        // Use generateStructuredStream() instead
+        if (options?.output) {
+            throw new Error(
+                'The "output" parameter is not supported with chatStream(). '
+                + 'Use generateStructuredStream() for streaming structured output.',
+            );
+        }
+
         return yield* this.executeStream(
             client => client.chatStream(messages, options),
             'chatStream',
@@ -538,7 +546,6 @@ export class Router {
                 timestamp: Date.now(),
                 type: 'structured_response',
                 provider: response.provider ?? 'router',
-                model: response.message.role,
                 duration: Date.now() - start,
                 schemaName,
                 usage: response.usage,

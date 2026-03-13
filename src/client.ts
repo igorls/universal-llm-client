@@ -6,6 +6,7 @@
  * multi-turn tool execution loop.
  */
 
+import { z } from 'zod';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -19,6 +20,10 @@ import type {
     ChatOptions,
     ModelMetadata,
 } from './interfaces.js';
+import {
+    StructuredOutputError,
+    type StructuredOutputOptions,
+} from './structured-output.js';
 import type { DecodedEvent } from './stream-decoder.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
@@ -320,5 +325,70 @@ export abstract class BaseLLMClient {
      */
     protected generateToolCallId(): string {
         return `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    }
+
+    // ========================================================================
+    // Structured Output Helpers (shared across all providers)
+    // ========================================================================
+
+    /**
+     * Extract schema options from ChatOptions.
+     * Returns null if no schema is provided.
+     */
+    protected extractSchemaOptions(options?: ChatOptions): (StructuredOutputOptions<unknown> & { schema: z.ZodType<unknown> }) | null {
+        if (!options) return null;
+
+        if (options.schema) {
+            return {
+                schema: options.schema,
+                name: options.schemaName,
+                description: options.schemaDescription,
+            };
+        }
+
+        if (options.jsonSchema) {
+            return {
+                jsonSchema: options.jsonSchema,
+                name: options.schemaName,
+                description: options.schemaDescription,
+                schema: z.unknown(),
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Validate structured response against Zod schema.
+     * Throws StructuredOutputError on failure.
+     */
+    protected validateStructuredResponse(content: string, schema: z.ZodType<unknown>): void {
+        if (!content) {
+            throw new StructuredOutputError(
+                'Empty response from LLM',
+                { rawOutput: content },
+            );
+        }
+
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(content);
+        } catch (error) {
+            const syntaxError = error instanceof SyntaxError
+                ? error
+                : new SyntaxError(String(error));
+            throw new StructuredOutputError(
+                `Failed to parse JSON: ${syntaxError.message}`,
+                { rawOutput: content, cause: syntaxError },
+            );
+        }
+
+        const result = schema.safeParse(parsed);
+        if (!result.success) {
+            throw new StructuredOutputError(
+                `Validation failed: ${result.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
+                { rawOutput: content, cause: result.error },
+            );
+        }
     }
 }

@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-03-13
+
+### ⚠ BREAKING CHANGES
+
+- **Zod 4 required** — `zod@^4.0.0` is now a peer dependency (upgraded from Zod 3). Consumers must install `zod@^4.0.0`.
+- **Zero-dependency core** — Removed `zod-to-json-schema` from dependencies. Schema conversion now uses Zod 4's native `z.toJSONSchema()`. The library has no runtime dependencies (only peer deps).
+
+### Added
+
+- **Structured Output** — First-class structured output with Zod schema validation
+  - `generateStructured(schema, messages, options)` — returns typed, validated output
+  - `tryParseStructured(schema, messages, options)` — non-throwing variant returning `Result<T>`
+  - `generateStructuredStream(schema, messages, options)` — streaming with partial validated objects
+  - `chat(messages, { output: { schema } })` — structured output via `output` parameter on `chat()`
+  - Custom `StructuredOutputError` with `rawOutput` and `cause` for debuggability
+- **Provider Structured Output Support** — Native format negotiation per provider
+  - OpenAI: `response_format: { type: 'json_schema' }` with configurable `strict` mode
+  - Google/Vertex AI: `responseMimeType` + `responseSchema` with automatic unsupported feature stripping
+  - Ollama: `format` parameter with JSON Schema objects
+- **Streaming JSON Parser** — `StreamingJsonParser` for progressive partial object validation
+- **Audit Events** — `structured_request`, `structured_response`, `structured_validation_error` events
+- **Schema Utilities** — `zodToJsonSchema()`, `normalizeJsonSchema()`, `stripUnsupportedFeatures()`, `getJsonSchema()`
+- **`./structured-output` sub-path export** — Direct import of structured output utilities
+
+### Fixed
+
+- Validation logic deduplicated into `BaseLLMClient` (was copy-pasted across 3 providers)
+- Removed double validation (Router + Provider both validated the same response)
+- Audit events no longer log `"assistant"` as the model name
+- `chatStream()` now throws a clear error if `output` parameter is provided (use `generateStructuredStream()`)
+- `zodToJsonSchema()` preserves `definitions`/`$defs` when `$ref` references exist in the schema tree
+- OpenAI `strict` mode is now configurable via `output.strict` (defaults to `true`)
+
+### Deprecated
+
+- `ChatOptions.schema`, `.jsonSchema`, `.schemaName`, `.schemaDescription` — use `output` parameter or `generateStructured()` instead
+
+---
+
 ## [3.1.0] - 2026-03-12
 
 ### Added

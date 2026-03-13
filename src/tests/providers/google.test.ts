@@ -225,7 +225,7 @@ describe('GoogleClient Structured Output', () => {
             expect(result.message.content).toBe('{"name": "Bob", "age": 25}');
         });
 
-        test('throws StructuredOutputError on invalid JSON response', async () => {
+        test('provider returns raw response on invalid JSON (Router validates)', async () => {
             const invalidJsonResponse = {
                 candidates: [{
                     content: {
@@ -243,12 +243,14 @@ describe('GoogleClient Structured Output', () => {
                 name: z.string(),
             });
 
-            await expect(client.chat([
+            // Provider should NOT throw — validation is done at Router level
+            const result = await client.chat([
                 { role: 'user', content: 'Generate user' },
-            ], { schema: UserSchema })).rejects.toThrow('Failed to parse JSON');
+            ], { schema: UserSchema });
+            expect(result.message.content).toBe('not valid json');
         });
 
-        test('throws StructuredOutputError on schema validation failure', async () => {
+        test('provider returns raw response on schema mismatch (Router validates)', async () => {
             const invalidSchemaResponse = {
                 candidates: [{
                     content: {
@@ -267,9 +269,11 @@ describe('GoogleClient Structured Output', () => {
                 age: z.number(),
             });
 
-            await expect(client.chat([
+            // Provider should NOT throw — validation is done at Router level
+            const result = await client.chat([
                 { role: 'user', content: 'Generate user' },
-            ], { schema: UserSchema })).rejects.toThrow('Validation failed');
+            ], { schema: UserSchema });
+            expect(result.message.content).toBe('{"name": "Bob", "age": "not a number"}');
         });
 
         test('throws error when both schema and tools are provided', async () => {

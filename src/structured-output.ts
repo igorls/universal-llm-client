@@ -8,7 +8,6 @@
  */
 
 import { z } from 'zod';
-import { zodToJsonSchema as zodToJsonSchemaLib } from 'zod-to-json-schema';
 
 // ============================================================================
 // JSON Schema Types
@@ -108,7 +107,7 @@ export interface StructuredOutputErrorOptions {
  *   if (error instanceof StructuredOutputError) {
  *     console.log('Raw LLM output:', error.rawOutput);
  *     if (error.cause instanceof z.ZodError) {
- *       console.log('Validation errors:', error.cause.errors);
+ *       console.log('Validation issues:', error.cause.issues);
  *     }
  *   }
  * }
@@ -318,7 +317,7 @@ export function isStructuredOutputFailure<T>(
 /**
  * Convert a Zod schema to JSON Schema.
  *
- * Uses zod-to-json-schema library for conversion.
+ * Uses Zod 4's native `z.toJSONSchema()` for conversion.
  * Handles all Zod types including objects, arrays, primitives, enums, and nested structures.
  *
  * @param schema The Zod schema to convert
@@ -336,18 +335,14 @@ export function isStructuredOutputFailure<T>(
  * ```
  */
 export function zodToJsonSchema<T>(schema: z.ZodType<T>): JSONSchema {
-    const result = zodToJsonSchemaLib(schema, {
-        // Don't add $schema to output
-        $refStrategy: 'none',
-        // Don't include definitions for simple schemas
-        target: 'jsonSchema7',
+    const result = z.toJSONSchema(schema, {
+        target: 'draft-07',
+        unrepresentable: 'any',
     });
 
-    // Remove $schema and other metadata we don't need
+    // Cast to our JSONSchema type and clean up
     const cleanResult = result as JSONSchema;
     delete cleanResult.$schema;
-    delete cleanResult.definitions;
-    delete cleanResult.$defs;
 
     return cleanResult;
 }
@@ -560,7 +555,7 @@ export function parseStructured<T>(
     if (!result.success) {
         // Schema validation failed - throw with ZodError as cause
         throw new StructuredOutputError(
-            `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
+            `Validation failed: ${result.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
             { rawOutput, cause: result.error },
         );
     }
@@ -645,7 +640,7 @@ export function validateStructuredOutput<T>(
     if (!result.success) {
         const rawData = rawOutput ?? JSON.stringify(data);
         throw new StructuredOutputError(
-            `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
+            `Validation failed: ${result.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
             { rawOutput: rawData, cause: result.error },
         );
     }

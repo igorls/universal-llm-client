@@ -270,6 +270,13 @@ export interface OutputOptions<T = unknown> {
      * Used by providers like OpenAI for better LLM guidance.
      */
     description?: string;
+
+    /**
+     * Whether to use strict mode for schema validation (OpenAI only).
+     * When true, OpenAI enforces the schema exactly (no additional properties,
+     * limited schema subset). Defaults to `true`.
+     */
+    strict?: boolean;
 }
 
 export interface ChatOptions {
@@ -316,29 +323,37 @@ export interface ChatOptions {
      * Zod schema for structured output.
      * When provided, the response is validated against this schema.
      * Structured output and tools cannot be used together.
+     * 
+     * @deprecated Use `output.schema` or `generateStructured()` instead.
      */
     schema?: import('zod').ZodType<unknown>;
     
     /**
      * Raw JSON Schema for structured output.
      * Alternative to `schema` when you have a pre-defined schema.
+     * 
+     * @deprecated Use `output.jsonSchema` or `generateStructured()` instead.
      */
     jsonSchema?: import('./structured-output.js').JSONSchema;
     
     /**
      * Name for the schema (optional, used for LLM guidance).
      * Required by some providers (e.g., OpenAI strict mode).
+     * 
+     * @deprecated Use `output.name` or `generateStructured()` instead.
      */
     schemaName?: string;
     
     /**
      * Description for the schema (optional, used for LLM guidance).
+     * 
+     * @deprecated Use `output.description` or `generateStructured()` instead.
      */
     schemaDescription?: string;
     
     /**
      * Response format for structured output (legacy json_object mode).
-     * For new code, prefer `schema` or `jsonSchema` options.
+     * For new code, prefer `output` or `generateStructured()`.
      * 
      * Use { type: 'json_object' } for legacy JSON mode without schema validation.
      */

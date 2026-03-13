@@ -622,7 +622,7 @@ describe('OllamaClient', () => {
             expect(response.message.content).toBe('{"name": "Bob", "age": 25}');
         });
 
-        test('throws StructuredOutputError on invalid JSON response', async () => {
+        test('provider returns raw response on invalid JSON (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OLLAMA_RESPONSE,
                 message: {
@@ -641,12 +641,14 @@ describe('OllamaClient', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — validation is done at Router level
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow('Failed to parse');
+            ], options);
+            expect(response.message.content).toBe('not valid json at all');
         });
 
-        test('throws StructuredOutputError on schema validation failure', async () => {
+        test('provider returns raw response on schema mismatch (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OLLAMA_RESPONSE,
                 message: {
@@ -666,12 +668,14 @@ describe('OllamaClient', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — validation is done at Router level
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow('Validation failed');
+            ], options);
+            expect(response.message.content).toBe('{"name": "Bob", "age": "not a number"}');
         });
 
-        test('includes raw output in validation error', async () => {
+        test('includes raw output in response when schema provided', async () => {
             const rawOutput = '{"name": 123}';
             mockFetchAndCapture({
                 ...OLLAMA_RESPONSE,
@@ -691,20 +695,14 @@ describe('OllamaClient', () => {
                 schema: UserSchema,
             };
 
-            try {
-                await client.chat([
-                    { role: 'user', content: 'Generate' },
-                ], options);
-                expect(true).toBe(false); // Should not reach here
-            } catch (error) {
-                expect(error).toBeInstanceOf(Error);
-                if (error instanceof Error && 'rawOutput' in error) {
-                    expect((error as { rawOutput: string }).rawOutput).toBe(rawOutput);
-                }
-            }
+            // Provider returns raw response — Router handles validation
+            const response = await client.chat([
+                { role: 'user', content: 'Generate' },
+            ], options);
+            expect(response.message.content).toBe(rawOutput);
         });
 
-        test('handles null content in response gracefully', async () => {
+        test('provider returns raw response for null content (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OLLAMA_RESPONSE,
                 message: {
@@ -723,12 +721,14 @@ describe('OllamaClient', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — returns raw response
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow();
+            ], options);
+            expect(response.message.content).toBe('');
         });
 
-        test('handles empty string content', async () => {
+        test('provider returns raw response for empty content (Router validates)', async () => {
             mockFetchAndCapture({
                 ...OLLAMA_RESPONSE,
                 message: {
@@ -747,9 +747,11 @@ describe('OllamaClient', () => {
                 schema: UserSchema,
             };
 
-            await expect(client.chat([
+            // Provider should NOT throw — returns raw response
+            const response = await client.chat([
                 { role: 'user', content: 'Generate' },
-            ], options)).rejects.toThrow();
+            ], options);
+            expect(response.message.content).toBe('');
         });
     });
 

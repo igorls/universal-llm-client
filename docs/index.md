@@ -4,8 +4,8 @@ layout: home
 
 hero:
   name: "Universal LLM Client"
-  text: "One Model, Multiple Backends"
-  tagline: "Transparent provider failover, streaming tool execution, pluggable reasoning strategies, and native observability."
+  text: "One API. Every Provider."
+  tagline: Transparent failover, structured output, streaming, tool execution, and observability — across OpenAI, Google Gemini, Ollama, and any OpenAI-compatible service.
   actions:
     - theme: brand
       text: Get Started
@@ -13,21 +13,20 @@ hero:
     - theme: alt
       text: API Reference
       link: /api/reference
-    - theme: alt
-      text: View on GitHub
-      link: https://github.com/igorls/universal-llm-client
 
 features:
-  - title: 🔄 Transparent Failover
-    details: Priority-ordered provider chain with retries, health tracking, and cooldowns.
-  - title: 🛠️ Tool Calling
-    details: Register tools once, works across all providers. Autonomous multi-turn execution loop.
+  - title: 🔄 Provider Failover
+    details: Automatic failover across providers with priority ordering, health tracking, cooldowns, and configurable retries.
+  - title: 📐 Structured Output
+    details: Type-safe responses with Zod schemas. Streaming partial objects, per-provider format negotiation, and zero-dependency JSON Schema conversion via Zod 4.
   - title: 🌊 Streaming
-    details: First-class async generator streaming with pluggable decoder strategies.
-  - title: 🧠 Reasoning
-    details: Native `<think>` tag parsing, interleaved reasoning, and model thinking support.
-  - title: 🔍 Observability
-    details: Built-in auditor interface for logging, cost tracking, and behavioral analysis.
-  - title: 🤖 MCP Native
-    details: Bridge MCP servers to LLM tools with zero glue code.
+    details: First-class async generator streaming with pluggable decoder strategies for standard chat, interleaved reasoning, and custom formats.
+  - title: 🔧 Tool Calling
+    details: Autonomous multi-turn tool execution with a fluent ToolBuilder API, automatic argument parsing, and MCP server integration.
+  - title: 📊 Observability
+    details: Built-in Auditor interface for logging, cost tracking, and behavioral analysis with structured audit events.
+  - title: 🖼️ Multimodal
+    details: Image input support across providers — base64 data URLs, HTTP URLs, and raw base64 with automatic format conversion.
+  - title: 🧠 Thinking Models
+    details: Pluggable stream decoders for reasoning tokens, interleaved thinking, and extended output modes.
 ---

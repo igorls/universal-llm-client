@@ -1,183 +1,230 @@
 # Features
 
+## Structured Output
+
+Type-safe responses with automatic schema validation. See the [Structured Output guide](/guide/structured-output) for a comprehensive tutorial.
+
+```typescript
+import { z } from 'zod';
+
+const UserSchema = z.object({
+  name: z.string(),
+  age: z.number(),
+  interests: z.array(z.string()),
+});
+
+// Throws StructuredOutputError on validation failure
+const user = await model.generateStructured(UserSchema, [
+  { role: 'user', content: 'Generate a user profile' },
+]);
+
+// Non-throwing variant
+const result = await model.tryParseStructured(UserSchema, messages);
+if (result.ok) {
+  console.log(result.value);
+}
+
+// Streaming with partial objects
+for await (const partial of model.generateStructuredStream(UserSchema, messages)) {
+  console.log(partial); // progressive object build-up
+}
+```
+
 ## Provider Failover
+
+Configure multiple backends with priority-based failover. See the [Providers guide](/guide/providers) for details.
 
 ```typescript
 const model = new AIModel({
-    model: 'gemini-2.5-flash',
-    retries: 2,        // retries per provider before failover
-    timeout: 30000,    // request timeout in ms
-    providers: [
-        { type: 'google', apiKey: process.env.GOOGLE_KEY, priority: 0 },
-        { type: 'openai', url: 'https://openrouter.ai/api', apiKey: process.env.OPENROUTER_KEY, priority: 1 },
-        { type: 'ollama', url: 'http://localhost:11434', priority: 2 },
-    ],
+  model: 'gpt-4o-mini',
+  providers: [
+    { type: 'openai', apiKey: process.env.OPENAI_API_KEY, priority: 0 },
+    { type: 'google', apiKey: process.env.GOOGLE_API_KEY, priority: 1 },
+    { type: 'ollama', url: 'http://localhost:11434', priority: 2 },
+  ],
+  retries: 2,
 });
-
-// If Google returns 500, retries twice, then seamlessly tries OpenRouter.
-// If OpenRouter also fails, falls back to local Ollama.
-// Your code sees a single response.
-const response = await model.chat([{ role: 'user', content: 'Hello' }]);
-
-// Check provider health at any time
-console.log(model.getProviderStatus());
-// [{ id: 'google-0', healthy: true }, { id: 'openai-1', healthy: true }, ...]
 ```
+
+Features:
+- **Priority ordering** — lower number = higher priority
+- **Automatic retries** — configurable retries per provider
+- **Health tracking** — unhealthy providers are temporarily skipped
+- **Cooldown timers** — failed providers re-enter the pool after a cooldown period
 
 ## Streaming
 
+First-class async generator streaming with pluggable decoder strategies:
+
 ```typescript
-for await (const event of model.chatStream([
-    { role: 'user', content: 'Write a haiku about code.' },
-])) {
-    if (event.type === 'text') {
-        process.stdout.write(event.content);
-    } else if (event.type === 'thinking') {
-        // Model reasoning (when supported)
-        console.log('[thinking]', event.content);
-    }
+const stream = model.chatStream([
+  { role: 'user', content: 'Write a poem about TypeScript' },
+]);
+
+for await (const event of stream) {
+  if (event.type === 'text') {
+    process.stdout.write(event.content);
+  }
 }
+```
+
+### Stream Events
+
+| Event Type | Content |
+|-----------|---------|
+| `text` | Text token |
+| `reasoning` | Reasoning/thinking token |
+| `tool_call` | Tool call from the model |
+| `tool_result` | Result of tool execution |
+
+### Stream Decoders
+
+Choose how to decode the stream:
+
+```typescript
+// Standard chat (default)
+const stream = model.chatStream(messages, { decoder: 'standard' });
+
+// Interleaved reasoning (for thinking models)
+const stream = model.chatStream(messages, { decoder: 'interleaved-reasoning' });
 ```
 
 ## Tool Calling
 
+Register tools that the LLM can call autonomously:
+
 ```typescript
 model.registerTool(
-    'get_weather',
-    'Get current weather for a location',
-    {
-        type: 'object',
-        properties: {
-            city: { type: 'string', description: 'City name' },
-        },
-        required: ['city'],
+  'get_weather',
+  'Get the current weather for a city',
+  {
+    type: 'object',
+    properties: {
+      city: { type: 'string', description: 'City name' },
     },
-    async (args) => {
-        const { city } = args as { city: string };
-        return { temperature: 22, condition: 'sunny', city };
-    },
+    required: ['city'],
+  },
+  async ({ city }) => {
+    const data = await fetchWeather(city);
+    return JSON.stringify(data);
+  },
 );
 
-// Autonomous tool execution — the model calls tools and loops until done
-const response = await model.chatWithTools([
-    { role: 'user', content: "What's the weather in Tokyo?" },
-]);
-
-console.log(response.message.content);
-// "The weather in Tokyo is 22°C and sunny."
-console.log(response.toolTrace);
-// [{ name: 'get_weather', args: { city: 'Tokyo' }, result: {...}, duration: 5 }]
+// Multi-turn autonomous execution
+const response = await model.chatWithTools(messages, {
+  maxIterations: 5, // max tool-call rounds
+});
 ```
 
-## Multimodal (Vision)
+### ToolBuilder API
+
+Fluent API for building tool definitions:
 
 ```typescript
-import { AIModel, multimodalMessage } from 'universal-llm-client';
+import { ToolBuilder } from 'universal-llm-client';
 
-const model = new AIModel({
-    model: 'gemini-2.5-flash',
-    providers: [{ type: 'google', apiKey: process.env.GOOGLE_KEY }],
-});
+const tool = new ToolBuilder('search_docs')
+  .description('Search documentation by query')
+  .addParameter('query', 'string', 'Search query', true)
+  .addParameter('limit', 'number', 'Max results', false)
+  .handler(async ({ query, limit }) => {
+    return JSON.stringify(await searchDocs(query, limit ?? 10));
+  })
+  .build();
 
-const response = await model.chat([
-    multimodalMessage('What do you see in this image?', [
-        'https://example.com/photo.jpg',
-    ]),
-]);
-```
-
-## Embeddings
-
-```typescript
-const embedModel = new AIModel({
-    model: 'nomic-embed-text-v2-moe:latest',
-    providers: [{ type: 'ollama' }],
-});
-
-const vector = await embedModel.embed('Hello world');
-// [0.006, 0.026, -0.009, ...]
-
-const vectors = await embedModel.embedArray(['Hello', 'World']);
-// [[0.006, ...], [0.012, ...]]
-```
-
-## Observability
-
-```typescript
-import { AIModel, ConsoleAuditor, BufferedAuditor } from 'universal-llm-client';
-
-// Simple console logging
-const model = new AIModel({
-    model: 'qwen3:4b',
-    providers: [{ type: 'ollama' }],
-    auditor: new ConsoleAuditor('[LLM]'),
-});
-// [LLM] REQUEST [ollama] (qwen3:4b) →
-// [LLM] RESPONSE [ollama] (qwen3:4b) 1200ms 68 tokens
-
-// Buffered for custom sinks (OpenTelemetry, DB, etc.)
-const auditor = new BufferedAuditor({
-    maxBufferSize: 100,
-    onFlush: async (events) => {
-        await sendToOpenTelemetry(events);
-    },
-});
+model.registerTool(tool.name, tool.description, tool.parameters, tool.handler);
 ```
 
 ## MCP Integration
 
+Bridge Model Context Protocol servers into LLM tools:
+
 ```typescript
-import { AIModel, MCPToolBridge } from 'universal-llm-client';
+import { MCPToolBridge } from 'universal-llm-client';
 
-const model = new AIModel({
-    model: 'qwen3:4b',
-    providers: [{ type: 'ollama' }],
+const bridge = new MCPToolBridge({
+  servers: [
+    { name: 'filesystem', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] },
+  ],
 });
 
-const mcp = new MCPToolBridge({
-    servers: {
-        filesystem: {
-            command: 'npx',
-            args: ['-y', '@modelcontextprotocol/server-filesystem', './'],
-        },
-        weather: {
-            url: 'https://mcp.example.com/weather',
-        },
-    },
-});
+await bridge.connect();
 
-await mcp.connect();
-await mcp.registerTools(model);
+// Register all MCP tools with the model
+const tools = await bridge.getTools();
+for (const tool of tools) {
+  model.registerTool(tool.name, tool.description, tool.parameters, tool.handler);
+}
+```
 
-// MCP tools are now callable via chatWithTools
-const response = await model.chatWithTools([
-    { role: 'user', content: 'List files in the current directory' },
+## Multimodal
+
+Send images alongside text:
+
+```typescript
+import { multimodalMessage, imageContent, textContent } from 'universal-llm-client';
+
+const response = await model.chat([
+  multimodalMessage('user', [
+    textContent('What do you see in this image?'),
+    imageContent('data:image/png;base64,iVBORw0KGgo...'),
+  ]),
 ]);
-
-await mcp.disconnect();
 ```
 
-## Stream Decoders
+Supported image formats:
+- Base64 data URLs (`data:image/png;base64,...`)
+- HTTP URLs (`https://example.com/image.png`)
+- Raw base64 strings
+
+## Embeddings
+
+Generate vector embeddings:
 
 ```typescript
-import { AIModel, createDecoder } from 'universal-llm-client';
+// Single text
+const embedding = await model.embed('Hello, world!');
+// number[]
 
-// Passthrough — raw text, no parsing
-// Standard Chat — text + native reasoning + tool calls
-// Interleaved Reasoning — parses <think> and <progress> tags from text streams
+// Multiple texts (batched)
+const embeddings = await model.embedArray([
+  'First document',
+  'Second document',
+]);
+// number[][]
+```
 
-const decoder = createDecoder('interleaved-reasoning', (event) => {
-    switch (event.type) {
-        case 'text': console.log(event.content); break;
-        case 'thinking': console.log('[think]', event.content); break;
-        case 'progress': console.log('[progress]', event.content); break;
-        case 'tool_call': console.log('[tool]', event.calls); break;
-    }
+## Observability
+
+Built-in auditing for logging, cost tracking, and analytics:
+
+```typescript
+import { ConsoleAuditor, BufferedAuditor } from 'universal-llm-client';
+
+// Log all events to console
+const model = new AIModel({
+  ...config,
+  auditor: new ConsoleAuditor(),
 });
 
-decoder.push('<think>Let me analyze this</think>The answer is 42');
-decoder.flush();
+// Buffer events for batch processing
+const auditor = new BufferedAuditor();
+const model = new AIModel({ ...config, auditor });
 
-console.log(decoder.getCleanContent());  // "The answer is 42"
-console.log(decoder.getReasoning());      // "Let me analyze this"
+// Flush events periodically
+const events = await auditor.flush();
 ```
+
+### Audit Event Types
+
+| Event | When |
+|-------|------|
+| `request` | Before sending to provider |
+| `response` | After receiving response |
+| `error` | On provider error |
+| `failover` | When switching to next provider |
+| `structured_request` | Before structured output generation |
+| `structured_response` | After successful structured output |
+| `structured_validation_error` | When structured output validation fails |
+| `tool_call` | When model calls a tool |
+| `tool_result` | When tool returns a result |
