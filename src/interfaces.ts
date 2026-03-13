@@ -202,6 +202,28 @@ export interface ToolRegistry {
 // Chat Options (per-call overrides)
 // ============================================================================
 
+/**
+ * Response format for structured output.
+ * 
+ * For json_schema mode, use: { type: 'json_schema', json_schema: { name, schema, strict } }
+ * For json_object mode (legacy), use: { type: 'json_object' }
+ */
+export interface ResponseFormat {
+    /** Response format type */
+    type: 'json_object' | 'json_schema';
+    /** JSON Schema definition (required for json_schema type) */
+    json_schema?: {
+        /** Name of the schema (for LLM guidance) */
+        name: string;
+        /** Schema description (optional, for LLM guidance) */
+        description?: string;
+        /** The JSON Schema */
+        schema: Record<string, unknown>;
+        /** Enable strict mode (required for reliable structured output) */
+        strict?: boolean;
+    };
+}
+
 export interface ChatOptions {
     /** Override temperature */
     temperature?: number;
@@ -219,6 +241,42 @@ export interface ChatOptions {
     maxIterations?: number;
     /** Stream decoder type */
     decoder?: import('./stream-decoder.js').DecoderType;
+    
+    // ========================================================================
+    // Structured Output Options
+    // ========================================================================
+    
+    /**
+     * Zod schema for structured output.
+     * When provided, the response is validated against this schema.
+     * Structured output and tools cannot be used together.
+     */
+    schema?: import('zod').ZodType<unknown>;
+    
+    /**
+     * Raw JSON Schema for structured output.
+     * Alternative to `schema` when you have a pre-defined schema.
+     */
+    jsonSchema?: import('./structured-output.js').JSONSchema;
+    
+    /**
+     * Name for the schema (optional, used for LLM guidance).
+     * Required by some providers (e.g., OpenAI strict mode).
+     */
+    schemaName?: string;
+    
+    /**
+     * Description for the schema (optional, used for LLM guidance).
+     */
+    schemaDescription?: string;
+    
+    /**
+     * Response format for structured output (legacy json_object mode).
+     * For new code, prefer `schema` or `jsonSchema` options.
+     * 
+     * Use { type: 'json_object' } for legacy JSON mode without schema validation.
+     */
+    responseFormat?: ResponseFormat;
 }
 
 // ============================================================================

@@ -44,6 +44,7 @@ export {
     type ToolRegistryEntry,
     // Options
     type ChatOptions,
+    type ResponseFormat,
     // Model info
     type ModelMetadata,
     // Helpers

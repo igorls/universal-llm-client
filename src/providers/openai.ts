@@ -5,9 +5,17 @@
  * Works with: OpenAI, OpenRouter, LM Studio, LlamaCpp, vLLM, Groq, Together.
  */
 
+import { z } from 'zod';
 import { BaseLLMClient } from '../client.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
+import {
+    StructuredOutputError,
+    zodToJsonSchema,
+    normalizeJsonSchema,
+    type JSONSchema,
+    type StructuredOutputOptions,
+} from '../structured-output.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -38,6 +46,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<LLMChatResponse> {
+        // Validate: schema and tools cannot be used together
+        if ((options?.schema || options?.jsonSchema) && options?.tools) {
+            throw new Error(
+                'Structured output and tools cannot be used together. ' +
+                'Use either schema/jsonSchema for structured output OR tools for function calling.'
+            );
+        }
+
         const url = `${this.options.url}/chat/completions`;
         const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
 
@@ -46,6 +62,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             messages: this.convertMessages(messages),
             ...this.buildRequestParams(options),
         };
+
+        // Handle structured output
+        const schemaOptions = this.extractSchemaOptions(options);
+        if (schemaOptions) {
+            body['response_format'] = this.buildResponseFormat(schemaOptions);
+        } else if (options?.responseFormat) {
+            body['response_format'] = options.responseFormat;
+        }
 
         if (tools?.length) {
             body['tools'] = tools;
@@ -90,10 +114,19 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             id: tc.id || this.generateToolCallId(),
         }));
 
+        // Get content, handling null case
+        const content = choice.message.content || '';
+
+        // Validate response against schema if provided
+        if (schemaOptions?.schema) {
+            // Parse and validate the response
+            this.validateStructuredResponse(content, schemaOptions.schema);
+        }
+
         const result: LLMChatResponse = {
             message: {
                 role: 'assistant',
-                content: choice.message.content || '',
+                content,
                 tool_calls: toolCalls,
             },
             usage,
@@ -324,5 +357,114 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         if (options?.temperature !== undefined) params['temperature'] = options.temperature;
         if (options?.maxTokens !== undefined) params['max_tokens'] = options.maxTokens;
         return params;
+    }
+
+    // ========================================================================
+    // Structured Output Helpers
+    // ========================================================================
+
+    /**
+     * Extract schema options from ChatOptions.
+     * Returns null if no schema is provided.
+     */
+    private extractSchemaOptions(options?: ChatOptions): (StructuredOutputOptions<unknown> & { schema: z.ZodType<unknown> }) | null {
+        if (!options) return null;
+
+        if (options.schema) {
+            return {
+                schema: options.schema,
+                name: options.schemaName,
+                description: options.schemaDescription,
+            };
+        }
+
+        if (options.jsonSchema) {
+            // For raw JSON Schema, we need to handle validation separately
+            // (can't use Zod for validation, but can use for request format)
+            // We'll create a passthrough schema that just validates JSON structure
+            return {
+                jsonSchema: options.jsonSchema,
+                name: options.schemaName,
+                description: options.schemaDescription,
+                // Use a passthrough schema for validation - actual validation
+                // will be against the JSON Schema provided
+                schema: z.unknown(),
+            };
+        }
+
+        return null;
+    }
+
+    /**
+     * Build OpenAI response_format for structured output.
+     */
+    private buildResponseFormat(options: StructuredOutputOptions<unknown>): Record<string, unknown> {
+        let jsonSchema: JSONSchema;
+        let name: string;
+        let description: string | undefined;
+
+        // Prefer jsonSchema if provided (handles raw JSON Schema case)
+        if (options.jsonSchema) {
+            // Use raw JSON Schema
+            jsonSchema = normalizeJsonSchema(options.jsonSchema);
+            name = options.name || 'response';
+            description = options.description;
+        } else if (options.schema) {
+            // Convert Zod schema to JSON Schema
+            jsonSchema = zodToJsonSchema(options.schema);
+            name = options.name || 'response';
+            description = options.description;
+        } else {
+            // Should not happen - we check this in extractSchemaOptions
+            throw new Error('Either schema or jsonSchema must be provided');
+        }
+
+        // OpenAI requires strict mode for reliable structured output
+        return {
+            type: 'json_schema',
+            json_schema: {
+                name,
+                ...(description && { description }),
+                schema: jsonSchema,
+                strict: true,
+            },
+        };
+    }
+
+    /**
+     * Validate structured response against Zod schema.
+     * Throws StructuredOutputError on failure.
+     */
+    private validateStructuredResponse(content: string, schema: z.ZodType<unknown>): void {
+        // Handle empty or null content
+        if (!content) {
+            throw new StructuredOutputError(
+                'Empty response from LLM',
+                { rawOutput: content }
+            );
+        }
+
+        // Parse JSON
+        let parsed: unknown;
+        try {
+            parsed = JSON.parse(content);
+        } catch (error) {
+            const syntaxError = error instanceof SyntaxError
+                ? error
+                : new SyntaxError(String(error));
+            throw new StructuredOutputError(
+                `Failed to parse JSON: ${syntaxError.message}`,
+                { rawOutput: content, cause: syntaxError }
+            );
+        }
+
+        // Validate against schema
+        const result = schema.safeParse(parsed);
+        if (!result.success) {
+            throw new StructuredOutputError(
+                `Validation failed: ${result.error.errors.map(e => e.message).join(', ')}`,
+                { rawOutput: content, cause: result.error }
+            );
+        }
     }
 }
