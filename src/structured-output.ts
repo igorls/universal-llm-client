@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { zodToJsonSchema as zodToJsonSchemaLib } from 'zod-to-json-schema';
 
 // ============================================================================
 // JSON Schema Types
@@ -51,6 +52,27 @@ export interface JSONSchema {
     $schema?: string;
     definitions?: Record<string, JSONSchema>;
     $defs?: Record<string, JSONSchema>;
+}
+
+// ============================================================================
+// Provider Schema Types
+// ============================================================================
+
+/**
+ * Provider identifier for schema conversion.
+ */
+export type SchemaProvider = 'openai' | 'ollama' | 'google';
+
+/**
+ * Result of converting a schema for a specific provider.
+ */
+export interface ProviderSchema {
+    /** The JSON Schema for the provider */
+    schema: JSONSchema;
+    /** Optional schema name (used by OpenAI) */
+    name?: string;
+    /** Optional schema description (used by OpenAI) */
+    description?: string;
 }
 
 // ============================================================================
@@ -287,6 +309,210 @@ export function isStructuredOutputFailure<T>(
     result: StructuredOutputResult<T>,
 ): result is StructuredOutputFailure<T> {
     return result.ok === false;
+}
+
+// ============================================================================
+// Schema Conversion Utilities
+// ============================================================================
+
+/**
+ * Convert a Zod schema to JSON Schema.
+ *
+ * Uses zod-to-json-schema library for conversion.
+ * Handles all Zod types including objects, arrays, primitives, enums, and nested structures.
+ *
+ * @param schema The Zod schema to convert
+ * @returns JSON Schema representation
+ *
+ * @example
+ * ```typescript
+ * const UserSchema = z.object({
+ *   name: z.string(),
+ *   age: z.number(),
+ * });
+ *
+ * const jsonSchema = zodToJsonSchema(UserSchema);
+ * // { type: 'object', properties: { name: { type: 'string' }, ... }, required: ['name', 'age'] }
+ * ```
+ */
+export function zodToJsonSchema<T>(schema: z.ZodType<T>): JSONSchema {
+    const result = zodToJsonSchemaLib(schema, {
+        // Don't add $schema to output
+        $refStrategy: 'none',
+        // Don't include definitions for simple schemas
+        target: 'jsonSchema7',
+    });
+
+    // Remove $schema and other metadata we don't need
+    const cleanResult = result as JSONSchema;
+    delete cleanResult.$schema;
+    delete cleanResult.definitions;
+    delete cleanResult.$defs;
+
+    return cleanResult;
+}
+
+/**
+ * Normalize a raw JSON Schema.
+ *
+ * Currently passes through without modification.
+ * Future versions may add normalization for provider compatibility.
+ *
+ * @param schema The JSON Schema to normalize
+ * @returns Normalized JSON Schema
+ */
+export function normalizeJsonSchema(schema: JSONSchema): JSONSchema {
+    // Deep clone to avoid mutating the input
+    return JSON.parse(JSON.stringify(schema)) as JSONSchema;
+}
+
+/**
+ * Get the JSON Schema from options.
+ *
+ * Converts Zod schema to JSON Schema if necessary, or normalizes raw JSON Schema.
+ *
+ * @param options The structured output options
+ * @returns JSON Schema
+ */
+export function getJsonSchema<T>(options: StructuredOutputOptions<T>): JSONSchema {
+    if (options.schema) {
+        return zodToJsonSchema(options.schema);
+    }
+    if (options.jsonSchema) {
+        return normalizeJsonSchema(options.jsonSchema);
+    }
+    throw new Error('Either schema or jsonSchema must be provided');
+}
+
+/**
+ * Features that some providers don't support.
+ * These are removed when transforming schemas for those providers.
+ */
+const GOOGLE_UNSUPPORTED_FEATURES = [
+    'pattern',
+    'minLength',
+    'maxLength',
+    'minimum',
+    'maximum',
+    'exclusiveMinimum',
+    'exclusiveMaximum',
+] as const;
+
+/**
+ * Strip unsupported features from a JSON Schema for a specific provider.
+ *
+ * Google/Gemini doesn't support certain JSON Schema features like pattern, min/max.
+ * This function removes those recursively.
+ *
+ * @param schema The JSON Schema to transform
+ * @param provider The target provider
+ * @returns Cleaned JSON Schema
+ *
+ * @example
+ * ```typescript
+ * const schema = {
+ *   type: 'string',
+ *   pattern: '^[a-z]+$',
+ *   minLength: 1,
+ * };
+ *
+ * const cleaned = stripUnsupportedFeatures(schema, 'google');
+ * // { type: 'string' } - pattern and minLength removed
+ * ```
+ */
+export function stripUnsupportedFeatures(
+    schema: JSONSchema,
+    provider: SchemaProvider,
+): JSONSchema {
+    // Only Google needs transformation currently
+    if (provider !== 'google') {
+        return schema;
+    }
+
+    // Deep clone to avoid mutating input
+    const result: JSONSchema = JSON.parse(JSON.stringify(schema));
+
+    // Remove unsupported top-level properties
+    for (const feature of GOOGLE_UNSUPPORTED_FEATURES) {
+        delete (result as Record<string, unknown>)[feature];
+    }
+
+    // Recursively clean nested schemas
+    if (result.properties) {
+        for (const key of Object.keys(result.properties)) {
+            if (result.properties[key]) {
+                result.properties[key] = stripUnsupportedFeatures(result.properties[key], provider);
+            }
+        }
+    }
+
+    if (result.items) {
+        if (Array.isArray(result.items)) {
+            (result as Record<string, unknown>).items = result.items.map(item => stripUnsupportedFeatures(item as JSONSchema, provider));
+        } else {
+            result.items = stripUnsupportedFeatures(result.items as JSONSchema, provider);
+        }
+    }
+
+    // Handle oneOf, anyOf, allOf
+    for (const key of ['oneOf', 'anyOf', 'allOf'] as const) {
+        const schemas = result[key];
+        if (Array.isArray(schemas)) {
+            (result as Record<string, unknown>)[key] = schemas.map(s => stripUnsupportedFeatures(s, provider));
+        }
+    }
+
+    // Handle additionalProperties
+    if (typeof result.additionalProperties === 'object' && result.additionalProperties !== null) {
+        result.additionalProperties = stripUnsupportedFeatures(result.additionalProperties as JSONSchema, provider);
+    }
+
+    return result;
+}
+
+/**
+ * Convert structured output options to a provider-specific schema.
+ *
+ * This function:
+ * 1. Extracts/converts the JSON Schema from options
+ * 2. Applies provider-specific transformations (e.g., removing unsupported features for Google)
+ * 3. Adds name/description for LLM guidance
+ *
+ * @param provider The target provider
+ * @param options The structured output options
+ * @returns Provider-ready schema with name and description
+ *
+ * @example
+ * ```typescript
+ * const result = convertToProviderSchema('openai', {
+ *   schema: z.object({ name: z.string() }),
+ *   name: 'User',
+ *   description: 'A user object',
+ * });
+ *
+ * // result.schema - JSON Schema
+ * // result.name - 'User'
+ * // result.description - 'A user object'
+ * ```
+ */
+export function convertToProviderSchema<T>(
+    provider: SchemaProvider,
+    options: StructuredOutputOptions<T>,
+): ProviderSchema {
+    // Get the JSON Schema (convert from Zod or normalize raw)
+    const jsonSchema = getJsonSchema(options);
+
+    // Apply provider-specific transformations
+    const schema = stripUnsupportedFeatures(jsonSchema, provider);
+
+    // Generate a default name if not provided (some providers require it)
+    const name = options.name ?? 'response';
+
+    return {
+        schema,
+        name,
+        description: options.description,
+    };
 }
 
 // ============================================================================

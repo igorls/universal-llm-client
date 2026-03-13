@@ -131,6 +131,14 @@ export {
     type StructuredOutputSuccess,
     type StructuredOutputFailure,
     type JSONSchema,
+    type SchemaProvider,
+    type ProviderSchema,
     isStructuredOutputSuccess,
     isStructuredOutputFailure,
+    // Schema conversion utilities
+    zodToJsonSchema,
+    normalizeJsonSchema,
+    convertToProviderSchema,
+    stripUnsupportedFeatures,
+    getJsonSchema,
 } from './structured-output.js';
