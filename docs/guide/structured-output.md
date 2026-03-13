@@ -220,8 +220,25 @@ const result = await model.generateStructured(MySchema, messages, {
 
 Set `strict: false` if you're using an OpenAI-compatible endpoint that doesn't support strict mode.
 
+## Combining with Tools
+
+Structured output and tool calling can be used together. When both are provided:
+
+- The provider sends both the schema constraint **and** tool definitions in the request
+- If the model responds with **content**, it's validated against the schema as usual
+- If the model responds with **tool calls**, schema validation is skipped and the tool calling loop handles the response
+
+```typescript
+const result = await model.chat(messages, {
+  output: { schema: ResultSchema },
+  tools: [myTool],
+});
+
+// result.structured is set if the model returned content
+// result.message.tool_calls is set if the model invoked tools
+```
+
 ## Limitations
 
-- **Cannot combine with tools** — structured output and tool calling are mutually exclusive per request
 - **Streaming** — use `generateStructuredStream()` instead of `chatStream()` with output options
 - **Provider support** — all built-in providers support structured output, but behavior varies (see [Providers](/guide/providers))
