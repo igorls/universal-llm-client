@@ -19,11 +19,13 @@ import type {
     LLMChatResponse,
     ChatOptions,
     ModelMetadata,
+    OutputOptions,
 } from './interfaces.js';
 import type { DecodedEvent } from './stream-decoder.js';
 import {
     zodToJsonSchema,
     parseStructured,
+    StructuredOutputError,
     type StructuredOutputResult,
 } from './structured-output.js';
 import { z } from 'zod';
@@ -251,11 +253,117 @@ export class Router {
     // Convenience Methods
     // ========================================================================
 
+    /**
+     * Validate that output and tools are not used together.
+     * Throws an error if both are provided.
+     */
+    private validateOutputAndTools(options?: ChatOptions): void {
+        if (options?.output && options?.tools && options.tools.length > 0) {
+            throw new Error('output and tools cannot be used together. Structured output and tool calling are mutually exclusive.');
+        }
+    }
+
+    /**
+     * Extract schema from output options.
+     */
+    private getSchemaFromOutput<T>(output: OutputOptions<T>): { schema: z.ZodType<T>; name?: string; description?: string } | { jsonSchema: Record<string, unknown>; name?: string; description?: string } {
+        if (output.schema) {
+            return {
+                schema: output.schema,
+                name: output.name,
+                description: output.description,
+            };
+        }
+        if (output.jsonSchema) {
+            return {
+                jsonSchema: output.jsonSchema as Record<string, unknown>,
+                name: output.name,
+                description: output.description,
+            };
+        }
+        throw new Error('output must have either schema or jsonSchema');
+    }
+
     async chat(messages: LLMChatMessage[], options?: ChatOptions): Promise<LLMChatResponse> {
+        // Validate that output and tools are not used together (VAL-API-005)
+        this.validateOutputAndTools(options);
+
+        // If output parameter is provided, use structured output flow (VAL-API-004)
+        if (options?.output) {
+            // Type assertion: we know output is defined at this point
+            return this.chatWithStructuredOutput(messages, options as ChatOptions & { output: OutputOptions });
+        }
+
         return this.execute(
             client => client.chat(messages, options),
             'chat',
         );
+    }
+
+    /**
+     * Chat with structured output using the output parameter.
+     * Validates response against the schema and returns structured property.
+     */
+    private async chatWithStructuredOutput<T>(
+        messages: LLMChatMessage[],
+        options: ChatOptions & { output: OutputOptions<T> },
+    ): Promise<LLMChatResponse<T>> {
+        const { output } = options;
+        const schemaInfo = this.getSchemaFromOutput(output);
+
+        // Build ChatOptions with schema for the provider
+        // Remove output and tools (schema and tools are mutually exclusive)
+        const { output: _, tools: __, ...restOptions } = options;
+        const structuredOptions: ChatOptions = {
+            ...restOptions,
+            // Use jsonSchema for the provider
+            jsonSchema: 'jsonSchema' in schemaInfo ? schemaInfo.jsonSchema : zodToJsonSchema(schemaInfo.schema),
+            schemaName: schemaInfo.name,
+            schemaDescription: schemaInfo.description,
+        };
+
+        // Get response from provider
+        const response = await this.execute(
+            client => client.chat(messages, structuredOptions),
+            'chatWithStructuredOutput',
+        );
+
+        // Extract text content from response
+        const content = typeof response.message.content === 'string'
+            ? response.message.content
+            : response.message.content
+                .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+                .map(part => part.text)
+                .join('');
+
+        // Get the Zod schema for validation (use the one from output, or convert from jsonSchema)
+        const zodSchema = 'schema' in schemaInfo ? schemaInfo.schema : null;
+
+        if (!zodSchema) {
+            // If we only have jsonSchema without a Zod schema, we can't validate
+            // Return the parsed JSON without validation
+            try {
+                const structured = JSON.parse(content) as T;
+                return {
+                    ...response,
+                    structured,
+                };
+            } catch {
+                // JSON parse failed, but we don't have Zod schema to create proper error
+                throw new StructuredOutputError(
+                    `Failed to parse JSON: ${content}`,
+                    { rawOutput: content },
+                );
+            }
+        }
+
+        // Parse and validate against Zod schema
+        const validated = parseStructured(zodSchema, content);
+
+        return {
+            ...response,
+            structured: validated,
+        };
     }
 
     async chatWithTools(

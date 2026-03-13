@@ -224,6 +224,54 @@ export interface ResponseFormat {
     };
 }
 
+/**
+ * Output options for structured output in chat responses.
+ * 
+ * When provided, the response will include a `structured` property with
+ * the validated, typed result. This is the recommended way to request
+ * structured output via the chat() method.
+ * 
+ * @example
+ * ```typescript
+ * const UserSchema = z.object({
+ *   name: z.string(),
+ *   age: z.number(),
+ * });
+ * 
+ * const response = await model.chat(messages, {
+ *   output: { schema: UserSchema },
+ * });
+ * 
+ * // response.structured is typed as { name: string, age: number }
+ * console.log(response.structured?.name);
+ * ```
+ */
+export interface OutputOptions<T = unknown> {
+    /**
+     * Zod schema for structured output.
+     * Use this for type-safe validation with automatic type inference.
+     */
+    schema?: import('zod').ZodType<T>;
+    
+    /**
+     * Raw JSON Schema for structured output.
+     * Alternative to `schema` when you have a pre-defined schema.
+     */
+    jsonSchema?: import('./structured-output.js').JSONSchema;
+    
+    /**
+     * Optional name for the schema.
+     * Used by providers like OpenAI for better LLM guidance.
+     */
+    name?: string;
+    
+    /**
+     * Optional description for the schema.
+     * Used by providers like OpenAI for better LLM guidance.
+     */
+    description?: string;
+}
+
 export interface ChatOptions {
     /** Override temperature */
     temperature?: number;
@@ -245,6 +293,24 @@ export interface ChatOptions {
     // ========================================================================
     // Structured Output Options
     // ========================================================================
+    
+    /**
+     * Structured output options for chat responses.
+     * When provided, the response will include a `structured` property
+     * with the validated result.
+     * 
+     * **Note**: `output` and `tools` cannot be used together.
+     * If both are provided, an error will be thrown.
+     * 
+     * @example
+     * ```typescript
+     * const response = await model.chat(messages, {
+     *   output: { schema: UserSchema },
+     * });
+     * console.log(response.structured);
+     * ```
+     */
+    output?: OutputOptions;
     
     /**
      * Zod schema for structured output.
@@ -293,7 +359,7 @@ export interface TokenUsageInfo {
 // Response Types
 // ============================================================================
 
-export interface LLMChatResponse {
+export interface LLMChatResponse<T = unknown> {
     message: LLMChatMessage;
     /** Reasoning/thinking content from the model (if supported) */
     reasoning?: string;
@@ -303,6 +369,25 @@ export interface LLMChatResponse {
     toolExecutions?: ToolExecutionResult[];
     /** Which provider served this response */
     provider?: string;
+    /**
+     * Validated structured output when `output` parameter is provided to chat().
+     * This is the same type as inferred from the schema provided in `output.schema`.
+     * 
+     * Undefined when:
+     * - No `output` parameter was provided
+     * - Structured output validation failed (throws StructuredOutputError instead)
+     * 
+     * @example
+     * ```typescript
+     * const response = await model.chat(messages, {
+     *   output: { schema: UserSchema },
+     * });
+     * if (response.structured) {
+     *   console.log(response.structured.name); // Fully typed!
+     * }
+     * ```
+     */
+    structured?: T;
 }
 
 // ============================================================================

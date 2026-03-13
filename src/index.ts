@@ -45,6 +45,7 @@ export {
     // Options
     type ChatOptions,
     type ResponseFormat,
+    type OutputOptions,
     // Model info
     type ModelMetadata,
     // Helpers

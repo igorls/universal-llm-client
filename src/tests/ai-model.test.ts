@@ -732,4 +732,272 @@ describe('AIModel', () => {
             }
         });
     });
+
+    // ========================================================================
+    // Chat with output parameter Tests (VAL-API-004, VAL-API-005)
+    // ========================================================================
+
+    describe('chat with output parameter', () => {
+        const UserSchema = z.object({
+            name: z.string(),
+            age: z.number(),
+        });
+
+        it('returns response with structured property when output is provided (VAL-API-004)', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Alice", "age": 30}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([
+                { role: 'user', content: 'Generate a user' },
+            ], {
+                output: { schema: UserSchema },
+            });
+
+            // Response should have both message.content and structured property
+            expect(response.message.content).toBe('{"name": "Alice", "age": 30}');
+            expect(response.structured).toBeDefined();
+            expect(response.structured?.name).toBe('Alice');
+            expect(response.structured?.age).toBe(30);
+        });
+
+        it('returns structured property with type inference from schema', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Bob", "age": 25}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([
+                { role: 'user', content: 'Generate a user' },
+            ], {
+                output: { schema: UserSchema },
+            });
+
+            // Type check: response.structured should be typed correctly
+            if (response.structured) {
+                const name: string = response.structured.name;
+                const age: number = response.structured.age;
+                expect(name).toBe('Bob');
+                expect(age).toBe(25);
+            }
+        });
+
+        it('output parameter with name and description', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Charlie", "age": 40}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([
+                { role: 'user', content: 'Generate a user' },
+            ], {
+                output: {
+                    schema: UserSchema,
+                    name: 'User',
+                    description: 'A user object',
+                },
+            });
+
+            expect(response.structured?.name).toBe('Charlie');
+            expect(response.structured?.age).toBe(40);
+        });
+
+        it('throws StructuredOutputError when response fails validation', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Alice", "age": "not a number"}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+
+            expect(
+                model.chat([{ role: 'user', content: 'Generate a user' }], {
+                    output: { schema: UserSchema },
+                })
+            ).rejects.toThrow(StructuredOutputError);
+        });
+
+        it('structured is undefined when output is not provided', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: 'Hello world' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([
+                { role: 'user', content: 'Hello' },
+            ]);
+
+            expect(response.structured).toBeUndefined();
+        });
+
+        it('works with all providers (OpenAI)', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    id: 'chatcmpl-test',
+                    object: 'chat.completion',
+                    created: Date.now(),
+                    model: 'test-model',
+                    choices: [{
+                        index: 0,
+                        message: { role: 'assistant', content: '{"name": "OpenAI", "age": 35}' },
+                        finish_reason: 'stop',
+                    }],
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({
+                providers: [{ type: 'openai', apiKey: 'sk-test' }],
+            }));
+
+            const response = await model.chat(
+                [{ role: 'user', content: 'Generate a user' }],
+                { output: { schema: UserSchema } },
+            );
+
+            expect(response.structured?.name).toBe('OpenAI');
+            expect(response.structured?.age).toBe(35);
+        });
+
+        it('works with all providers (Google)', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    candidates: [{
+                        content: {
+                            parts: [{ text: '{"name": "Google", "age": 20}' }],
+                            role: 'model',
+                        },
+                        finishReason: 'STOP',
+                        index: 0,
+                    }],
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({
+                providers: [{ type: 'google', apiKey: 'test-key' }],
+            }));
+
+            const response = await model.chat(
+                [{ role: 'user', content: 'Generate a user' }],
+                { output: { schema: UserSchema } },
+            );
+
+            expect(response.structured?.name).toBe('Google');
+            expect(response.structured?.age).toBe(20);
+        });
+    });
+
+    describe('output and tools mutual exclusivity (VAL-API-005)', () => {
+        const TestSchema = z.object({
+            result: z.string(),
+        });
+
+        it('throws error when both output and tools are provided', async () => {
+            const model = new AIModel(createTestConfig());
+
+            expect(
+                model.chat([{ role: 'user', content: 'test' }], {
+                    output: { schema: TestSchema },
+                    tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
+                })
+            ).rejects.toThrow('output and tools cannot be used together');
+        });
+
+        it('throws error with tools incompatible error message', async () => {
+            const model = new AIModel(createTestConfig());
+
+            try {
+                await model.chat([{ role: 'user', content: 'test' }], {
+                    output: { schema: TestSchema },
+                    tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
+                });
+                expect(true).toBe(false); // Should not reach here
+            } catch (error) {
+                expect(error).toBeInstanceOf(Error);
+                expect((error as Error).message).toContain('output and tools cannot be used together');
+            }
+        });
+
+        it('works with output only (no tools)', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"result": "success"}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([{ role: 'user', content: 'test' }], {
+                output: { schema: TestSchema },
+            });
+
+            expect(response.structured?.result).toBe('success');
+        });
+
+        it('works with tools only (no output)', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: 'Using tool...' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+            const response = await model.chat([{ role: 'user', content: 'test' }], {
+                tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
+            });
+
+            expect(response.message.content).toBe('Using tool...');
+            expect(response.structured).toBeUndefined();
+        });
+
+        it('allows output with empty tools array (no tools)', async () => {
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"result": "success"}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig());
+
+            // Empty tools array should be allowed with output (no actual tools)
+            const response = await model.chat([{ role: 'user', content: 'test' }], {
+                output: { schema: TestSchema },
+                tools: [],
+            });
+
+            expect(response.structured?.result).toBe('success');
+        });
+    });
 });
