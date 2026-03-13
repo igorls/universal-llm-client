@@ -1,0 +1,298 @@
+{
+  "flowId": "core-types-and-validation",
+  "milestone": "core-infrastructure",
+  "assertions": [
+    "VAL-SCHEMA-001",
+    "VAL-SCHEMA-002",
+    "VAL-SCHEMA-003",
+    "VAL-SCHEMA-004",
+    "VAL-SCHEMA-005",
+    "VAL-SCHEMA-006",
+    "VAL-SCHEMA-007",
+    "VAL-SCHEMA-008",
+    "VAL-SCHEMA-009",
+    "VAL-SCHEMA-010",
+    "VAL-PROVIDER-GOOGLE-006"
+  ],
+  "results": {
+    "VAL-SCHEMA-001": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Type Inference (VAL-SCHEMA-001) > infers type from Zod schema correctly",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Type Inference (VAL-SCHEMA-001) > structured output result type narrows correctly",
+          "result": "pass"
+        },
+        {
+          "type": "typecheck",
+          "command": "bun run typecheck",
+          "result": "pass",
+          "observation": "TypeScript compiler accepts the result type, no type errors"
+        }
+      ]
+    },
+    "VAL-SCHEMA-002": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > zodToJsonSchema > converts Zod string schema to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > zodToJsonSchema > converts Zod number schema to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > zodToJsonSchema > converts Zod boolean schema to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > zodToJsonSchema > converts Zod object schema with required properties",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > zodToJsonSchema > converts Zod object schema with optional properties",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > zodToJsonSchema > converts nested Zod object schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > normalizeJsonSchema > passes through JSON Schema without modification when not needed",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Conversion (VAL-SCHEMA-002) > normalizeJsonSchema > preserves description in JSON Schema",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-003": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Raw JSON Schema Input > accepts JSONSchema object without Zod",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Raw JSON Schema Input > allows both schema and jsonSchema to be specified (schema takes precedence)",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-004": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Schema Name and Description (VAL-SCHEMA-004) > convertToProviderSchema > includes schema name in OpenAI-compatible format",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Name and Description (VAL-SCHEMA-004) > convertToProviderSchema > works without name/description (optional)",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema Name and Description (VAL-SCHEMA-004) > convertToProviderSchema > generates default name if not provided for providers that require it",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-005": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Validation Logic (VAL-SCHEMA-005) > parseStructured > throws StructuredOutputError with rawOutput when schema validation fails",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Validation Logic (VAL-SCHEMA-005) > parseStructured > throws StructuredOutputError with ZodError as cause on validation failure",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-006": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Validation Logic (VAL-SCHEMA-005) > Malformed JSON Handling (VAL-SCHEMA-006) > throws StructuredOutputError on malformed JSON",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Validation Logic (VAL-SCHEMA-005) > Malformed JSON Handling (VAL-SCHEMA-006) > includes raw output in error for malformed JSON",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Validation Logic (VAL-SCHEMA-005) > Malformed JSON Handling (VAL-SCHEMA-006) > handles completely empty output",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-007": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "tryParseStructured (VAL-SCHEMA-007) > Success Path > returns { ok: true, value } on success",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "tryParseStructured (VAL-SCHEMA-007) > Success Path > never throws on success",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "tryParseStructured (VAL-SCHEMA-007) > Failure Path > returns { ok: false, error, rawOutput } on validation failure",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "tryParseStructured (VAL-SCHEMA-007) > Failure Path > never throws, always returns result object",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-008": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Schema with Enums (VAL-SCHEMA-008) > converts Zod enum to JSON Schema with enum constraint",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema with Enums (VAL-SCHEMA-008) > converts Zod native enum to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema with Enums (VAL-SCHEMA-008) > converts object with enum property",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Schema with Enums (VAL-SCHEMA-008) > validates enum values correctly",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-009": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Nested Object Schema (VAL-SCHEMA-009) > converts deeply nested object schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Nested Object Schema (VAL-SCHEMA-009) > handles three levels of nesting",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Nested Object Schema (VAL-SCHEMA-009) > handles optional nested objects",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-SCHEMA-010": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Array Schema (VAL-SCHEMA-010) > converts Zod array of strings to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Array Schema (VAL-SCHEMA-010) > converts Zod array of numbers to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Array Schema (VAL-SCHEMA-010) > converts Zod array of objects to JSON Schema",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Array Schema (VAL-SCHEMA-010) > converts nested arrays",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Array Schema (VAL-SCHEMA-010) > handles array with min/max constraints",
+          "result": "pass"
+        }
+      ]
+    },
+    "VAL-PROVIDER-GOOGLE-006": {
+      "status": "passed",
+      "evidence": [
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > stripUnsupportedFeatures > removes pattern property (not supported by Gemini)",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > stripUnsupportedFeatures > removes minLength/maxLength for strings",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > stripUnsupportedFeatures > keeps minLength/maxLength for other providers",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > stripUnsupportedFeatures > removes minimum/maximum for numbers",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > stripUnsupportedFeatures > removes unsupported features recursively in nested objects",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > stripUnsupportedFeatures > removes unsupported features in array items",
+          "result": "pass"
+        },
+        {
+          "type": "unit-test",
+          "name": "Google Schema Transformation (VAL-PROVIDER-GOOGLE-006) > convertToProviderSchema for Google > applies Google-specific transformations",
+          "result": "pass"
+        }
+      ]
+    }
+  },
+  "frictions": [],
+  "blockers": [],
+  "toolsUsed": ["bun test", "bun run typecheck"]
+}
