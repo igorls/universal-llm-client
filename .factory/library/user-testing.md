@@ -50,7 +50,13 @@ bun test
 bun test --grep 'structured output'
 
 # Smoke tests (requires API access)
-bun run tests/smoke/smoke-test-structured-google.ts
-bun run tests/smoke/smoke-test-structured-ollama.ts
-OPENAI_API_URL=http://blade14:8080/v1 bun run tests/smoke/smoke-test-structured-openai.ts
+MODEL="gemini-3.1-flash-lite-preview" bun run tests/smoke/smoke-test-google-structured.ts
+MODEL="qwen3:4b" bun run tests/smoke/smoke-test-ollama-structured.ts
+OPENAI_API_URL="http://blade14:8080/v1" MODEL="<model-name>" bun run tests/smoke/smoke-test-openai-structured.ts
 ```
+
+## Model Notes
+
+- **Google Gemini**: Use `gemini-3.1-flash-lite-preview` (older models like `gemini-2.0-flash` are deprecated)
+- **OpenAI-Compatible**: Model name depends on server (e.g., `noctrex/Huihui-Qwen3-VL-4B-Instruct-abliterated-GGUF:Q4_K_M` on blade14)
+- **Ollama**: Default model is `qwen3:4b` (vision tests may require `qwen3-vl:8b`)
