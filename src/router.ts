@@ -311,6 +311,15 @@ export class Router {
     ): Promise<LLMChatResponse<T>> {
         const { output } = options;
         const schemaInfo = this.getSchemaFromOutput(output);
+        const schemaName = schemaInfo.name ?? 'response';
+
+        // Emit structured_request event
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'structured_request',
+            provider: 'router',
+            schemaName,
+        });
 
         // Build ChatOptions with schema for the provider
         // Remove output and tools (schema and tools are mutually exclusive)
@@ -322,6 +331,8 @@ export class Router {
             schemaName: schemaInfo.name,
             schemaDescription: schemaInfo.description,
         };
+
+        const start = Date.now();
 
         // Get response from provider
         const response = await this.execute(
@@ -345,26 +356,69 @@ export class Router {
             // Return the parsed JSON without validation
             try {
                 const structured = JSON.parse(content) as T;
+                // Emit structured_response event on success
+                this.auditor.record({
+                    timestamp: Date.now(),
+                    type: 'structured_response',
+                    provider: response.provider ?? 'router',
+                    model: response.message.role,
+                    duration: Date.now() - start,
+                    schemaName,
+                    usage: response.usage,
+                });
                 return {
                     ...response,
                     structured,
                 };
-            } catch {
-                // JSON parse failed, but we don't have Zod schema to create proper error
+            } catch (error) {
+                // JSON parse failed
+                const rawOutput = content;
+                // Emit structured_validation_error event
+                this.auditor.record({
+                    timestamp: Date.now(),
+                    type: 'structured_validation_error',
+                    provider: response.provider ?? 'router',
+                    schemaName,
+                    error: error instanceof Error ? error.message : 'JSON parse failed',
+                    rawOutput,
+                });
                 throw new StructuredOutputError(
-                    `Failed to parse JSON: ${content}`,
-                    { rawOutput: content },
+                    `Failed to parse JSON: ${rawOutput}`,
+                    { rawOutput: rawOutput, cause: error instanceof Error ? error : undefined },
                 );
             }
         }
 
         // Parse and validate against Zod schema
-        const validated = parseStructured(zodSchema, content);
-
-        return {
-            ...response,
-            structured: validated,
-        };
+        try {
+            const validated = parseStructured(zodSchema, content);
+            // Emit structured_response event on success
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_response',
+                provider: response.provider ?? 'router',
+                model: response.message.role,
+                duration: Date.now() - start,
+                schemaName,
+                usage: response.usage,
+            });
+            return {
+                ...response,
+                structured: validated,
+            };
+        } catch (error) {
+            // Emit structured_validation_error event
+            const rawOutput = content;
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_validation_error',
+                provider: response.provider ?? 'router',
+                schemaName,
+                error: error instanceof Error ? error.message : 'Validation failed',
+                rawOutput,
+            });
+            throw error;
+        }
     }
 
     async chatWithTools(
@@ -445,12 +499,23 @@ export class Router {
     ): Promise<T> {
         // Convert Zod schema to JSON Schema for providers
         const jsonSchema = zodToJsonSchema(schema);
+        const schemaName = options?.schemaName ?? 'response';
+
+        // Emit structured_request event
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'structured_request',
+            provider: 'router',
+            schemaName,
+        });
 
         // Build ChatOptions with schema
         const structuredOptions: ChatOptions = {
             ...options,
             jsonSchema,
         };
+
+        const start = Date.now();
 
         // Execute with failover
         const response = await this.execute(
@@ -466,8 +531,31 @@ export class Router {
                 .map(part => part.text)
                 .join('');
 
-        // This will throw StructuredOutputError on failure
-        return parseStructured(schema, content);
+        try {
+            const result = parseStructured(schema, content);
+            // Emit structured_response event on success
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_response',
+                provider: response.provider ?? 'router',
+                model: response.message.role,
+                duration: Date.now() - start,
+                schemaName,
+                usage: response.usage,
+            });
+            return result;
+        } catch (error) {
+            // Emit structured_validation_error event
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_validation_error',
+                provider: response.provider ?? 'router',
+                schemaName,
+                error: error instanceof Error ? error.message : 'Validation failed',
+                rawOutput: content,
+            });
+            throw error;
+        }
     }
 
     /**
@@ -540,12 +628,23 @@ export class Router {
     ): AsyncGenerator<T, T, unknown> {
         // Convert Zod schema to JSON Schema for providers
         const jsonSchema = zodToJsonSchema(schema);
+        const schemaName = options?.schemaName ?? 'response';
+
+        // Emit structured_request event
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'structured_request',
+            provider: 'router',
+            schemaName,
+        });
 
         // Build ChatOptions with schema
         const structuredOptions: ChatOptions = {
             ...options,
             jsonSchema,
         };
+
+        const start = Date.now();
 
         // Stream with failover
         const stream = this.executeStream(
@@ -558,31 +657,53 @@ export class Router {
         let fullContent = '';
         let lastYielded: T | undefined;
 
-        for await (const event of stream) {
-            // Only process text events
-            if (event.type !== 'text') continue;
+        try {
+            for await (const event of stream) {
+                // Only process text events
+                if (event.type !== 'text') continue;
 
-            fullContent += event.content;
+                fullContent += event.content;
 
-            // Try to parse partial JSON
-            const result = parser.feed(event.content);
+                // Try to parse partial JSON
+                const result = parser.feed(event.content);
 
-            // Yield if we got a valid partial and it's different from last
-            if (result.partial !== undefined) {
-                // Only yield if different from last (avoid duplicate yields)
-                if (lastYielded === undefined || JSON.stringify(result.partial) !== JSON.stringify(lastYielded)) {
-                    lastYielded = result.partial;
-                    yield result.partial;
+                // Yield if we got a valid partial and it's different from last
+                if (result.partial !== undefined) {
+                    // Only yield if different from last (avoid duplicate yields)
+                    if (lastYielded === undefined || JSON.stringify(result.partial) !== JSON.stringify(lastYielded)) {
+                        lastYielded = result.partial;
+                        yield result.partial;
+                    }
                 }
             }
+
+            // Parse and validate the complete content
+            // This will throw StructuredOutputError on failure
+            const complete = parseStructured(schema, fullContent);
+
+            // Emit structured_response event on success
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_response',
+                provider: 'router',
+                schemaName,
+                duration: Date.now() - start,
+            });
+
+            // Return the complete validated object
+            return complete;
+        } catch (error) {
+            // Emit structured_validation_error event
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_validation_error',
+                provider: 'router',
+                schemaName,
+                error: error instanceof Error ? error.message : 'Validation failed',
+                rawOutput: fullContent,
+            });
+            throw error;
         }
-
-        // Parse and validate the complete content
-        // This will throw StructuredOutputError on failure
-        const complete = parseStructured(schema, fullContent);
-
-        // Return the complete validated object
-        return complete;
     }
 
     // ========================================================================

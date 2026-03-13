@@ -1265,3 +1265,331 @@ describe('AIModel', () => {
         });
     });
 });
+
+// ============================================================================
+// Structured Output Auditor Tests (VAL-CROSS-003)
+// ============================================================================
+
+describe('structured output auditor events', () => {
+    const TestSchema = z.object({
+        name: z.string(),
+        value: z.number(),
+    });
+
+    const originalFetch = globalThis.fetch;
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+    });
+
+    describe('generateStructured auditor events', () => {
+        it('emits structured_request and structured_response events on success', async () => {
+            const auditor = new BufferedAuditor();
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Alice", "value": 42}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({ auditor }));
+            await model.generateStructured(TestSchema, [
+                { role: 'user', content: 'Generate data' },
+            ]);
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit structured_request and structured_response
+            expect(types).toContain('structured_request');
+            expect(types).toContain('structured_response');
+
+            // Check structured_request event details
+            const requestEvent = events.find(e => e.type === 'structured_request');
+            expect(requestEvent?.schemaName).toBe('response');
+
+            // Check structured_response event details
+            const responseEvent = events.find(e => e.type === 'structured_response');
+            expect(responseEvent?.schemaName).toBe('response');
+            expect(responseEvent?.duration).toBeDefined();
+        });
+
+        it('emits structured_validation_error on validation failure', async () => {
+            const auditor = new BufferedAuditor();
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Alice", "value": "not a number"}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({ auditor }));
+
+            try {
+                await model.generateStructured(TestSchema, [
+                    { role: 'user', content: 'Generate data' },
+                ]);
+            } catch {
+                // Expected to throw StructuredOutputError
+            }
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit structured_request and structured_validation_error
+            expect(types).toContain('structured_request');
+            expect(types).toContain('structured_validation_error');
+
+            // Check structured_validation_error event details
+            const validationError = events.find(e => e.type === 'structured_validation_error');
+            expect(validationError?.schemaName).toBe('response');
+            expect(validationError?.error).toBeDefined();
+            expect(validationError?.rawOutput).toBeDefined();
+        });
+
+        it('uses custom schema name when provided', async () => {
+            const auditor = new BufferedAuditor();
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Test", "value": 1}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({ auditor }));
+            await model.generateStructured(TestSchema, [
+                { role: 'user', content: 'Generate data' },
+            ], { schemaName: 'CustomSchema' });
+
+            const events = auditor.getEvents();
+
+            // Check structured_request event has custom schema name
+            const requestEvent = events.find(e => e.type === 'structured_request');
+            expect(requestEvent?.schemaName).toBe('CustomSchema');
+
+            // Check structured_response event has custom schema name
+            const responseEvent = events.find(e => e.type === 'structured_response');
+            expect(responseEvent?.schemaName).toBe('CustomSchema');
+        });
+    });
+
+    describe('chat output parameter auditor events', () => {
+        it('emits structured_request and structured_response with output parameter', async () => {
+            const auditor = new BufferedAuditor();
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"name": "Bob", "value": 100}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({ auditor }));
+            const response = await model.chat([
+                { role: 'user', content: 'Generate data' },
+            ], { output: { schema: TestSchema, name: 'TestData' } });
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit structured_request and structured_response
+            expect(types).toContain('structured_request');
+            expect(types).toContain('structured_response');
+
+            // Verify structured property is populated
+            expect(response.structured?.name).toBe('Bob');
+            expect(response.structured?.value).toBe(100);
+        });
+
+        it('emits structured_validation_error when output validation fails', async () => {
+            const auditor = new BufferedAuditor();
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: '{"invalid": "data"}' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({ auditor }));
+
+            try {
+                await model.chat([
+                    { role: 'user', content: 'Generate data' },
+                ], { output: { schema: TestSchema } });
+            } catch {
+                // Expected to throw StructuredOutputError
+            }
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            expect(types).toContain('structured_request');
+            expect(types).toContain('structured_validation_error');
+
+            const validationError = events.find(e => e.type === 'structured_validation_error');
+            expect(validationError?.rawOutput).toBe('{"invalid": "data"}');
+        });
+    });
+
+    describe('generateStructuredStream auditor events', () => {
+        it('emits structured_request on stream start and structured_response on completion', async () => {
+            const auditor = new BufferedAuditor();
+            const chunks = [
+                'data: {"choices":[{"delta":{"content":"{\\"name\\":"}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":" \\"Stream\\""}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":", \\"value\\": 99"}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":"}"}}]}\n\n',
+                'data: [DONE]\n\n',
+            ];
+
+            globalThis.fetch = mock(async () =>
+                new Response(chunks.join(''), {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({
+                auditor,
+                providers: [{ type: 'openai', apiKey: 'sk-test' }],
+            }));
+
+            const stream = model.generateStructuredStream(TestSchema, [
+                { role: 'user', content: 'Generate data' },
+            ]);
+
+            // Consume the stream
+            for await (const _ of stream) {
+                // Just consume the partials
+            }
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit structured_request at start and structured_response at end
+            expect(types).toContain('structured_request');
+            expect(types).toContain('structured_response');
+
+            // Check order: request before response
+            const requestIdx = types.indexOf('structured_request');
+            const responseIdx = types.indexOf('structured_response');
+            expect(requestIdx).toBeLessThan(responseIdx);
+        });
+
+        it('emits structured_validation_error when stream validation fails', async () => {
+            const auditor = new BufferedAuditor();
+            // Invalid JSON that doesn't match schema
+            const chunks = [
+                'data: {"choices":[{"delta":{"content":"{\\"name\\":"}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":"\\"invalid\\""}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":"}"}}]}\n\n', // Missing required 'value' field
+                'data: [DONE]\n\n',
+            ];
+
+            globalThis.fetch = mock(async () =>
+                new Response(chunks.join(''), {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({
+                auditor,
+                providers: [{ type: 'openai', apiKey: 'sk-test' }],
+            }));
+
+            const StrictSchema = z.object({
+                name: z.string(),
+                value: z.number(),
+            });
+
+            try {
+                const stream = model.generateStructuredStream(StrictSchema, [
+                    { role: 'user', content: 'Generate data' },
+                ]);
+                for await (const _ of stream) {
+                    // Consume stream
+                }
+            } catch {
+                // Expected to throw
+            }
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit structured_request and structured_validation_error
+            expect(types).toContain('structured_request');
+            expect(types).toContain('structured_validation_error');
+        });
+    });
+
+    describe('existing chat/stream auditor events still work', () => {
+        it('chat without structured output still emits request/response events', async () => {
+            const auditor = new BufferedAuditor();
+            globalThis.fetch = mock(async () =>
+                new Response(JSON.stringify({
+                    model: 'test-model',
+                    created_at: new Date().toISOString(),
+                    message: { role: 'assistant', content: 'Hello world' },
+                    done: true,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({ auditor }));
+            await model.chat([{ role: 'user', content: 'Hello' }]);
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit standard request/response events (not structured events)
+            expect(types).toContain('request');
+            expect(types).toContain('response');
+            expect(types).not.toContain('structured_request');
+            expect(types).not.toContain('structured_response');
+        });
+
+        it('chatStream emits stream_start and stream_end events', async () => {
+            const auditor = new BufferedAuditor();
+            const chunks = [
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n\n',
+                'data: [DONE]\n\n',
+            ];
+
+            globalThis.fetch = mock(async () =>
+                new Response(chunks.join(''), {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                })
+            ) as typeof fetch;
+
+            const model = new AIModel(createTestConfig({
+                auditor,
+                providers: [{ type: 'openai', apiKey: 'sk-test' }],
+            }));
+
+            const stream = model.chatStream([{ role: 'user', content: 'Hello' }]);
+            for await (const _ of stream) {
+                // Consume stream
+            }
+
+            const events = auditor.getEvents();
+            const types = events.map(e => e.type);
+
+            // Should emit stream_start and stream_end, not structured events
+            expect(types).toContain('stream_start');
+            expect(types).toContain('stream_end');
+            expect(types).not.toContain('structured_request');
+            expect(types).not.toContain('structured_response');
+        });
+    });
+});

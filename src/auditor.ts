@@ -21,7 +21,10 @@ export type AuditEventType =
     | 'tool_result'
     | 'error'
     | 'retry'
-    | 'failover';
+    | 'failover'
+    | 'structured_request'
+    | 'structured_response'
+    | 'structured_validation_error';
 
 export interface AuditEvent {
     /** Unix timestamp in ms */
@@ -42,6 +45,10 @@ export interface AuditEvent {
     error?: string;
     /** Arbitrary metadata for framework-specific data */
     metadata?: Record<string, unknown>;
+    /** Schema name for structured output events */
+    schemaName?: string;
+    /** Raw output snippet for validation errors */
+    rawOutput?: string;
 }
 
 // ============================================================================
@@ -133,6 +140,28 @@ export class ConsoleAuditor implements Auditor {
                 break;
             case 'failover':
                 console.warn(parts.join(' '), '→', event.metadata?.['nextProvider'] ?? '');
+                break;
+            case 'structured_request':
+                console.log(
+                    parts.join(' '),
+                    `schema=${event.schemaName ?? 'unknown'}`,
+                    '→',
+                );
+                break;
+            case 'structured_response':
+                console.log(
+                    parts.join(' '),
+                    event.duration ? `${event.duration}ms` : '',
+                    `schema=${event.schemaName ?? 'unknown'}`,
+                );
+                break;
+            case 'structured_validation_error':
+                console.error(
+                    parts.join(' '),
+                    `schema=${event.schemaName ?? 'unknown'}`,
+                    event.error ?? 'Validation failed',
+                    event.rawOutput ? `raw=${event.rawOutput.slice(0, 50)}...` : '',
+                );
                 break;
         }
     }

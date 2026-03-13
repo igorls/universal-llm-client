@@ -15,6 +15,18 @@ describe('NoopAuditor', () => {
             });
         }).not.toThrow();
     });
+
+    it('accepts structured output events without error', () => {
+        const auditor = new NoopAuditor();
+        expect(() => {
+            auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_request',
+                provider: 'test',
+                schemaName: 'User',
+            });
+        }).not.toThrow();
+    });
 });
 
 describe('ConsoleAuditor', () => {
@@ -33,6 +45,7 @@ describe('ConsoleAuditor', () => {
         const types: AuditEvent['type'][] = [
             'request', 'response', 'stream_start', 'stream_end',
             'tool_call', 'tool_result', 'error', 'retry', 'failover',
+            'structured_request', 'structured_response', 'structured_validation_error',
         ];
 
         for (const type of types) {
@@ -44,11 +57,55 @@ describe('ConsoleAuditor', () => {
                     model: 'test-model',
                     duration: 100,
                     usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
-                    error: type === 'error' ? 'test error' : undefined,
+                    error: type === 'error' || type === 'structured_validation_error' ? 'test error' : undefined,
                     metadata: type === 'failover' ? { nextProvider: 'backup' } : undefined,
+                    schemaName: type.startsWith('structured') ? 'User' : undefined,
+                    rawOutput: type === 'structured_validation_error' ? '{"name": "invalid"}' : undefined,
                 });
             }).not.toThrow();
         }
+    });
+
+    it('logs structured_request with schema name', () => {
+        const auditor = new ConsoleAuditor('[TEST]');
+        // Should not throw when logging structured request
+        expect(() => {
+            auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_request',
+                provider: 'ollama',
+                schemaName: 'User',
+            });
+        }).not.toThrow();
+    });
+
+    it('logs structured_response with duration and schema name', () => {
+        const auditor = new ConsoleAuditor('[TEST]');
+        expect(() => {
+            auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_response',
+                provider: 'google',
+                model: 'gemini-2.0-flash',
+                duration: 150,
+                schemaName: 'User',
+                usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+            });
+        }).not.toThrow();
+    });
+
+    it('logs structured_validation_error with schema name and error', () => {
+        const auditor = new ConsoleAuditor('[TEST]');
+        expect(() => {
+            auditor.record({
+                timestamp: Date.now(),
+                type: 'structured_validation_error',
+                provider: 'openai',
+                schemaName: 'User',
+                error: 'Validation failed: name is required',
+                rawOutput: '{"age": 30}',
+            });
+        }).not.toThrow();
     });
 });
 
@@ -66,6 +123,50 @@ describe('BufferedAuditor', () => {
         auditor.record(event);
 
         expect(auditor.getEvents()).toHaveLength(3);
+    });
+
+    it('buffers structured output events', () => {
+        const auditor = new BufferedAuditor();
+        
+        auditor.record({
+            timestamp: Date.now(),
+            type: 'structured_request',
+            provider: 'ollama',
+            schemaName: 'User',
+        });
+        auditor.record({
+            timestamp: Date.now(),
+            type: 'structured_response',
+            provider: 'ollama',
+            schemaName: 'User',
+            duration: 100,
+        });
+
+        const events = auditor.getEvents();
+        expect(events).toHaveLength(2);
+        expect(events[0]?.type).toBe('structured_request');
+        expect(events[0]?.schemaName).toBe('User');
+        expect(events[1]?.type).toBe('structured_response');
+    });
+
+    it('buffers structured_validation_error events', () => {
+        const auditor = new BufferedAuditor();
+        
+        auditor.record({
+            timestamp: Date.now(),
+            type: 'structured_validation_error',
+            provider: 'openai',
+            schemaName: 'User',
+            error: 'Validation failed',
+            rawOutput: '{"invalid": true}',
+        });
+
+        const events = auditor.getEvents();
+        expect(events).toHaveLength(1);
+        expect(events[0]?.type).toBe('structured_validation_error');
+        expect(events[0]?.schemaName).toBe('User');
+        expect(events[0]?.error).toBe('Validation failed');
+        expect(events[0]?.rawOutput).toBe('{"invalid": true}');
     });
 
     it('flushes events to callback', async () => {
