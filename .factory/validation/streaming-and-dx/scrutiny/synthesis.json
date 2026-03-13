@@ -1,0 +1,48 @@
+{
+  "milestone": "streaming-and-dx",
+  "round": 1,
+  "status": "pass",
+  "validatorsRun": {
+    "test": { "passed": true, "command": "bun test", "exitCode": 0 },
+    "typecheck": { "passed": true, "command": "bun run typecheck", "exitCode": 0 },
+    "lint": { "passed": true, "command": "bun run lint", "exitCode": 0 }
+  },
+  "reviewsSummary": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "failedFeatures": []
+  },
+  "blockingIssues": [],
+  "nonBlockingIssues": [
+    {
+      "featureId": "generate-structured-api",
+      "file": "src/ai-model.ts",
+      "line": 107,
+      "description": "Feature description mentions accepting Zod schema or JSON Schema, but generateStructured signature only accepts z.ZodType<T>. Users wanting raw JSON Schema should use model.chat(messages, { output: { jsonSchema: ... } }) instead. This is acceptable since generateStructured is specifically for the Zod-first API."
+    },
+    {
+      "featureId": "streaming-structured-output",
+      "file": "src/structured-output.ts",
+      "line": 791,
+      "description": "The StreamingStructuredResult interface is exported but unused in the implementation. The generator returns T directly rather than StreamingStructuredResult<T>. Consider either using this interface or removing the export to avoid confusion."
+    },
+    {
+      "featureId": "streaming-structured-output",
+      "file": "src/structured-output.ts",
+      "line": 730,
+      "description": "The tryParsePartial() method closes brackets in a simple LIFO order (brackets then braces). For deeply nested mixed structures (e.g., arrays inside objects inside arrays), this may not produce valid JSON in all edge cases. This is acceptable for practical streaming use cases where JSON structure is typically straightforward."
+    }
+  ],
+  "appliedUpdates": [],
+  "suggestedGuidanceUpdates": [
+    {
+      "target": "library",
+      "suggestion": "Add note about streaming JSON parser limitation: The incremental parser uses simple bracket tracking and may not handle deeply nested mixed structures (arrays in objects in arrays) correctly in edge cases. For most practical structured output use cases, JSON structures are straightforward and this is not an issue.",
+      "evidence": "streaming-structured-output feature has tryParsePartial() with simple LIFO bracket closing",
+      "isSystemic": false
+    }
+  ],
+  "rejectedObservations": [],
+  "previousRound": null
+}

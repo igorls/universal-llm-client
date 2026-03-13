@@ -1,0 +1,15 @@
+{
+  "featureId": "auditor-events",
+  "reviewedAt": "2026-03-13T15:50:00.000Z",
+  "commitId": "0ec269a",
+  "transcriptSkeletonReviewed": true,
+  "diffReviewed": true,
+  "status": "pass",
+  "codeReview": {
+    "summary": "The implementation correctly adds auditor events for structured output requests following the existing auditor patterns in the codebase. Three new event types (structured_request, structured_response, structured_validation_error) were added with appropriate fields (schemaName, rawOutput). Events are emitted at all three structured output entry points: generateStructured, chatWithStructuredOutput, and generateStructuredStream. Comprehensive tests verify all event types across all API methods and confirm that existing chat/stream auditor events remain unaffected.",
+    "issues": []
+  },
+  "sharedStateObservations": [],
+  "addressesFailureFrom": null,
+  "summary": "PASS: Feature implements auditor events for structured output comprehensively. The worker followed TDD correctly, implemented clean code that matches existing patterns, added thorough test coverage (15 new tests), and verified existing functionality remains intact. All expected behaviors are fulfilled: structured_request emitted at start, structured_response on success with duration/usage/schemaName, structured_validation_error on failure with error/rawOutput/schemaName. No blocking or non-blocking issues found. Worker followed the backend-worker skill procedure correctly with no deviations."
+}
