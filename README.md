@@ -27,6 +27,7 @@ const response = await model.chat([
 
 - 🔄 **Transparent Failover** — Priority-ordered provider chain with retries, health tracking, and cooldowns
 - 🛠️ **Tool Calling** — Register tools once, works across all providers. Autonomous multi-turn execution loop
+- 📋 **Structured Output** — Zod schema validation, JSON Schema support, streaming, and type-safe responses
 - 🌊 **Streaming** — First-class async generator streaming with pluggable decoder strategies
 - 🧠 **Reasoning** — Native `<think>` tag parsing, interleaved reasoning, and model thinking support
 - 🔍 **Observability** — Built-in auditor interface for logging, cost tracking, and behavioral analysis
@@ -183,6 +184,133 @@ const vectors = await embedModel.embedArray(['Hello', 'World']);
 // [[0.006, ...], [0.012, ...]]
 ```
 
+### Structured Output
+
+Get typed, validated JSON responses from any LLM using Zod schemas:
+
+```typescript
+import { AIModel } from 'universal-llm-client';
+import { z } from 'zod';
+
+const model = new AIModel({
+    model: 'gemini-2.5-flash',
+    providers: [
+        { type: 'google', apiKey: process.env.GOOGLE_API_KEY },
+        { type: 'ollama' },
+    ],
+});
+
+// Define your schema
+const UserSchema = z.object({
+    name: z.string(),
+    age: z.number(),
+    email: z.string().email(),
+    interests: z.array(z.string()),
+});
+
+// Method 1: generateStructured (throws on validation failure)
+const user = await model.generateStructured(UserSchema, [
+    { role: 'user', content: 'Generate a user profile for a software developer' },
+]);
+
+console.log(user.name);     // TypeScript knows this is string
+console.log(user.age);      // TypeScript knows this is number
+console.log(user.email);    // TypeScript knows this is string
+console.log(user.interests); // TypeScript knows this is string[]
+```
+
+**Non-throwing variant:**
+
+```typescript
+// Method 2: tryParseStructured (returns result object, never throws)
+const result = await model.tryParseStructured(UserSchema, messages);
+
+if (result.ok) {
+    console.log('User:', result.value.name);
+} else {
+    console.log('Error:', result.error.message);
+    console.log('Raw LLM output:', result.rawOutput);
+}
+```
+
+**Via chat options:**
+
+```typescript
+// Method 3: chat with output parameter
+const response = await model.chat(messages, {
+    output: { schema: UserSchema },
+});
+
+// response.structured is typed as { name: string, age: number, ... }
+if (response.structured) {
+    console.log(response.structured.name);
+}
+```
+
+**Streaming structured output:**
+
+```typescript
+// Stream partial validated objects as JSON generates
+for await (const partial of model.generateStructuredStream(UserSchema, messages)) {
+    console.log('Partial:', partial);
+    // Partial: { name: 'Alice' }
+    // Partial: { name: 'Alice', age: 30 }
+    // Partial: { name: 'Alice', age: 30, email: 'alice@example.com' }
+}
+```
+
+**Raw JSON Schema (without Zod):**
+
+```typescript
+const response = await model.chat(messages, {
+    jsonSchema: {
+        type: 'object',
+        properties: {
+            name: { type: 'string' },
+            age: { type: 'number' },
+        },
+        required: ['name', 'age'],
+    },
+    name: 'Person',  // Optional, used for LLM guidance
+});
+```
+
+**Separate module import (tree-shaking):**
+
+```typescript
+// Import only structured output types if you don't need the full client
+import {
+    StructuredOutputError,
+    type StructuredOutputResult,
+    type StructuredOutputOptions,
+    parseStructured,
+    tryParseStructured,
+    zodToJsonSchema,
+} from 'universal-llm-client/structured-output';
+```
+
+**Vision with structured output:**
+
+```typescript
+const ImageAnalysisSchema = z.object({
+    objects: z.array(z.string()),
+    scene: z.string(),
+    mood: z.string(),
+});
+
+const response = await model.generateStructured(ImageAnalysisSchema, [
+    multimodalMessage('Analyze this image', ['https://example.com/photo.jpg']),
+]);
+```
+
+**Provider compatibility:**
+
+| Provider | Method | Notes |
+|----------|--------|-------|
+| OpenAI | `response_format.json_schema` | Strict mode enabled |
+| Ollama | `format: { schema }` | Model must support grammar |
+| Google | `responseMimeType + responseSchema` | Some features stripped |
+
 ### Observability
 
 ```typescript
@@ -308,6 +436,9 @@ new AIModel(config: AIModelConfig)
 | `chat(messages, options?)` | `Promise<LLMChatResponse>` | Send chat request |
 | `chatWithTools(messages, options?)` | `Promise<LLMChatResponse>` | Chat with autonomous tool execution |
 | `chatStream(messages, options?)` | `AsyncGenerator<DecodedEvent>` | Stream chat response |
+| `generateStructured(schema, messages, options?)` | `Promise<T>` | Generate typed JSON validated against Zod schema |
+| `tryParseStructured(schema, messages, options?)` | `Promise<StructuredOutputResult<T>>` | Non-throwing variant returning result object |
+| `generateStructuredStream(schema, messages, options?)` | `AsyncGenerator<T, T>` | Stream partial validated objects as JSON generates |
 | `embed(text)` | `Promise<number[]>` | Generate single embedding |
 | `embedArray(texts)` | `Promise<number[][]>` | Generate batch embeddings |
 | `registerTool(name, desc, params, handler)` | `void` | Register a callable tool |
@@ -317,6 +448,52 @@ new AIModel(config: AIModelConfig)
 | `getProviderStatus()` | `ProviderStatus[]` | Check provider health |
 | `setModel(name)` | `void` | Switch model at runtime |
 | `dispose()` | `Promise<void>` | Clean shutdown |
+
+### Structured Output
+
+```typescript
+import { z } from 'zod';
+
+// Define your schema
+const UserSchema = z.object({
+    name: z.string(),
+    age: z.number(),
+    email: z.string().email(),
+});
+
+// Generate typed JSON
+const user = await model.generateStructured(UserSchema, messages);
+// TypeScript infers: { name: string; age: number; email: string }
+
+// Non-throwing variant
+const result = await model.tryParseStructured(UserSchema, messages);
+if (result.ok) {
+    console.log(result.value.name);  // Fully typed
+} else {
+    console.log(result.error.message);
+}
+
+// Stream partial objects
+for await (const partial of model.generateStructuredStream(UserSchema, messages)) {
+    console.log(partial);  // Partial validated objects
+}
+```
+
+**Separate module import (tree-shaking):**
+
+```typescript
+import {
+    StructuredOutputError,
+    type StructuredOutputResult,
+    parseStructured,
+    tryParseStructured,
+    zodToJsonSchema,
+} from 'universal-llm-client/structured-output';
+
+// Use without importing the full client
+const schema = z.object({ name: z.string() });
+const jsonSchema = zodToJsonSchema(schema);
+```
 
 ### `ToolBuilder` / `ToolExecutor`
 
