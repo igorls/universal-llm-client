@@ -1,0 +1,693 @@
+/* ============================================================================
+   Universal LLM Client — Custom Homepage Styles
+   Dark-mode-first with electric blue/violet accent palette
+   ============================================================================ */
+
+:root {
+    /* Brand palette */
+    --ulc-brand-start: #6366f1;
+    --ulc-brand-mid: #8b5cf6;
+    --ulc-brand-end: #06b6d4;
+    --ulc-brand-glow: rgba(99, 102, 241, 0.25);
+
+    /* Surface */
+    --ulc-surface: rgba(30, 32, 44, 0.65);
+    --ulc-surface-hover: rgba(40, 42, 58, 0.80);
+    --ulc-surface-border: rgba(99, 102, 241, 0.15);
+    --ulc-surface-border-hover: rgba(99, 102, 241, 0.4);
+
+    /* Text */
+    --ulc-text-primary: #e2e8f0;
+    --ulc-text-secondary: #94a3b8;
+    --ulc-text-accent: #a5b4fc;
+
+    /* Spacing */
+    --ulc-section-gap: 5rem;
+    --ulc-card-radius: 14px;
+    --ulc-card-padding: 1.75rem;
+
+    /* Animations */
+    --ulc-transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Override VitePress hero to blend with our custom sections */
+.VPHero {
+    padding-bottom: 2rem !important;
+}
+
+/* Reset VitePress home container — let our sections handle centering */
+.VPHome .vp-doc.container {
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+.VPHome .vp-doc.container > div {
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+}
+
+/* Ensure VitePress .content wrapper is full-width */
+.VPHome .VPContent .VPDoc .content {
+    max-width: 100% !important;
+    padding: 0 !important;
+}
+
+.VPHome .VPDoc .content-container {
+    max-width: 100% !important;
+}
+
+/* ── Section base ────────────────────────────────────────────── */
+
+.ulc-section {
+    max-width: 1152px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+}
+
+.ulc-section-title {
+    font-size: 0.8125rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ulc-text-accent);
+    text-align: center;
+    margin-bottom: 0.5rem;
+}
+
+.ulc-section-subtitle {
+    font-size: 1rem;
+    color: var(--ulc-text-secondary);
+    text-align: center;
+    margin: 0 auto 2.5rem auto !important;
+    max-width: 560px;
+    line-height: 1.6;
+}
+
+/* Beat VitePress .vp-doc p specificity on our custom elements */
+.vp-doc .ulc-section-title,
+.vp-doc .ulc-section-subtitle {
+    margin-left: auto !important;
+    margin-right: auto !important;
+    text-align: center !important;
+}
+
+.vp-doc .ulc-feature-desc,
+.vp-doc .ulc-feature-name {
+    margin: 0 !important;
+}
+
+/* Keep bottom margins on CTA text elements */
+.vp-doc .ulc-cta-title {
+    margin: 0 0 0.75rem 0 !important;
+}
+
+.vp-doc .ulc-cta-sub {
+    margin: 0 0 2.5rem 0 !important;
+}
+
+/* ── Provider Strip ──────────────────────────────────────────── */
+
+.ulc-providers {
+    padding: 2.5rem 0 0;
+}
+
+.ulc-provider-grid {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.625rem;
+}
+
+.ulc-provider-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-radius: 999px;
+    background: var(--ulc-surface);
+    border: 1px solid var(--ulc-surface-border);
+    color: var(--ulc-text-primary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    backdrop-filter: blur(12px);
+    transition: var(--ulc-transition);
+    white-space: nowrap;
+}
+
+.ulc-provider-badge:hover {
+    border-color: var(--ulc-surface-border-hover);
+    background: var(--ulc-surface-hover);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px var(--ulc-brand-glow);
+}
+
+.ulc-provider-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    color: var(--ulc-text-accent);
+}
+
+.ulc-provider-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.ulc-provider-desc {
+    opacity: 0.45;
+    font-weight: 400;
+}
+
+/* ── Feature Cards ───────────────────────────────────────────── */
+
+.ulc-features {
+    padding: var(--ulc-section-gap) 0 2rem;
+}
+
+.ulc-feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.25rem;
+}
+
+.ulc-feature-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: var(--ulc-card-padding);
+    border-radius: var(--ulc-card-radius);
+    background: var(--ulc-surface);
+    border: 1px solid var(--ulc-surface-border);
+    backdrop-filter: blur(16px);
+    transition: var(--ulc-transition);
+    overflow: hidden;
+}
+
+.ulc-feature-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--ulc-brand-start), var(--ulc-brand-end));
+    opacity: 0;
+    transition: var(--ulc-transition);
+}
+
+.ulc-feature-card:hover {
+    border-color: var(--ulc-surface-border-hover);
+    background: var(--ulc-surface-hover);
+    transform: translateY(-4px);
+    box-shadow: 0 16px 48px var(--ulc-brand-glow);
+}
+
+.ulc-feature-card:hover::before {
+    opacity: 1;
+}
+
+/* Icon wrapper — uniform sizing, tinted background */
+.ulc-feature-icon-wrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(6, 182, 212, 0.1));
+    margin-bottom: 1rem;
+    flex-shrink: 0;
+}
+
+.ulc-feature-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    color: var(--ulc-text-accent);
+}
+
+.ulc-feature-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.ulc-feature-name {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--ulc-text-primary);
+    margin-bottom: 0.5rem;
+    line-height: 1.3;
+}
+
+.ulc-feature-desc {
+    font-size: 0.8125rem;
+    color: var(--ulc-text-secondary);
+    line-height: 1.65;
+    margin-bottom: 1rem;
+    flex: 1;
+}
+
+/* Feature mini-visual */
+.ulc-feature-visual {
+    padding: 0.75rem;
+    border-radius: 8px;
+    background: rgba(15, 17, 26, 0.6);
+    border: 1px solid rgba(99, 102, 241, 0.08);
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.65rem;
+    color: var(--ulc-text-accent);
+    line-height: 1.6;
+    overflow: hidden;
+    white-space: pre;
+    margin-top: auto;
+}
+
+/* ── Code Tabs ───────────────────────────────────────────────── */
+
+.ulc-code-showcase {
+    padding: var(--ulc-section-gap) 0 2rem;
+}
+
+.ulc-tabs {
+    display: flex;
+    justify-content: center;
+    gap: 0.375rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+}
+
+.ulc-tab {
+    padding: 0.5rem 1.25rem;
+    border-radius: 999px;
+    border: 1px solid var(--ulc-surface-border);
+    background: transparent;
+    color: var(--ulc-text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--ulc-transition);
+    font-family: inherit;
+}
+
+.ulc-tab:hover {
+    color: var(--ulc-text-primary);
+    border-color: var(--ulc-surface-border-hover);
+}
+
+.ulc-tab.active {
+    background: linear-gradient(135deg, var(--ulc-brand-start), var(--ulc-brand-mid));
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 4px 16px var(--ulc-brand-glow);
+}
+
+.ulc-code-block {
+    max-width: 780px;
+    margin: 0 auto;
+    border-radius: var(--ulc-card-radius);
+    background: rgba(15, 17, 26, 0.85);
+    border: 1px solid var(--ulc-surface-border);
+    backdrop-filter: blur(16px);
+    overflow: hidden;
+}
+
+.ulc-code-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0.625rem 1rem;
+    background: rgba(30, 32, 44, 0.5);
+    border-bottom: 1px solid var(--ulc-surface-border);
+}
+
+.ulc-code-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+}
+
+.ulc-code-dot:nth-child(1) { background: #ff5f57; }
+.ulc-code-dot:nth-child(2) { background: #febc2e; }
+.ulc-code-dot:nth-child(3) { background: #28c840; }
+
+.ulc-code-filename {
+    margin-left: 0.75rem;
+    font-size: 0.75rem;
+    color: var(--ulc-text-secondary);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.ulc-code-body {
+    padding: 1.25rem 1.5rem;
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', monospace;
+    font-size: 0.8rem;
+    line-height: 1.7;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--ulc-text-primary);
+}
+
+/* Syntax colors */
+.syn-kw { color: #c084fc; }
+.syn-str { color: #86efac; }
+.syn-fn { color: #93c5fd; }
+.syn-cm { color: #64748b; }
+.syn-num { color: #fbbf24; }
+.syn-type { color: #67e8f9; }
+.syn-op { color: #94a3b8; }
+.syn-prop { color: #f0abfc; }
+
+/* ── Architecture ────────────────────────────────────────────── */
+
+.ulc-architecture {
+    padding: var(--ulc-section-gap) 0 2rem;
+}
+
+.ulc-arch-diagram {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    border-radius: var(--ulc-card-radius);
+    background: var(--ulc-surface);
+    border: 1px solid var(--ulc-surface-border);
+    backdrop-filter: blur(16px);
+}
+
+.ulc-arch-top {
+    display: flex;
+    justify-content: center;
+}
+
+.ulc-arch-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 0.75rem 1.5rem;
+    border-radius: 10px;
+    font-weight: 600;
+    text-align: center;
+    gap: 2px;
+    min-height: 48px;
+}
+
+.ulc-arch-box.primary {
+    background: linear-gradient(135deg, var(--ulc-brand-start), var(--ulc-brand-mid));
+    color: #fff;
+    box-shadow: 0 4px 24px var(--ulc-brand-glow);
+    font-size: 0.95rem;
+    padding: 0.875rem 2rem;
+}
+
+.ulc-arch-box.secondary {
+    background: rgba(99, 102, 241, 0.12);
+    border: 1px solid var(--ulc-surface-border-hover);
+    color: var(--ulc-text-accent);
+}
+
+.ulc-arch-box.tertiary {
+    background: rgba(6, 182, 212, 0.1);
+    border: 1px solid rgba(6, 182, 212, 0.25);
+    color: #67e8f9;
+    font-size: 0.8rem;
+    padding: 0.625rem 1rem;
+}
+
+.ulc-arch-label {
+    font-size: 0.85rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.ulc-arch-sublabel {
+    font-size: 0.7rem;
+    font-weight: 400;
+    opacity: 0.7;
+    line-height: 1.2;
+}
+
+.ulc-arch-arrow {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 0.5rem 0;
+    color: var(--ulc-text-secondary);
+    opacity: 0.5;
+}
+
+.ulc-arch-arrow svg {
+    width: 20px;
+    height: 20px;
+}
+
+.ulc-arch-row {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.ulc-arch-row.cols-1 { grid-template-columns: 1fr; }
+.ulc-arch-row.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.ulc-arch-row.cols-5 { grid-template-columns: repeat(5, 1fr); }
+
+/* ── CTA Footer ──────────────────────────────────────────────── */
+
+.ulc-cta {
+    padding: var(--ulc-section-gap) 0 6rem;
+    text-align: center;
+    margin-top: 1rem;
+}
+
+.ulc-cta-title {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--ulc-text-primary);
+    margin-bottom: 0.75rem !important;
+}
+
+.ulc-cta-sub {
+    font-size: 1rem;
+    color: var(--ulc-text-secondary);
+    margin-bottom: 2.5rem;
+    letter-spacing: 0.01em;
+}
+
+.ulc-install-box {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.875rem 1rem 0.875rem 1.5rem;
+    border-radius: 12px;
+    background: rgba(15, 17, 26, 0.85);
+    border: 1px solid var(--ulc-surface-border);
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    font-size: 0.875rem;
+    color: var(--ulc-text-primary);
+    margin-bottom: 2.5rem;
+}
+
+.ulc-install-dollar {
+    color: var(--ulc-text-secondary);
+    opacity: 0.5;
+    user-select: none;
+}
+
+.ulc-install-box code {
+    color: var(--ulc-text-accent);
+    background: none;
+    padding: 0;
+    font-size: inherit;
+}
+
+.ulc-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid var(--ulc-surface-border);
+    background: transparent;
+    color: var(--ulc-text-secondary);
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--ulc-transition);
+    font-family: inherit;
+    white-space: nowrap;
+}
+
+.ulc-copy-btn:hover {
+    color: var(--ulc-text-primary);
+    border-color: var(--ulc-surface-border-hover);
+    background: rgba(99, 102, 241, 0.08);
+}
+
+.ulc-copy-icon {
+    display: inline-flex;
+    width: 14px;
+    height: 14px;
+}
+
+.ulc-copy-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+.ulc-cta-links {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+}
+
+.ulc-cta-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.875rem 2rem;
+    border-radius: 10px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: var(--ulc-transition);
+}
+
+.ulc-cta-link.primary {
+    background: linear-gradient(135deg, var(--ulc-brand-start), var(--ulc-brand-mid));
+    color: #fff;
+    box-shadow: 0 4px 16px var(--ulc-brand-glow);
+}
+
+.ulc-cta-link.primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 32px var(--ulc-brand-glow);
+}
+
+.ulc-cta-link.secondary {
+    border: 1px solid var(--ulc-surface-border);
+    color: var(--ulc-text-primary);
+    background: var(--ulc-surface);
+}
+
+.ulc-cta-link.secondary:hover {
+    border-color: var(--ulc-surface-border-hover);
+    transform: translateY(-2px);
+}
+
+.ulc-btn-icon {
+    display: inline-flex;
+    width: 16px;
+    height: 16px;
+}
+
+.ulc-btn-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Responsive ──────────────────────────────────────────────── */
+
+@media (max-width: 960px) {
+    .ulc-feature-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .ulc-arch-row.cols-5 {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 640px) {
+    :root {
+        --ulc-section-gap: 3.5rem;
+        --ulc-card-padding: 1.25rem;
+    }
+
+    .ulc-feature-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .ulc-arch-row.cols-3,
+    .ulc-arch-row.cols-5 {
+        grid-template-columns: 1fr;
+    }
+
+    .ulc-cta-links {
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .ulc-install-box {
+        flex-direction: column;
+        gap: 0.75rem;
+        padding: 1rem;
+    }
+}
+
+/* ── Fade-in animation ───────────────────────────────────────── */
+
+.ulc-fade-in {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+}
+
+.ulc-fade-in.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* ── Light mode overrides ────────────────────────────────────── */
+
+html:not(.dark) {
+    --ulc-surface: rgba(255, 255, 255, 0.7);
+    --ulc-surface-hover: rgba(255, 255, 255, 0.9);
+    --ulc-surface-border: rgba(99, 102, 241, 0.12);
+    --ulc-surface-border-hover: rgba(99, 102, 241, 0.3);
+    --ulc-text-primary: #1e293b;
+    --ulc-text-secondary: #475569;
+    --ulc-text-accent: #6366f1;
+    --ulc-brand-glow: rgba(99, 102, 241, 0.12);
+}
+
+html:not(.dark) .ulc-code-block {
+    background: rgba(248, 250, 252, 0.95);
+}
+
+html:not(.dark) .ulc-code-header {
+    background: rgba(241, 245, 249, 0.8);
+}
+
+html:not(.dark) .ulc-code-body {
+    color: #334155;
+}
+
+html:not(.dark) .syn-kw { color: #7c3aed; }
+html:not(.dark) .syn-str { color: #059669; }
+html:not(.dark) .syn-fn { color: #2563eb; }
+html:not(.dark) .syn-cm { color: #94a3b8; }
+html:not(.dark) .syn-num { color: #d97706; }
+html:not(.dark) .syn-type { color: #0891b2; }
+html:not(.dark) .syn-prop { color: #a855f7; }
+
+html:not(.dark) .ulc-feature-visual {
+    background: rgba(241, 245, 249, 0.8);
+    border-color: rgba(99, 102, 241, 0.06);
+}
+
+html:not(.dark) .ulc-feature-icon-wrap {
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(6, 182, 212, 0.06));
+}
+
+html:not(.dark) .ulc-arch-diagram {
+    background: rgba(255, 255, 255, 0.8);
+}
+
+html:not(.dark) .ulc-install-box {
+    background: rgba(248, 250, 252, 0.95);
+}
