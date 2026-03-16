@@ -64,9 +64,10 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        if (this.options.thinking) {
-            body['think'] = true;
-        }
+        // Always send think parameter — Ollama uses a pointer type,
+        // so omitting it means "use model default" (which for qwen3.5 is to think).
+        // We must explicitly send false to suppress thinking.
+        body['think'] = this.options.thinking ?? false;
 
         // Handle structured output via format parameter
         const schemaOptions = this.extractSchemaOptions(options);
@@ -161,9 +162,7 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        if (this.options.thinking) {
-            body['think'] = true;
-        }
+        body['think'] = this.options.thinking ?? false;
 
         const start = Date.now();
         this.auditor.record({
