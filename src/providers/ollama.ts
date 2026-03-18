@@ -108,9 +108,10 @@ export class OllamaClient extends BaseLLMClient {
             id: tc.id || this.generateToolCallId(),
             function: {
                 ...tc.function,
-                arguments: typeof tc.function.arguments === 'string'
+                name: tc.function?.name || '',
+                arguments: typeof tc.function?.arguments === 'string'
                     ? tc.function.arguments
-                    : JSON.stringify(tc.function.arguments),
+                    : tc.function?.arguments ? JSON.stringify(tc.function.arguments) : '',
             },
         }));
 
@@ -201,9 +202,10 @@ export class OllamaClient extends BaseLLMClient {
                     id: tc.id || this.generateToolCallId(),
                     function: {
                         ...tc.function,
-                        arguments: typeof tc.function.arguments === 'string'
+                        name: tc.function?.name || '',
+                        arguments: typeof tc.function?.arguments === 'string'
                             ? tc.function.arguments
-                            : JSON.stringify(tc.function.arguments),
+                            : tc.function?.arguments ? JSON.stringify(tc.function.arguments) : '',
                     },
                 }));
                 yield { type: 'tool_call', calls: normalized };

@@ -1119,3 +1119,179 @@ describe('OpenAICompatibleClient Structured Output', () => {
         });
     });
 });
+
+describe('OpenAICompatibleClient Edge Cases', () => {
+    let mockFetchAndCapture: ReturnType<typeof mock>;
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch;
+        // Mock fetch and intercept requests
+        mockFetchAndCapture = mock((responseBody: any, status = 200, headers = {}) => {
+            const spy = mock(() => Promise.resolve(new Response(JSON.stringify(responseBody), {
+                status,
+                headers: { 'Content-Type': 'application/json', ...headers }
+            })));
+            globalThis.fetch = spy as any;
+            return spy;
+        });
+    });
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        // Reset fetch mock
+        mock.restore();
+    });
+
+    test('handles malformed JSON response when structured output is requested', async () => {
+        mockFetchAndCapture({
+            ...OPENAI_RESPONSE,
+            choices: [{
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: '{"name": "Alice", "age": 30', // missing closing brace
+                },
+                finish_reason: 'stop',
+            }],
+        });
+
+        const client = createClient();
+        const UserSchema = z.object({
+            name: z.string(),
+            age: z.number()
+        });
+
+        const response = await client.chat([{ role: 'user', content: 'test' }], {
+            schema: UserSchema
+        });
+
+        // The router validates JSON parsing, so the provider should just pass the string back
+        expect(response.message.content).toBe('{"name": "Alice", "age": 30');
+    });
+
+    test('generates missing tool call IDs', async () => {
+        mockFetchAndCapture({
+            ...OPENAI_RESPONSE,
+            choices: [{
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: null,
+                    tool_calls: [{
+                        type: 'function',
+                        function: {
+                            name: 'get_weather',
+                            arguments: '{"location": "Boston"}'
+                        }
+                        // id is missing
+                    }]
+                },
+                finish_reason: 'tool_calls',
+            }],
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        expect(response.message.tool_calls![0].id).toBeString();
+        expect(response.message.tool_calls![0].id).toStartWith('call_');
+    });
+
+    test('handles malformed JSON in tool call arguments by passing raw string', async () => {
+        mockFetchAndCapture({
+            ...OPENAI_RESPONSE,
+            choices: [{
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: null,
+                    tool_calls: [{
+                        id: 'call_123',
+                        type: 'function',
+                        function: {
+                            name: 'get_weather',
+                            arguments: '{"location": "Boston"' // missing closing brace
+                        }
+                    }]
+                },
+                finish_reason: 'tool_calls',
+            }],
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        // The parser inside the router handles executing tools or dealing with malformed JSON args
+        // the client provider should either parse if it can or pass as string if it can't.
+        // Or if we check how the provider maps it, let's see what it does.
+        // Actually, let's just make sure it doesn't crash.
+        expect(response.message.tool_calls![0].function.arguments).toBe('{"location": "Boston"');
+    });
+
+    test('handles empty tool call arguments by returning empty object or empty string', async () => {
+        mockFetchAndCapture({
+            ...OPENAI_RESPONSE,
+            choices: [{
+                index: 0,
+                message: {
+                    role: 'assistant',
+                    content: null,
+                    tool_calls: [{
+                        id: 'call_123',
+                        type: 'function',
+                        function: {
+                            name: 'get_weather',
+                            arguments: ''
+                        }
+                    }]
+                },
+                finish_reason: 'tool_calls',
+            }],
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        expect(response.message.tool_calls![0].function.arguments).toBe(''); // or {} depending on implementation
+    });
+
+    test('handles HTTP 429 rate limit error', async () => {
+        mockFetchAndCapture({
+            error: {
+                message: 'Rate limit exceeded',
+                type: 'rate_limit_error',
+            }
+        }, 429);
+
+        const client = createClient();
+
+        try {
+            await client.chat([{ role: 'user', content: 'test' }]);
+            expect(false).toBe(true); // Should not reach here
+        } catch (e: any) {
+            expect(e.message).toInclude('Rate limit exceeded'); // or checking status
+        }
+    });
+
+    test('handles HTTP 500 server error', async () => {
+        mockFetchAndCapture({
+            error: {
+                message: 'Internal server error',
+                type: 'server_error',
+            }
+        }, 500);
+
+        const client = createClient();
+
+        try {
+            await client.chat([{ role: 'user', content: 'test' }]);
+            expect(false).toBe(true); // Should not reach here
+        } catch (e: any) {
+            expect(e.message).toInclude('Internal server error'); // or checking status
+        }
+    });
+});
