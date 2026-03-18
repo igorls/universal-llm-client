@@ -489,15 +489,15 @@ export class GoogleClient extends BaseLLMClient {
     }
 
     private convertFunctionCallToToolCall(
-        fc: { name: string; args: Record<string, unknown> },
+        fc: { name: string; args?: Record<string, unknown> },
         thoughtSignature?: string,
     ): LLMToolCall {
         const toolCall: LLMToolCall = {
             id: this.generateToolCallId(),
             type: 'function',
             function: {
-                name: fc.name,
-                arguments: JSON.stringify(fc.args),
+                name: fc.name || '',
+                arguments: fc.args ? JSON.stringify(fc.args) : '{}',
             },
         };
         if (thoughtSignature) {

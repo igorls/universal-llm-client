@@ -907,3 +907,103 @@ describe('OllamaClient', () => {
         });
     });
 });
+
+describe('OllamaClient Edge Cases', () => {
+    let mockFetchAndCapture: ReturnType<typeof mock>;
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch;
+        // Mock fetch and intercept requests
+        mockFetchAndCapture = mock((responseBody: any, status = 200, headers = {}) => {
+            const spy = mock(() => Promise.resolve(new Response(JSON.stringify(responseBody), {
+                status,
+                headers: { 'Content-Type': 'application/json', ...headers }
+            })));
+            globalThis.fetch = spy as any;
+            return spy;
+        });
+    });
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        mock.restore();
+    });
+
+    test('handles empty string tool call arguments without crashing', async () => {
+        mockFetchAndCapture({
+            ...OLLAMA_RESPONSE,
+            message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [{
+                    function: {
+                        name: 'get_weather',
+                        arguments: '' // Ollama might send this
+                    }
+                }]
+            }
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        // Ollama parser tries to JSON parse arguments if it is string,
+        // if it fails it falls back. Let's see what it returns.
+        expect(response.message.tool_calls![0].function.arguments).toBe('');
+    });
+
+    test('handles missing tool call names gracefully', async () => {
+        mockFetchAndCapture({
+            ...OLLAMA_RESPONSE,
+            message: {
+                role: 'assistant',
+                content: '',
+                tool_calls: [{
+                    function: {
+                        // no name
+                        arguments: '{"location": "Boston"}'
+                    }
+                }]
+            }
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        // Default to empty string if missing
+        expect(response.message.tool_calls![0].function.name).toBe('');
+    });
+
+    test('handles HTTP 429 rate limit error', async () => {
+        mockFetchAndCapture({
+            error: 'Rate limit exceeded'
+        }, 429);
+
+        const client = createClient();
+
+        try {
+            await client.chat([{ role: 'user', content: 'test' }]);
+            expect(false).toBe(true);
+        } catch (e: any) {
+            expect(e.message).toInclude('Rate limit exceeded');
+        }
+    });
+
+    test('handles HTTP 500 server error', async () => {
+        mockFetchAndCapture({
+            error: 'Internal server error'
+        }, 500);
+
+        const client = createClient();
+
+        try {
+            await client.chat([{ role: 'user', content: 'test' }]);
+            expect(false).toBe(true);
+        } catch (e: any) {
+            expect(e.message).toInclude('Internal server error');
+        }
+    });
+});

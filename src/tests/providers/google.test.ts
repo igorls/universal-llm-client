@@ -657,3 +657,127 @@ describe('GoogleClient Structured Output', () => {
         });
     });
 });
+
+describe('GoogleClient Edge Cases', () => {
+    let mockFetchAndCapture: ReturnType<typeof mock>;
+    let originalFetch: typeof globalThis.fetch;
+
+    beforeEach(() => {
+        originalFetch = globalThis.fetch;
+        // Mock fetch and intercept requests
+        mockFetchAndCapture = mock((responseBody: any, status = 200, headers = {}) => {
+            const spy = mock(() => Promise.resolve(new Response(JSON.stringify(responseBody), {
+                status,
+                headers: { 'Content-Type': 'application/json', ...headers }
+            })));
+            globalThis.fetch = spy as any;
+            return spy;
+        });
+    });
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        mock.restore();
+    });
+
+    test('handles missing or empty content gracefully', async () => {
+        mockFetchAndCapture({
+            ...GOOGLE_RESPONSE,
+            candidates: [{
+                content: {
+                    parts: [], // empty parts
+                    role: 'model',
+                },
+                finishReason: 'STOP',
+                index: 0,
+            }],
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.content).toBe('');
+    });
+
+    test('generates missing tool call IDs', async () => {
+        mockFetchAndCapture({
+            ...GOOGLE_RESPONSE,
+            candidates: [{
+                content: {
+                    parts: [{
+                        functionCall: {
+                            name: 'get_weather',
+                            args: { location: 'Boston' }
+                        }
+                    }],
+                    role: 'model',
+                },
+                finishReason: 'STOP',
+                index: 0,
+            }],
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        expect(response.message.tool_calls![0].id).toBeString();
+        expect(response.message.tool_calls![0].id).toStartWith('call_');
+    });
+
+    test('handles missing tool call arguments (args)', async () => {
+        mockFetchAndCapture({
+            ...GOOGLE_RESPONSE,
+            candidates: [{
+                content: {
+                    parts: [{
+                        functionCall: {
+                            name: 'get_weather'
+                            // no args
+                        }
+                    }],
+                    role: 'model',
+                },
+                finishReason: 'STOP',
+                index: 0,
+            }],
+        });
+
+        const client = createClient();
+        const response = await client.chat([{ role: 'user', content: 'test' }]);
+
+        expect(response.message.tool_calls).toBeDefined();
+        // Fallback to empty JSON object string if args is missing
+        expect(response.message.tool_calls![0].function.arguments).toBe('{}');
+    });
+
+    test('handles HTTP 429 rate limit error', async () => {
+        mockFetchAndCapture({
+            error: { message: 'Rate limit exceeded', code: 429 }
+        }, 429);
+
+        const client = createClient();
+
+        try {
+            await client.chat([{ role: 'user', content: 'test' }]);
+            expect(false).toBe(true);
+        } catch (e: any) {
+            expect(e.message).toInclude('Rate limit');
+        }
+    });
+
+    test('handles HTTP 500 server error', async () => {
+        mockFetchAndCapture({
+            error: { message: 'Internal server error', code: 500 }
+        }, 500);
+
+        const client = createClient();
+
+        try {
+            await client.chat([{ role: 'user', content: 'test' }]);
+            expect(false).toBe(true);
+        } catch (e: any) {
+            expect(e.message).toInclude('Internal server error');
+        }
+    });
+});
