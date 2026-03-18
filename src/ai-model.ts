@@ -29,8 +29,8 @@ import { GoogleClient } from './providers/google.js';
 import { BaseLLMClient } from './client.js';
 import {
     type StructuredOutputResult,
+    type SchemaConfig,
 } from './structured-output.js';
-import { z } from 'zod';
 
 // ============================================================================
 // Default Provider URLs
@@ -114,32 +114,33 @@ export class AIModel {
      * Validates the response against the provided Zod schema.
      * Throws StructuredOutputError on validation failure.
      *
-     * @template T The type inferred from the Zod schema
-     * @param schema Zod schema for validation
+     * @template T The output type
+     * @param config Schema configuration (JSON Schema + optional validator)
      * @param messages Chat messages to send
      * @param options Additional options (temperature, maxTokens, etc.)
      * @returns Promise resolving to validated structured output
-     * @throws StructuredOutputError if JSON parsing fails or schema validation fails
+     * @throws StructuredOutputError if JSON parsing fails or validation fails
      *
      * @example
      * ```typescript
-     * const UserSchema = z.object({
+     * import { fromZod } from 'universal-llm-client/zod';
+     * const UserConfig = fromZod(z.object({
      *   name: z.string(),
      *   age: z.number(),
-     * });
+     * }));
      *
-     * const user = await model.generateStructured(UserSchema, [
+     * const user = await model.generateStructured(UserConfig, [
      *   { role: 'user', content: 'Generate a user profile' },
      * ]);
      * // user.name: string, user.age: number
      * ```
      */
     async generateStructured<T>(
-        schema: z.ZodType<T>,
+        config: SchemaConfig<T>,
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<T> {
-        return this.router.generateStructured(schema, messages, options);
+        return this.router.generateStructured(config, messages, options);
     }
 
     /**
@@ -147,15 +148,15 @@ export class AIModel {
      * Same as generateStructured but returns { ok: true, value } on success
      * and { ok: false, error, rawOutput } on failure.
      *
-     * @template T The type inferred from the Zod schema
-     * @param schema Zod schema for validation
+     * @template T The output type
+     * @param config Schema configuration (JSON Schema + optional validator)
      * @param messages Chat messages to send
      * @param options Additional options (temperature, maxTokens, etc.)
      * @returns StructuredOutputResult<T> - either success with value or failure with error
      *
      * @example
      * ```typescript
-     * const result = await model.tryParseStructured(UserSchema, messages);
+     * const result = await model.tryParseStructured(config, messages);
      *
      * if (result.ok) {
      *   console.log('User:', result.value.name);
@@ -166,11 +167,11 @@ export class AIModel {
      * ```
      */
     async tryParseStructured<T>(
-        schema: z.ZodType<T>,
+        config: SchemaConfig<T>,
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<StructuredOutputResult<T>> {
-        return this.router.tryParseStructured(schema, messages, options);
+        return this.router.tryParseStructured(config, messages, options);
     }
 
     /**
@@ -182,8 +183,8 @@ export class AIModel {
      * For invalid partial JSON, no yield occurs (partial validation is best-effort).
      * On stream completion, if the final JSON fails validation, throws StructuredOutputError.
      *
-     * @template T The type inferred from the Zod schema
-     * @param schema Zod schema for validation
+     * @template T The output type
+     * @param config Schema configuration (JSON Schema + optional validator)
      * @param messages Chat messages to send
      * @param options Additional options (temperature, maxTokens, etc.)
      * @yields Partial validated objects as the JSON stream progresses
@@ -192,29 +193,27 @@ export class AIModel {
      *
      * @example
      * ```typescript
-     * const UserSchema = z.object({
+     * import { fromZod } from 'universal-llm-client/zod';
+     * const UserConfig = fromZod(z.object({
      *   name: z.string(),
      *   age: z.number(),
-     * });
+     * }));
      *
-     * const stream = model.generateStructuredStream(UserSchema, [
+     * const stream = model.generateStructuredStream(UserConfig, [
      *   { role: 'user', content: 'Generate a user' },
      * ]);
      *
      * for await (const partial of stream) {
      *   console.log('Partial user:', partial);
-     *   // Partial user: { name: 'Alice' }
-     *   // Partial user: { name: 'Alice', age: 30 }
      * }
-     * // Stream returns complete validated object on completion
      * ```
      */
     async *generateStructuredStream<T>(
-        schema: z.ZodType<T>,
+        config: SchemaConfig<T>,
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): AsyncGenerator<T, T, unknown> {
-        return yield* this.router.generateStructuredStream(schema, messages, options);
+        return yield* this.router.generateStructuredStream(config, messages, options);
     }
 
     // ========================================================================

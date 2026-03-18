@@ -10,9 +10,9 @@ import { BaseLLMClient } from '../client.js';
 import { httpRequest, httpStream } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
-    zodToJsonSchema,
     normalizeJsonSchema,
     stripUnsupportedFeatures,
+    getJsonSchemaFromConfig,
     type JSONSchema,
 } from '../structured-output.js';
 import type {
@@ -335,10 +335,10 @@ export class GoogleClient extends BaseLLMClient {
             let jsonSchema: JSONSchema;
             if (schemaOptions.jsonSchema) {
                 jsonSchema = normalizeJsonSchema(schemaOptions.jsonSchema);
-            } else if (schemaOptions.schema) {
-                jsonSchema = zodToJsonSchema(schemaOptions.schema);
+            } else if (schemaOptions.schemaConfig) {
+                jsonSchema = getJsonSchemaFromConfig(schemaOptions.schemaConfig);
             } else {
-                throw new Error('Either schema or jsonSchema must be provided');
+                throw new Error('Either schemaConfig or jsonSchema must be provided');
             }
 
             // Strip unsupported features for Google

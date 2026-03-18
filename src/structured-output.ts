@@ -2,12 +2,12 @@
  * Structured Output Core Types
  *
  * Core types for structured output support in universal-llm-client.
- * Provides type-safe Zod schema integration and JSON Schema support.
+ * Zero-dependency — works with raw JSON Schema and optional validate functions.
+ *
+ * For Zod integration, use the `universal-llm-client/zod` entrypoint.
  *
  * @module structured-output
  */
-
-import { z } from 'zod';
 
 // ============================================================================
 // JSON Schema Types
@@ -54,6 +54,54 @@ export interface JSONSchema {
 }
 
 // ============================================================================
+// SchemaConfig — The core abstraction replacing z.ZodType<T>
+// ============================================================================
+
+/**
+ * Universal schema configuration for structured output.
+ *
+ * This is the Bring-Your-Own-Validator interface. The core library never
+ * imports Zod — instead it accepts a JSON Schema + optional validate function.
+ *
+ * Use `universal-llm-client/zod` → `fromZod()` to create this from Zod schemas.
+ *
+ * @template T The expected output type
+ *
+ * @example
+ * ```typescript
+ * // Zero-dep usage (no Zod):
+ * const config: SchemaConfig<{ name: string; age: number }> = {
+ *     jsonSchema: {
+ *         type: 'object',
+ *         properties: {
+ *             name: { type: 'string' },
+ *             age: { type: 'number' },
+ *         },
+ *         required: ['name', 'age'],
+ *     },
+ *     validate: (data) => data as { name: string; age: number },
+ * };
+ *
+ * // With Zod (via adapter):
+ * import { fromZod } from 'universal-llm-client/zod';
+ * const config = fromZod(z.object({ name: z.string(), age: z.number() }));
+ * ```
+ */
+export interface SchemaConfig<T = unknown> {
+    /** JSON Schema sent to the LLM provider */
+    readonly jsonSchema: JSONSchema;
+    /**
+     * Optional validator: parse unknown → T or throw.
+     * If omitted, JSON.parse() result is returned as-is (unsafe cast).
+     */
+    readonly validate?: (data: unknown) => T;
+    /** Schema name (for provider guidance, e.g. OpenAI strict mode) */
+    readonly name?: string;
+    /** Schema description (for provider guidance) */
+    readonly description?: string;
+}
+
+// ============================================================================
 // Provider Schema Types
 // ============================================================================
 
@@ -84,7 +132,7 @@ export interface ProviderSchema {
 export interface StructuredOutputErrorOptions {
     /** The raw output from the LLM that failed validation */
     rawOutput: string;
-    /** The underlying cause (e.g., ZodError) */
+    /** The underlying cause (e.g., validation error) */
     cause?: Error;
 }
 
@@ -93,22 +141,20 @@ export interface StructuredOutputErrorOptions {
  *
  * Thrown when:
  * - JSON parsing of LLM response fails
- * - Zod schema validation fails
+ * - Schema validation fails
  *
  * Features:
  * - `rawOutput` property containing the original LLM response
- * - `cause` property for the underlying error (ZodError, SyntaxError, etc.)
+ * - `cause` property for the underlying error
  *
  * @example
  * ```typescript
  * try {
- *   const result = await model.generateStructured(UserSchema, messages);
+ *   const result = await model.generateStructured(schema, messages);
  * } catch (error) {
  *   if (error instanceof StructuredOutputError) {
  *     console.log('Raw LLM output:', error.rawOutput);
- *     if (error.cause instanceof z.ZodError) {
- *       console.log('Validation issues:', error.cause.issues);
- *     }
+ *     console.log('Cause:', error.cause);
  *   }
  * }
  * ```
@@ -117,7 +163,7 @@ export class StructuredOutputError extends Error {
     /** The raw output from the LLM that failed validation */
     public readonly rawOutput: string;
 
-    /** The underlying cause (e.g., ZodError for schema validation failures) */
+    /** The underlying cause (e.g., validation error) */
     public override readonly cause?: Error;
 
     constructor(message: string, options: StructuredOutputErrorOptions) {
@@ -133,33 +179,23 @@ export class StructuredOutputError extends Error {
 }
 
 // ============================================================================
-// Structured Output Options
+// Structured Output Options (legacy — prefer SchemaConfig)
 // ============================================================================
 
 /**
  * Options for structured output generation.
  *
  * Accepts either:
- * - A Zod schema (`schema`) for type-safe validation
- * - A raw JSON Schema object (`jsonSchema`) for flexibility
+ * - A SchemaConfig (recommended)
+ * - A raw JSON Schema object for flexibility
  *
- * Optional `name` and `description` can be provided for LLM guidance
- * (used by providers like OpenAI that support schema names).
- *
- * @template T The expected output type (inferred from Zod schema)
+ * @template T The expected output type
  *
  * @example
  * ```typescript
- * // Using Zod schema (recommended)
- * const UserSchema = z.object({
- *   name: z.string(),
- *   age: z.number(),
- * });
- *
+ * // Using SchemaConfig
  * const options: StructuredOutputOptions<User> = {
- *   schema: UserSchema,
- *   name: 'User',
- *   description: 'A user object',
+ *   schemaConfig: mySchemaConfig,
  * };
  * ```
  *
@@ -180,14 +216,14 @@ export class StructuredOutputError extends Error {
  */
 export interface StructuredOutputOptions<T> {
     /**
-     * Zod schema for structured output.
-     * Use this for type-safe validation with automatic type inference.
+     * Schema configuration for structured output.
+     * Contains JSON Schema + optional validator.
      */
-    schema?: z.ZodType<T>;
+    schemaConfig?: SchemaConfig<T>;
 
     /**
      * Raw JSON Schema for structured output.
-     * Use this when you have a pre-defined schema without Zod.
+     * Use this when you have a pre-defined schema without validation.
      */
     jsonSchema?: JSONSchema;
 
@@ -242,20 +278,6 @@ export interface StructuredOutputFailure<_T> {
  * - `ok: false` → `{ error: StructuredOutputError, rawOutput: string }`
  *
  * @template T The output type
- *
- * @example
- * ```typescript
- * const result = await model.tryParseStructured(UserSchema, messages);
- *
- * if (result.ok) {
- *   // TypeScript knows result.value is User
- *   console.log('User:', result.value.name);
- * } else {
- *   // TypeScript knows result.error is StructuredOutputError
- *   console.log('Error:', result.error.message);
- *   console.log('Raw output:', result.rawOutput);
- * }
- * ```
  */
 export type StructuredOutputResult<T> =
     | StructuredOutputSuccess<T>
@@ -267,20 +289,6 @@ export type StructuredOutputResult<T> =
 
 /**
  * Type guard to check if a structured output result is successful.
- *
- * @param result The result to check
- * @returns true if the result is successful
- *
- * @example
- * ```typescript
- * const result = await model.tryParseStructured(UserSchema, messages);
- *
- * if (isStructuredOutputSuccess(result)) {
- *   console.log('User:', result.value.name);
- * } else {
- *   console.log('Error:', result.error.message);
- * }
- * ```
  */
 export function isStructuredOutputSuccess<T>(
     result: StructuredOutputResult<T>,
@@ -290,19 +298,6 @@ export function isStructuredOutputSuccess<T>(
 
 /**
  * Type guard to check if a structured output result is a failure.
- *
- * @param result The result to check
- * @returns true if the result is a failure
- *
- * @example
- * ```typescript
- * const result = await model.tryParseStructured(UserSchema, messages);
- *
- * if (isStructuredOutputFailure(result)) {
- *   console.log('Error:', result.error.message);
- *   console.log('Raw:', result.rawOutput);
- * }
- * ```
  */
 export function isStructuredOutputFailure<T>(
     result: StructuredOutputResult<T>,
@@ -313,39 +308,6 @@ export function isStructuredOutputFailure<T>(
 // ============================================================================
 // Schema Conversion Utilities
 // ============================================================================
-
-/**
- * Convert a Zod schema to JSON Schema.
- *
- * Uses Zod 4's native `z.toJSONSchema()` for conversion.
- * Handles all Zod types including objects, arrays, primitives, enums, and nested structures.
- *
- * @param schema The Zod schema to convert
- * @returns JSON Schema representation
- *
- * @example
- * ```typescript
- * const UserSchema = z.object({
- *   name: z.string(),
- *   age: z.number(),
- * });
- *
- * const jsonSchema = zodToJsonSchema(UserSchema);
- * // { type: 'object', properties: { name: { type: 'string' }, ... }, required: ['name', 'age'] }
- * ```
- */
-export function zodToJsonSchema<T>(schema: z.ZodType<T>): JSONSchema {
-    const result = z.toJSONSchema(schema, {
-        target: 'draft-07',
-        unrepresentable: 'any',
-    });
-
-    // Cast to our JSONSchema type and clean up
-    const cleanResult = result as JSONSchema;
-    delete cleanResult.$schema;
-
-    return cleanResult;
-}
 
 /**
  * Normalize a raw JSON Schema.
@@ -362,21 +324,26 @@ export function normalizeJsonSchema(schema: JSONSchema): JSONSchema {
 }
 
 /**
- * Get the JSON Schema from options.
- *
- * Converts Zod schema to JSON Schema if necessary, or normalizes raw JSON Schema.
+ * Get the JSON Schema from a SchemaConfig or StructuredOutputOptions.
  *
  * @param options The structured output options
  * @returns JSON Schema
  */
 export function getJsonSchema<T>(options: StructuredOutputOptions<T>): JSONSchema {
-    if (options.schema) {
-        return zodToJsonSchema(options.schema);
+    if (options.schemaConfig) {
+        return normalizeJsonSchema(options.schemaConfig.jsonSchema);
     }
     if (options.jsonSchema) {
         return normalizeJsonSchema(options.jsonSchema);
     }
-    throw new Error('Either schema or jsonSchema must be provided');
+    throw new Error('Either schemaConfig or jsonSchema must be provided');
+}
+
+/**
+ * Get the JSON Schema from a SchemaConfig directly.
+ */
+export function getJsonSchemaFromConfig<T>(config: SchemaConfig<T>): JSONSchema {
+    return normalizeJsonSchema(config.jsonSchema);
 }
 
 /**
@@ -404,18 +371,6 @@ const GOOGLE_UNSUPPORTED_FEATURES = [
  * @param schema The JSON Schema to transform
  * @param provider The target provider
  * @returns Cleaned JSON Schema
- *
- * @example
- * ```typescript
- * const schema = {
- *   type: 'string',
- *   pattern: '^[a-z]+$',
- *   minLength: 1,
- * };
- *
- * const cleaned = stripUnsupportedFeatures(schema, 'google');
- * // { type: 'string' } - pattern and minLength removed
- * ```
  */
 export function stripUnsupportedFeatures(
     schema: JSONSchema,
@@ -443,11 +398,11 @@ export function stripUnsupportedFeatures(
         }
     }
 
-    if (result.items) {
-        if (Array.isArray(result.items)) {
-            (result as Record<string, unknown>).items = result.items.map(item => stripUnsupportedFeatures(item as JSONSchema, provider));
+    if (result['items']) {
+        if (Array.isArray(result['items'])) {
+            (result as Record<string, unknown>)['items'] = result['items'].map(item => stripUnsupportedFeatures(item as JSONSchema, provider));
         } else {
-            result.items = stripUnsupportedFeatures(result.items as JSONSchema, provider);
+            result['items'] = stripUnsupportedFeatures(result['items'] as JSONSchema, provider);
         }
     }
 
@@ -469,41 +424,24 @@ export function stripUnsupportedFeatures(
  * 1. Extracts/converts the JSON Schema from options
  * 2. Applies provider-specific transformations (e.g., removing unsupported features for Google)
  * 3. Adds name/description for LLM guidance
- *
- * @param provider The target provider
- * @param options The structured output options
- * @returns Provider-ready schema with name and description
- *
- * @example
- * ```typescript
- * const result = convertToProviderSchema('openai', {
- *   schema: z.object({ name: z.string() }),
- *   name: 'User',
- *   description: 'A user object',
- * });
- *
- * // result.schema - JSON Schema
- * // result.name - 'User'
- * // result.description - 'A user object'
- * ```
  */
 export function convertToProviderSchema<T>(
     provider: SchemaProvider,
     options: StructuredOutputOptions<T>,
 ): ProviderSchema {
-    // Get the JSON Schema (convert from Zod or normalize raw)
+    // Get the JSON Schema
     const jsonSchema = getJsonSchema(options);
 
     // Apply provider-specific transformations
     const schema = stripUnsupportedFeatures(jsonSchema, provider);
 
     // Generate a default name if not provided (some providers require it)
-    const name = options.name ?? 'response';
+    const name = options.name ?? options.schemaConfig?.name ?? 'response';
 
     return {
         schema,
         name,
-        description: options.description,
+        description: options.description ?? options.schemaConfig?.description,
     };
 }
 
@@ -516,23 +454,16 @@ export function convertToProviderSchema<T>(
  *
  * This function:
  * 1. Parses JSON from the raw output string
- * 2. Validates the parsed data against the Zod schema
+ * 2. Validates using the SchemaConfig's validate function (if provided)
  * 3. Throws StructuredOutputError on failure
  *
- * @param schema The Zod schema to validate against
+ * @param config The schema configuration with optional validator
  * @param rawOutput The raw string output from the LLM
  * @returns The validated and typed data
- * @throws StructuredOutputError if JSON parsing fails or schema validation fails
- *
- * @example
- * ```typescript
- * const schema = z.object({ name: z.string(), age: z.number() });
- * const rawOutput = '{"name": "Alice", "age": 30}';
- * const result = parseStructured(schema, rawOutput); // { name: "Alice", age: 30 }
- * ```
+ * @throws StructuredOutputError if JSON parsing fails or validation fails
  */
 export function parseStructured<T>(
-    schema: z.ZodType<T>,
+    config: SchemaConfig<T>,
     rawOutput: string,
 ): T {
     // Step 1: Parse JSON
@@ -550,17 +481,21 @@ export function parseStructured<T>(
         );
     }
 
-    // Step 2: Validate against Zod schema
-    const result = schema.safeParse(parsed);
-    if (!result.success) {
-        // Schema validation failed - throw with ZodError as cause
-        throw new StructuredOutputError(
-            `Validation failed: ${result.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
-            { rawOutput, cause: result.error },
-        );
+    // Step 2: Validate if validator is provided
+    if (config.validate) {
+        try {
+            return config.validate(parsed);
+        } catch (error) {
+            const validationError = error instanceof Error ? error : new Error(String(error));
+            throw new StructuredOutputError(
+                `Validation failed: ${validationError.message}`,
+                { rawOutput, cause: validationError },
+            );
+        }
     }
 
-    return result.data;
+    // No validator — return as-is (unsafe cast, user chose to skip validation)
+    return parsed as T;
 }
 
 /**
@@ -570,34 +505,16 @@ export function parseStructured<T>(
  * on validation failure, it returns a result object with `ok: false` and
  * the error details.
  *
- * @param schema The Zod schema to validate against
+ * @param config The schema configuration with optional validator
  * @param rawOutput The raw string output from the LLM
  * @returns A result object: `{ ok: true, value }` on success, `{ ok: false, error, rawOutput }` on failure
- *
- * @example
- * ```typescript
- * const schema = z.object({ name: z.string(), age: z.number() });
- *
- * // Success case
- * const result1 = tryParseStructured(schema, '{"name": "Alice", "age": 30}');
- * if (result1.ok) {
- *   console.log(result1.value.name); // "Alice"
- * }
- *
- * // Failure case
- * const result2 = tryParseStructured(schema, 'invalid json');
- * if (!result2.ok) {
- *   console.log(result2.error.message); // Error message
- *   console.log(result2.rawOutput); // Original output
- * }
- * ```
  */
 export function tryParseStructured<T>(
-    schema: z.ZodType<T>,
+    config: SchemaConfig<T>,
     rawOutput: string,
 ): StructuredOutputResult<T> {
     try {
-        const value = parseStructured(schema, rawOutput);
+        const value = parseStructured(config, rawOutput);
         return { ok: true, value };
     } catch (error) {
         if (error instanceof StructuredOutputError) {
@@ -613,38 +530,34 @@ export function tryParseStructured<T>(
 }
 
 /**
- * Validate already-parsed data against a Zod schema.
+ * Validate already-parsed data using a SchemaConfig's validator.
  *
- * This is useful when you have already parsed JSON and need to validate
- * it against a schema, with optional raw output for error messages.
+ * This is useful when you have already parsed JSON and need to validate it.
  *
- * @param schema The Zod schema to validate against
+ * @param config The schema configuration with optional validator
  * @param data The parsed data to validate
  * @param rawOutput Optional raw output string for error messages
  * @returns The validated and typed data
- * @throws StructuredOutputError if schema validation fails
- *
- * @example
- * ```typescript
- * const schema = z.object({ name: z.string(), age: z.number() });
- * const data = JSON.parse('{"name": "Alice", "age": 30}');
- * const result = validateStructuredOutput(schema, data); // { name: "Alice", age: 30 }
- * ```
+ * @throws StructuredOutputError if validation fails
  */
 export function validateStructuredOutput<T>(
-    schema: z.ZodType<T>,
+    config: SchemaConfig<T>,
     data: unknown,
     rawOutput?: string,
 ): T {
-    const result = schema.safeParse(data);
-    if (!result.success) {
-        const rawData = rawOutput ?? JSON.stringify(data);
-        throw new StructuredOutputError(
-            `Validation failed: ${result.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
-            { rawOutput: rawData, cause: result.error },
-        );
+    if (config.validate) {
+        try {
+            return config.validate(data);
+        } catch (error) {
+            const rawData = rawOutput ?? JSON.stringify(data);
+            const validationError = error instanceof Error ? error : new Error(String(error));
+            throw new StructuredOutputError(
+                `Validation failed: ${validationError.message}`,
+                { rawOutput: rawData, cause: validationError },
+            );
+        }
     }
-    return result.data;
+    return data as T;
 }
 
 // ============================================================================
@@ -660,24 +573,16 @@ export function validateStructuredOutput<T>(
  */
 export class StreamingJsonParser<T> {
     private buffer = '';
-    private schema: z.ZodType<T>;
+    private readonly validateFn?: (data: unknown) => T;
 
-    constructor(schema: z.ZodType<T>) {
-        this.schema = schema;
+    constructor(config: SchemaConfig<T>) {
+        this.validateFn = config.validate;
     }
 
     /**
      * Feed a chunk of JSON text to the parser.
      * Returns a validated partial object if the current buffer can be parsed
-     * as valid JSON that passes the schema, or undefined if not yet valid.
-     *
-     * For partial objects, this attempts to:
-     * 1. Add closing braces/brackets to make valid JSON
-     * 2. Fill in missing required fields with null/empty values
-     * 3. Validate against schema
-     *
-     * @param chunk Text chunk from the stream
-     * @returns Validated partial object or undefined
+     * as valid JSON that passes validation, or undefined if not yet valid.
      */
     feed(chunk: string): { partial: T | undefined; complete: boolean } {
         this.buffer += chunk;
@@ -685,10 +590,15 @@ export class StreamingJsonParser<T> {
         // Try to parse as complete JSON first
         try {
             const parsed = JSON.parse(this.buffer);
-            const result = this.schema.safeParse(parsed);
-            if (result.success) {
-                return { partial: result.data, complete: true };
+            if (this.validateFn) {
+                try {
+                    const validated = this.validateFn(parsed);
+                    return { partial: validated, complete: true };
+                } catch {
+                    // Validation failed on complete JSON — return parsed but not validated
+                }
             }
+            return { partial: parsed as T, complete: true };
         } catch {
             // Not yet valid complete JSON
         }
@@ -763,10 +673,14 @@ export class StreamingJsonParser<T> {
         const candidate = this.buffer + closing;
         try {
             const parsed = JSON.parse(candidate);
-            const result = this.schema.safeParse(parsed);
-            if (result.success) {
-                return result.data;
+            if (this.validateFn) {
+                try {
+                    return this.validateFn(parsed);
+                } catch {
+                    // Partial validation failed — that's expected for partials
+                }
             }
+            return parsed as T;
         } catch {
             // Silently fail for partial JSON
         }
@@ -786,10 +700,3 @@ export interface StreamingStructuredResult<T> {
     /** The validated partial or complete object */
     value: T;
 }
-
-// ============================================================================
-// Re-exports for Convenience
-// ============================================================================
-
-// Re-export Zod for users who need it
-export { z } from 'zod';

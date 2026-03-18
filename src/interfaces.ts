@@ -248,10 +248,11 @@ export interface ResponseFormat {
  */
 export interface OutputOptions<T = unknown> {
     /**
-     * Zod schema for structured output.
-     * Use this for type-safe validation with automatic type inference.
+     * Schema configuration for structured output.
+     * Use `fromZod()` from `universal-llm-client/zod` to create from a Zod schema,
+     * or provide a raw SchemaConfig with jsonSchema + optional validate function.
      */
-    schema?: import('zod').ZodType<T>;
+    schema?: import('./structured-output.js').SchemaConfig<T>;
     
     /**
      * Raw JSON Schema for structured output.
@@ -294,8 +295,13 @@ export interface ChatOptions {
     executeTools?: boolean;
     /** Maximum tool execution rounds (default: 10) */
     maxIterations?: number;
-    /** Stream decoder type */
-    decoder?: import('./stream-decoder.js').DecoderType;
+    /**
+     * Stream decoder selection. Accepts:
+     * - A built-in type name: 'passthrough' | 'standard-chat' | 'interleaved-reasoning'
+     * - A custom type name registered via `registerDecoder()`
+     * - A pre-built `StreamDecoder` instance for full control
+     */
+    decoder?: import('./stream-decoder.js').DecoderType | string | import('./stream-decoder.js').StreamDecoder;
     
     // ========================================================================
     // Structured Output Options
@@ -320,13 +326,12 @@ export interface ChatOptions {
     output?: OutputOptions;
     
     /**
-     * Zod schema for structured output.
+     * Schema configuration for structured output.
      * When provided, the response is validated against this schema.
-     * Structured output and tools cannot be used together.
      * 
      * @deprecated Use `output.schema` or `generateStructured()` instead.
      */
-    schema?: import('zod').ZodType<unknown>;
+    schema?: import('./structured-output.js').SchemaConfig<unknown>;
     
     /**
      * Raw JSON Schema for structured output.

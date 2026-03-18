@@ -33,10 +33,15 @@
     "./structured-output": {
       "import": "./dist/structured-output.js",
       "types": "./dist/structured-output.d.ts"
+    },
+    "./zod": {
+      "import": "./dist/zod-adapter.js",
+      "types": "./dist/zod-adapter.d.ts"
     }
   },
   "files": [
     "dist",
+    "src",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -88,6 +93,9 @@
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "zod": {
       "optional": true
     }
   },

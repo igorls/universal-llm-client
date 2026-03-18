@@ -15,8 +15,8 @@ import { BaseLLMClient } from '../client.js';
 import { httpRequest, httpStream, parseNDJSON, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
-    zodToJsonSchema,
     normalizeJsonSchema,
+    getJsonSchemaFromConfig,
 } from '../structured-output.js';
 import type {
     LLMClientOptions,
@@ -428,7 +428,7 @@ export class OllamaClient extends BaseLLMClient {
         }
 
         if (options.schema) {
-            return zodToJsonSchema(options.schema);
+            return getJsonSchemaFromConfig(options.schema);
         }
 
         return 'json';

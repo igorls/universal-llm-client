@@ -293,7 +293,7 @@ export class InterleavedReasoningDecoder implements StreamDecoder {
 }
 
 // ============================================================================
-// Factory
+// Pluggable Decoder Registry
 // ============================================================================
 
 export interface DecoderOptions {
@@ -302,21 +302,60 @@ export interface DecoderOptions {
 }
 
 /**
- * Create a stream decoder by type.
+ * Factory function that creates a StreamDecoder instance.
+ * External code registers these via `registerDecoder()`.
+ */
+export type DecoderFactory = (callback: DecoderCallback, options?: DecoderOptions) => StreamDecoder;
+
+/** Internal registry of decoder factories, keyed by decoder type name */
+const decoderRegistry = new Map<string, DecoderFactory>();
+
+/**
+ * Register a custom stream decoder type.
+ * Once registered, it can be used via `createDecoder(name, ...)` or
+ * by passing `decoderType: name` in ChatOptions.
+ *
+ * @example
+ * ```typescript
+ * import { registerDecoder } from 'universal-llm-client';
+ *
+ * registerDecoder('my-decoder', (callback, options) => {
+ *   return new MyCustomDecoder(callback, options);
+ * });
+ * ```
+ */
+export function registerDecoder(type: string, factory: DecoderFactory): void {
+    decoderRegistry.set(type, factory);
+}
+
+/**
+ * Get all registered decoder type names.
+ */
+export function getRegisteredDecoders(): string[] {
+    return Array.from(decoderRegistry.keys());
+}
+
+// Pre-register built-in decoders
+registerDecoder('passthrough', (cb) => new PassthroughDecoder(cb));
+registerDecoder('standard-chat', (cb) => new StandardChatDecoder(cb));
+registerDecoder('interleaved-reasoning', (cb) => new InterleavedReasoningDecoder(cb));
+
+/**
+ * Create a stream decoder by type name.
+ * Looks up the decoder in the registry (built-in + custom).
+ *
+ * @throws Error if the decoder type is not registered
  */
 export function createDecoder(
-    type: DecoderType,
+    type: DecoderType | string,
     callback: DecoderCallback,
-    _options?: DecoderOptions,
+    options?: DecoderOptions,
 ): StreamDecoder {
-    switch (type) {
-        case 'passthrough':
-            return new PassthroughDecoder(callback);
-        case 'standard-chat':
-            return new StandardChatDecoder(callback);
-        case 'interleaved-reasoning':
-            return new InterleavedReasoningDecoder(callback);
-        default:
-            throw new Error(`Unknown decoder type: ${type}`);
+    const factory = decoderRegistry.get(type);
+    if (!factory) {
+        const available = Array.from(decoderRegistry.keys()).join(', ');
+        throw new Error(`Unknown decoder type: "${type}". Available: ${available}`);
     }
+    return factory(callback, options);
 }
+

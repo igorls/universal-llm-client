@@ -23,13 +23,13 @@ import type {
 } from './interfaces.js';
 import type { DecodedEvent } from './stream-decoder.js';
 import {
-    zodToJsonSchema,
     parseStructured,
     StructuredOutputError,
     StreamingJsonParser,
+    getJsonSchemaFromConfig,
+    type SchemaConfig,
     type StructuredOutputResult,
 } from './structured-output.js';
-import { z } from 'zod';
 
 // ============================================================================
 // Types
@@ -259,18 +259,16 @@ export class Router {
      */
     private validateOutputAndTools(_options?: ChatOptions): void {
         // Structured output and tools are now allowed together.
-        // When both are provided, the provider sends both the schema constraint
-        // and tool definitions. If the model responds with tool calls,
-        // validation is skipped. If it responds with content, the schema is validated.
     }
 
     /**
      * Extract schema from output options.
+     * Returns a SchemaConfig or a bare jsonSchema object.
      */
-    private getSchemaFromOutput<T>(output: OutputOptions<T>): { schema: z.ZodType<T>; name?: string; description?: string } | { jsonSchema: Record<string, unknown>; name?: string; description?: string } {
+    private getSchemaFromOutput<T>(output: OutputOptions<T>): { config: SchemaConfig<T>; name?: string; description?: string } | { jsonSchema: Record<string, unknown>; name?: string; description?: string } {
         if (output.schema) {
             return {
-                schema: output.schema,
+                config: output.schema,
                 name: output.name,
                 description: output.description,
             };
@@ -327,7 +325,9 @@ export class Router {
         const structuredOptions: ChatOptions = {
             ...restOptions,
             // Use jsonSchema for the provider
-            jsonSchema: 'jsonSchema' in schemaInfo ? schemaInfo.jsonSchema : zodToJsonSchema(schemaInfo.schema),
+            jsonSchema: 'config' in schemaInfo
+                ? getJsonSchemaFromConfig(schemaInfo.config)
+                : schemaInfo.jsonSchema,
             schemaName: schemaInfo.name,
             schemaDescription: schemaInfo.description,
         };
@@ -341,7 +341,6 @@ export class Router {
         );
 
         // If the response contains tool calls, skip validation and return as-is
-        // (the tool calling loop will handle the tool calls)
         if (response.message.tool_calls && response.message.tool_calls.length > 0) {
             return response as LLMChatResponse<T>;
         }
@@ -354,12 +353,11 @@ export class Router {
                 .map(part => part.text)
                 .join('');
 
-        // Get the Zod schema for validation (use the one from output, or convert from jsonSchema)
-        const zodSchema = 'schema' in schemaInfo ? schemaInfo.schema : null;
+        // Get the SchemaConfig for validation
+        const schemaConfig: SchemaConfig<T> | null = 'config' in schemaInfo ? schemaInfo.config : null;
 
-        if (!zodSchema) {
-            // If we only have jsonSchema without a Zod schema, we can't validate
-            // Return the parsed JSON without validation
+        if (!schemaConfig || !schemaConfig.validate) {
+            // No validator — return parsed JSON without validation
             try {
                 const structured = JSON.parse(content) as T;
                 // Emit structured_response event on success
@@ -379,7 +377,6 @@ export class Router {
             } catch (error) {
                 // JSON parse failed
                 const rawOutput = content;
-                // Emit structured_validation_error event
                 this.auditor.record({
                     timestamp: Date.now(),
                     type: 'structured_validation_error',
@@ -395,9 +392,9 @@ export class Router {
             }
         }
 
-        // Parse and validate against Zod schema
+        // Parse and validate against SchemaConfig
         try {
-            const validated = parseStructured(zodSchema, content);
+            const validated = parseStructured(schemaConfig, content);
             // Emit structured_response event on success
             this.auditor.record({
                 timestamp: Date.now(),
@@ -496,24 +493,24 @@ export class Router {
 
     /**
      * Generate structured output from the LLM with automatic failover.
-     * Validates the response against the provided Zod schema.
+     * Validates the response against the provided SchemaConfig.
      * Throws StructuredOutputError on validation failure.
      *
-     * @template T The type inferred from the Zod schema
-     * @param schema Zod schema for validation
+     * @template T The output type
+     * @param config Schema configuration (JSON Schema + optional validator)
      * @param messages Chat messages to send
      * @param options Additional options (temperature, maxTokens, etc.)
      * @returns Validated structured output
      * @throws StructuredOutputError if validation fails
      */
     async generateStructured<T>(
-        schema: z.ZodType<T>,
+        config: SchemaConfig<T>,
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<T> {
-        // Convert Zod schema to JSON Schema for providers
-        const jsonSchema = zodToJsonSchema(schema);
-        const schemaName = options?.schemaName ?? 'response';
+        // Get JSON Schema from config
+        const jsonSchema = getJsonSchemaFromConfig(config);
+        const schemaName = options?.schemaName ?? config.name ?? 'response';
 
         // Emit structured_request event
         this.auditor.record({
@@ -546,7 +543,7 @@ export class Router {
                 .join('');
 
         try {
-            const result = parseStructured(schema, content);
+            const result = parseStructured(config, content);
             // Emit structured_response event on success
             this.auditor.record({
                 timestamp: Date.now(),
@@ -573,22 +570,20 @@ export class Router {
 
     /**
      * Try to generate structured output, returning a result object instead of throwing.
-     * Same as generateStructured but returns { ok: true, value } on success
-     * and { ok: false, error, rawOutput } on failure.
      *
-     * @template T The type inferred from the Zod schema
-     * @param schema Zod schema for validation
+     * @template T The output type
+     * @param config Schema configuration (JSON Schema + optional validator)
      * @param messages Chat messages to send
      * @param options Additional options (temperature, maxTokens, etc.)
-     * @returns StructuredOutputResult<T> - either success with value or failure with error
+     * @returns StructuredOutputResult<T>
      */
     async tryParseStructured<T>(
-        schema: z.ZodType<T>,
+        config: SchemaConfig<T>,
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<StructuredOutputResult<T>> {
         try {
-            const value = await this.generateStructured(schema, messages, options);
+            const value = await this.generateStructured(config, messages, options);
             return { ok: true, value };
         } catch (error) {
             // If error is already a StructuredOutputError, use it directly
@@ -608,40 +603,22 @@ export class Router {
     /**
      * Stream structured output with partial validated objects.
      *
-     * Yields partial validated objects as JSON generates, then returns the
-     * complete validated object on stream completion.
-     *
-     * For invalid partial JSON, no yield occurs (partial validation is best-effort).
-     * On stream completion, if the final JSON fails validation, throws StructuredOutputError.
-     *
-     * @template T The type inferred from the Zod schema
-     * @param schema Zod schema for validation
+     * @template T The output type
+     * @param config Schema configuration (JSON Schema + optional validator)
      * @param messages Chat messages to send
      * @param options Additional options (temperature, maxTokens, etc.)
      * @yields Partial validated objects as the JSON stream progresses
      * @returns Complete validated object on stream completion
      * @throws StructuredOutputError if final validation fails
-     *
-     * @example
-     * ```typescript
-     * const stream = model.generateStructuredStream(UserSchema, messages);
-     *
-     * for await (const partial of stream) {
-     *   console.log('Partial:', partial); // Partial validated object
-     * }
-     *
-     * // Note: async generators don't have a simple way to get the return value
-     * // The last partial yielded will be the complete object when complete: true
-     * ```
      */
     async *generateStructuredStream<T>(
-        schema: z.ZodType<T>,
+        config: SchemaConfig<T>,
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): AsyncGenerator<T, T, unknown> {
-        // Convert Zod schema to JSON Schema for providers
-        const jsonSchema = zodToJsonSchema(schema);
-        const schemaName = options?.schemaName ?? 'response';
+        // Get JSON Schema from config
+        const jsonSchema = getJsonSchemaFromConfig(config);
+        const schemaName = options?.schemaName ?? config.name ?? 'response';
 
         // Emit structured_request event
         this.auditor.record({
@@ -666,7 +643,7 @@ export class Router {
         );
 
         // Accumulate text and yield partial validated objects
-        const parser = new StreamingJsonParser<T>(schema);
+        const parser = new StreamingJsonParser<T>(config);
         let fullContent = '';
         let lastYielded: T | undefined;
 
@@ -691,8 +668,7 @@ export class Router {
             }
 
             // Parse and validate the complete content
-            // This will throw StructuredOutputError on failure
-            const complete = parseStructured(schema, fullContent);
+            const complete = parseStructured(config, fullContent);
 
             // Emit structured_response event on success
             this.auditor.record({

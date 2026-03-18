@@ -9,8 +9,8 @@ import { BaseLLMClient } from '../client.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
-    zodToJsonSchema,
     normalizeJsonSchema,
+    getJsonSchemaFromConfig,
     type JSONSchema,
     type StructuredOutputOptions,
 } from '../structured-output.js';
@@ -363,14 +363,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             jsonSchema = normalizeJsonSchema(options.jsonSchema);
             name = options.name || 'response';
             description = options.description;
-        } else if (options.schema) {
-            // Convert Zod schema to JSON Schema
-            jsonSchema = zodToJsonSchema(options.schema);
-            name = options.name || 'response';
-            description = options.description;
+        } else if (options.schemaConfig) {
+            // Use SchemaConfig's embedded JSON Schema
+            jsonSchema = getJsonSchemaFromConfig(options.schemaConfig);
+            name = options.name || options.schemaConfig.name || 'response';
+            description = options.description || options.schemaConfig.description;
         } else {
             // Should not happen - we check this in extractSchemaOptions
-            throw new Error('Either schema or jsonSchema must be provided');
+            throw new Error('Either schemaConfig or jsonSchema must be provided');
         }
 
         // OpenAI strict mode — configurable, defaults to true for reliable structured output

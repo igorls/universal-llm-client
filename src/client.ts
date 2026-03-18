@@ -6,7 +6,6 @@
  * multi-turn tool execution loop.
  */
 
-import { z } from 'zod';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -23,6 +22,7 @@ import type {
 import {
     StructuredOutputError,
     type StructuredOutputOptions,
+    type SchemaConfig,
 } from './structured-output.js';
 import type { DecodedEvent } from './stream-decoder.js';
 import type { Auditor } from './auditor.js';
@@ -334,24 +334,28 @@ export abstract class BaseLLMClient {
     /**
      * Extract schema options from ChatOptions.
      * Returns null if no schema is provided.
+     * Returns a SchemaConfig if a schema was found.
      */
-    protected extractSchemaOptions(options?: ChatOptions): (StructuredOutputOptions<unknown> & { schema: z.ZodType<unknown> }) | null {
+    protected extractSchemaOptions(options?: ChatOptions): (StructuredOutputOptions<unknown> & { schemaConfig: SchemaConfig<unknown> }) | null {
         if (!options) return null;
 
         if (options.schema) {
             return {
-                schema: options.schema,
+                schemaConfig: options.schema,
                 name: options.schemaName,
                 description: options.schemaDescription,
             };
         }
 
         if (options.jsonSchema) {
-            return {
+            // Raw JSON Schema without validation
+            const config: SchemaConfig<unknown> = {
                 jsonSchema: options.jsonSchema,
+            };
+            return {
+                schemaConfig: config,
                 name: options.schemaName,
                 description: options.schemaDescription,
-                schema: z.unknown(),
             };
         }
 
@@ -359,10 +363,10 @@ export abstract class BaseLLMClient {
     }
 
     /**
-     * Validate structured response against Zod schema.
+     * Validate structured response using a SchemaConfig.
      * Throws StructuredOutputError on failure.
      */
-    protected validateStructuredResponse(content: string, schema: z.ZodType<unknown>): void {
+    protected validateStructuredResponse(content: string, config: SchemaConfig<unknown>): void {
         if (!content) {
             throw new StructuredOutputError(
                 'Empty response from LLM',
@@ -383,12 +387,16 @@ export abstract class BaseLLMClient {
             );
         }
 
-        const result = schema.safeParse(parsed);
-        if (!result.success) {
-            throw new StructuredOutputError(
-                `Validation failed: ${result.error.issues.map((e: { message: string }) => e.message).join(', ')}`,
-                { rawOutput: content, cause: result.error },
-            );
+        if (config.validate) {
+            try {
+                config.validate(parsed);
+            } catch (error) {
+                const validationError = error instanceof Error ? error : new Error(String(error));
+                throw new StructuredOutputError(
+                    `Validation failed: ${validationError.message}`,
+                    { rawOutput: content, cause: validationError },
+                );
+            }
         }
     }
 }
