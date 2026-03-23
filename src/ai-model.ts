@@ -26,6 +26,7 @@ import { NoopAuditor } from './auditor.js';
 import { OllamaClient } from './providers/ollama.js';
 import { OpenAICompatibleClient } from './providers/openai.js';
 import { GoogleClient } from './providers/google.js';
+import { AnthropicClient } from './providers/anthropic.js';
 import { BaseLLMClient } from './client.js';
 import {
     type StructuredOutputResult,
@@ -40,6 +41,7 @@ const DEFAULT_URLS: Record<string, string> = {
     ollama: 'http://localhost:11434',
     openai: 'https://api.openai.com',
     llamacpp: 'http://localhost:8080',
+    anthropic: 'https://api.anthropic.com',
     // google and vertex build their own URLs internally
 };
 
@@ -333,6 +335,9 @@ export class AIModel {
             case 'google':
             case 'vertex':
                 return new GoogleClient(clientOptions, this.auditor);
+
+            case 'anthropic':
+                return new AnthropicClient(clientOptions, this.auditor);
 
             default:
                 throw new Error(`Unknown provider type: ${type}`);

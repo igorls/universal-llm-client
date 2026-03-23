@@ -20,6 +20,7 @@ export enum AIModelApiType {
     Google = 'google',
     Vertex = 'vertex',
     LlamaCpp = 'llamacpp',
+    Anthropic = 'anthropic',
 }
 
 // ============================================================================
@@ -45,7 +46,7 @@ export interface ModelMetadata {
 
 export interface ProviderConfig {
     /** Provider type */
-    type: AIModelApiType | 'ollama' | 'openai' | 'google' | 'vertex' | 'llamacpp';
+    type: AIModelApiType | 'ollama' | 'openai' | 'google' | 'vertex' | 'llamacpp' | 'anthropic';
     /** Provider endpoint URL (has sensible defaults per type) */
     url?: string;
     /** API key or Bearer token */
