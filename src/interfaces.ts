@@ -292,6 +292,8 @@ export interface ChatOptions {
     toolChoice?: 'none' | 'auto' | 'required';
     /** Additional provider-specific parameters */
     parameters?: Record<string, unknown>;
+    /** Abort signal for cancellation (forwarded to HTTP layer) */
+    signal?: AbortSignal;
     /** Enable/disable tool execution for chatWithTools */
     executeTools?: boolean;
     /** Maximum tool execution rounds (default: 10) */
