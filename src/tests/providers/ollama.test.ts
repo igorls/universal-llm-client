@@ -1,3 +1,4 @@
+import { fromZod } from '../../zod-adapter.js';
 /**
  * Ollama Provider Unit Tests
  *
@@ -365,7 +366,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -393,7 +394,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -464,7 +465,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -496,7 +497,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserListSchema,
+                schema: fromZod(UserListSchema),
             };
 
             await client.chat([
@@ -525,7 +526,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: StatusSchema,
+                schema: fromZod(StatusSchema),
             };
 
             await client.chat([
@@ -611,7 +612,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             const response = await client.chat([
@@ -638,7 +639,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — validation is done at Router level
@@ -665,7 +666,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — validation is done at Router level
@@ -692,7 +693,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider returns raw response — Router handles validation
@@ -718,7 +719,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — returns raw response
@@ -744,7 +745,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — returns raw response
@@ -784,7 +785,7 @@ describe('OllamaClient', () => {
             }];
 
             const options: ChatOptions = {
-                schema: DescriptionSchema,
+                schema: fromZod(DescriptionSchema),
             };
 
             await client.chat(messages, options);
@@ -826,7 +827,7 @@ describe('OllamaClient', () => {
             }];
 
             const options: ChatOptions = {
-                schema: DescriptionSchema,
+                schema: fromZod(DescriptionSchema),
             };
 
             const response = await client.chat(messages, options);
@@ -879,7 +880,7 @@ describe('OllamaClient', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
                 tools: [{
                     type: 'function',
                     function: {

@@ -1,3 +1,4 @@
+import { fromZod } from '../../zod-adapter.js';
 /**
  * OpenAI-Compatible Provider Structured Output Tests
  *
@@ -97,7 +98,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -120,7 +121,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -148,7 +149,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -176,7 +177,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
                 schemaName: 'CustomUserSchema',
             };
 
@@ -200,7 +201,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -226,7 +227,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
                 schemaDescription: 'A user object with name',
             };
 
@@ -333,7 +334,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             const response = await client.chat([
@@ -364,7 +365,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — validation is done at Router level
@@ -395,7 +396,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — validation is done at Router level
@@ -426,7 +427,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider returns raw response — Router handles validation
@@ -500,7 +501,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
 
             // Provider that only supports json_object (like older OpenAI)
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
                 responseFormat: { type: 'json_object' },
             };
 
@@ -538,7 +539,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — returns raw response
@@ -568,7 +569,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — returns raw response
@@ -599,7 +600,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             // Provider should NOT throw — returns raw response
@@ -654,7 +655,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
                 tools: [{
                     type: 'function',
                     function: {
@@ -715,7 +716,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: DescriptionSchema,
+                schema: fromZod(DescriptionSchema),
             };
 
             await client.chat(messages, options);
@@ -772,7 +773,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: ComparisonSchema,
+                schema: fromZod(ComparisonSchema),
             };
 
             await client.chat(messages, options);
@@ -822,7 +823,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: ImageAnalysisSchema,
+                schema: fromZod(ImageAnalysisSchema),
             };
 
             const response = await client.chat(messages, options);
@@ -858,7 +859,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: DescriptionSchema,
+                schema: fromZod(DescriptionSchema),
             };
 
             await client.chat(messages, options);
@@ -902,7 +903,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: DescriptionSchema,
+                schema: fromZod(DescriptionSchema),
             };
 
             await client.chat(messages, options);
@@ -944,7 +945,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: VisionSchema,
+                schema: fromZod(VisionSchema),
             };
 
             // Should not throw - response passes validation
@@ -979,7 +980,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: VisionSchema,
+                schema: fromZod(VisionSchema),
             };
 
             // Provider should NOT throw — validation is done at Router level
@@ -1018,7 +1019,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             const response = await client.chat([
@@ -1060,7 +1061,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserListSchema,
+                schema: fromZod(UserListSchema),
             };
 
             const response = await client.chat([
@@ -1099,7 +1100,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: StatusSchema,
+                schema: fromZod(StatusSchema),
             };
 
             const response = await client.chat([

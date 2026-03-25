@@ -20,7 +20,7 @@
 export interface JSONSchema {
     type?: string | string[];
     properties?: Record<string, JSONSchema>;
-    items?: JSONSchema | { type: string };
+    items?: JSONSchema | JSONSchema[] | { type: string } | { type: string }[];
     required?: string[];
     additionalProperties?: boolean | JSONSchema;
     enum?: (string | number | boolean | null)[];

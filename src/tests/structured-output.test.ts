@@ -19,7 +19,6 @@ import {
     isStructuredOutputSuccess,
     isStructuredOutputFailure,
     // Schema conversion functions
-    zodToJsonSchema,
     normalizeJsonSchema,
     convertToProviderSchema,
     stripUnsupportedFeatures,
@@ -28,6 +27,7 @@ import {
     tryParseStructured,
     validateStructuredOutput,
 } from '../structured-output.js';
+import {  fromZod } from '../zod-adapter.js';
 
 // ============================================================================
 // Test Schemas
@@ -100,11 +100,12 @@ describe('StructuredOutputError', () => {
 // ============================================================================
 
 describe('StructuredOutputOptions', () => {
-    it('accepts Zod schema', () => {
+    it('accepts Zod schema config', () => {
+        const config = fromZod(UserSchema);
         const options: StructuredOutputOptions<User> = {
-            schema: UserSchema,
+            schemaConfig: config,
         };
-        expect(options.schema).toBe(UserSchema);
+        expect(options.schemaConfig).toBe(config);
     });
 
     it('accepts raw JSON Schema', () => {
@@ -124,28 +125,26 @@ describe('StructuredOutputOptions', () => {
 
     it('accepts optional name for LLM guidance', () => {
         const options: StructuredOutputOptions<User> = {
-            schema: UserSchema,
-            name: 'User',
+            schemaConfig: fromZod(UserSchema, { name: 'User' }),
         };
-        expect(options.name).toBe('User');
+        expect(options.schemaConfig?.name).toBe('User');
     });
 
     it('accepts optional description for LLM guidance', () => {
         const options: StructuredOutputOptions<User> = {
-            schema: UserSchema,
-            name: 'User',
-            description: 'A user object with name and age',
+            schemaConfig: fromZod(UserSchema, { name: 'User', description: 'A user object with name and age' }),
         };
-        expect(options.description).toBe('A user object with name and age');
+        expect(options.schemaConfig?.description).toBe('A user object with name and age');
     });
 
     it('accepts both schema and name/description', () => {
+        const config = fromZod(UserSchema);
         const options: StructuredOutputOptions<User> = {
-            schema: UserSchema,
+            schemaConfig: config,
             name: 'User',
             description: 'User schema',
         };
-        expect(options.schema).toBe(UserSchema);
+        expect(options.schemaConfig).toBe(config);
         expect(options.name).toBe('User');
         expect(options.description).toBe('User schema');
     });
@@ -249,14 +248,14 @@ describe('Type Inference (VAL-SCHEMA-001)', () => {
     it('infers type from Zod schema correctly', () => {
         // This test ensures TypeScript infers the correct type
         const options: StructuredOutputOptions<User> = {
-            schema: UserSchema,
+            schemaConfig: fromZod(UserSchema),
         };
         
         // TypeScript compilation is the test - if type is wrong, this won't compile
         type InferredType = z.infer<typeof UserSchema>;
         const _typeCheck: InferredType = { name: 'Test', age: 0 };
         
-        expect(options.schema).toBeDefined();
+        expect(options.schemaConfig).toBeDefined();
     });
 
     it('structured output result type narrows correctly', () => {
@@ -316,12 +315,12 @@ describe('Raw JSON Schema Input', () => {
         };
         
         const options: StructuredOutputOptions<{ value: number }> = {
-            schema: z.object({ value: z.number() }),
+            schemaConfig: fromZod(z.object({ value: z.number() })),
             jsonSchema,
         };
         
         // Both can be set, implementation will use schema for validation
-        expect(options.schema).toBeDefined();
+        expect(options.schemaConfig).toBeDefined();
         expect(options.jsonSchema).toBeDefined();
     });
 });
@@ -334,21 +333,21 @@ describe('Schema Conversion (VAL-SCHEMA-002)', () => {
     describe('zodToJsonSchema', () => {
         it('converts Zod string schema to JSON Schema', () => {
             const stringSchema = z.string();
-            const jsonSchema = zodToJsonSchema(stringSchema);
+            const jsonSchema = fromZod(stringSchema).jsonSchema;
             
             expect(jsonSchema.type).toBe('string');
         });
 
         it('converts Zod number schema to JSON Schema', () => {
             const numberSchema = z.number();
-            const jsonSchema = zodToJsonSchema(numberSchema);
+            const jsonSchema = fromZod(numberSchema).jsonSchema;
             
             expect(jsonSchema.type).toBe('number');
         });
 
         it('converts Zod boolean schema to JSON Schema', () => {
             const boolSchema = z.boolean();
-            const jsonSchema = zodToJsonSchema(boolSchema);
+            const jsonSchema = fromZod(boolSchema).jsonSchema;
             
             expect(jsonSchema.type).toBe('boolean');
         });
@@ -358,7 +357,7 @@ describe('Schema Conversion (VAL-SCHEMA-002)', () => {
                 name: z.string(),
                 age: z.number(),
             });
-            const jsonSchema = zodToJsonSchema(objectSchema);
+            const jsonSchema = fromZod(objectSchema).jsonSchema;
             
             expect(jsonSchema.type).toBe('object');
             expect(jsonSchema.properties).toBeDefined();
@@ -372,7 +371,7 @@ describe('Schema Conversion (VAL-SCHEMA-002)', () => {
                 name: z.string(),
                 email: z.string().optional(),
             });
-            const jsonSchema = zodToJsonSchema(objectSchema);
+            const jsonSchema = fromZod(objectSchema).jsonSchema;
             
             expect(jsonSchema.type).toBe('object');
             expect(jsonSchema.required).toEqual(['name']);
@@ -389,7 +388,7 @@ describe('Schema Conversion (VAL-SCHEMA-002)', () => {
                 name: z.string(),
                 address: nestedAddressSchema,
             });
-            const jsonSchema = zodToJsonSchema(personSchema);
+            const jsonSchema = fromZod(personSchema).jsonSchema;
             
             expect(jsonSchema.type).toBe('object');
             // zod-to-json-schema adds additionalProperties: false by default
@@ -445,9 +444,7 @@ describe('Schema Name and Description (VAL-SCHEMA-004)', () => {
         it('includes schema name in OpenAI-compatible format', () => {
             const schema = z.object({ name: z.string() });
             const options: StructuredOutputOptions<{ name: string }> = {
-                schema,
-                name: 'User',
-                description: 'A user object',
+                schemaConfig: fromZod(schema, { name: 'User', description: 'A user object' }),
             };
             
             const result = convertToProviderSchema('openai', options);
@@ -459,7 +456,7 @@ describe('Schema Name and Description (VAL-SCHEMA-004)', () => {
         it('works without name/description (optional)', () => {
             const schema = z.object({ name: z.string() });
             const options: StructuredOutputOptions<{ name: string }> = {
-                schema,
+                schemaConfig: fromZod(schema),
             };
             
             const result = convertToProviderSchema('openai', options);
@@ -471,7 +468,7 @@ describe('Schema Name and Description (VAL-SCHEMA-004)', () => {
         it('generates default name if not provided for providers that require it', () => {
             const schema = z.object({ value: z.number() });
             const options: StructuredOutputOptions<{ value: number }> = {
-                schema,
+                schemaConfig: fromZod(schema),
             };
             
             const result = convertToProviderSchema('openai', options);
@@ -490,7 +487,7 @@ describe('Schema Name and Description (VAL-SCHEMA-004)', () => {
 describe('Schema with Enums (VAL-SCHEMA-008)', () => {
     it('converts Zod enum to JSON Schema with enum constraint', () => {
         const statusSchema = z.enum(['active', 'inactive', 'pending']);
-        const jsonSchema = zodToJsonSchema(statusSchema);
+        const jsonSchema = fromZod(statusSchema).jsonSchema;
         
         expect(jsonSchema.type).toBe('string');
         expect(jsonSchema.enum).toEqual(['active', 'inactive', 'pending']);
@@ -503,7 +500,7 @@ describe('Schema with Enums (VAL-SCHEMA-008)', () => {
             Blue = 'blue',
         }
         const colorSchema = z.nativeEnum(Color);
-        const jsonSchema = zodToJsonSchema(colorSchema);
+        const jsonSchema = fromZod(colorSchema).jsonSchema;
         
         expect(jsonSchema.type).toBe('string');
         expect(jsonSchema.enum).toContain('red');
@@ -516,7 +513,7 @@ describe('Schema with Enums (VAL-SCHEMA-008)', () => {
             name: z.string(),
             status: z.enum(['active', 'inactive']),
         });
-        const jsonSchema = zodToJsonSchema(userSchema);
+        const jsonSchema = fromZod(userSchema).jsonSchema;
         
         expect(jsonSchema.type).toBe('object');
         expect(jsonSchema.properties?.['status']).toEqual({
@@ -527,7 +524,7 @@ describe('Schema with Enums (VAL-SCHEMA-008)', () => {
 
     it('validates enum values correctly', () => {
         const schema = z.enum(['a', 'b', 'c']);
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.enum).toEqual(['a', 'b', 'c']);
         expect(jsonSchema.type).toBe('string');
@@ -556,7 +553,7 @@ describe('Nested Object Schema (VAL-SCHEMA-009)', () => {
             users: z.array(userSchema),
         });
         
-        const jsonSchema = zodToJsonSchema(companySchema);
+        const jsonSchema = fromZod(companySchema).jsonSchema;
         
         expect(jsonSchema.type).toBe('object');
         // Check the structure exists
@@ -591,7 +588,7 @@ describe('Nested Object Schema (VAL-SCHEMA-009)', () => {
             address: addressSchema,
         });
         
-        const jsonSchema = zodToJsonSchema(personSchema);
+        const jsonSchema = fromZod(personSchema).jsonSchema;
         
         // Navigate deep into the schema
         const addressProps = jsonSchema.properties?.['address'];
@@ -610,7 +607,7 @@ describe('Nested Object Schema (VAL-SCHEMA-009)', () => {
             }).optional(),
         });
         
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.required).toEqual(['name']);
         expect(jsonSchema.properties?.['metadata']?.type).toBe('object');
@@ -624,7 +621,7 @@ describe('Nested Object Schema (VAL-SCHEMA-009)', () => {
 describe('Array Schema (VAL-SCHEMA-010)', () => {
     it('converts Zod array of strings to JSON Schema', () => {
         const schema = z.array(z.string());
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('array');
         expect(jsonSchema.items).toEqual({ type: 'string' });
@@ -632,7 +629,7 @@ describe('Array Schema (VAL-SCHEMA-010)', () => {
 
     it('converts Zod array of numbers to JSON Schema', () => {
         const schema = z.array(z.number());
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('array');
         expect(jsonSchema.items).toEqual({ type: 'number' });
@@ -643,7 +640,7 @@ describe('Array Schema (VAL-SCHEMA-010)', () => {
             id: z.string(),
             name: z.string(),
         }));
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('array');
         // zod-to-json-schema adds additionalProperties: false by default
@@ -656,7 +653,7 @@ describe('Array Schema (VAL-SCHEMA-010)', () => {
 
     it('converts nested arrays', () => {
         const schema = z.array(z.array(z.string()));
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('array');
         expect(jsonSchema.items).toEqual({
@@ -667,7 +664,7 @@ describe('Array Schema (VAL-SCHEMA-010)', () => {
 
     it('handles array with min/max constraints', () => {
         const schema = z.array(z.string()).min(1).max(10);
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('array');
         expect(jsonSchema.minItems).toBe(1);
@@ -682,21 +679,21 @@ describe('Array Schema (VAL-SCHEMA-010)', () => {
 describe('Primitive Schemas', () => {
     it('converts Zod null schema', () => {
         const schema = z.null();
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('null');
     });
 
     it('converts Zod literal schema', () => {
         const schema = z.literal('fixed');
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.const).toBe('fixed');
     });
 
     it('converts Zod union schema', () => {
         const schema = z.union([z.string(), z.number()]);
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         // Zod 4 native z.toJSONSchema uses anyOf for unions
         expect(jsonSchema.anyOf).toEqual([
             { type: 'string' },
@@ -706,7 +703,7 @@ describe('Primitive Schemas', () => {
 
     it('converts Zod record schema', () => {
         const schema = z.record(z.string(), z.number());
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('object');
         expect(jsonSchema.additionalProperties).toEqual({ type: 'number' });
@@ -714,7 +711,7 @@ describe('Primitive Schemas', () => {
 
     it('converts Zod tuple schema', () => {
         const schema = z.tuple([z.string(), z.number()]);
-        const jsonSchema = zodToJsonSchema(schema);
+        const jsonSchema = fromZod(schema).jsonSchema;
         
         expect(jsonSchema.type).toBe('array');
         // Zod 4 native z.toJSONSchema uses items array for tuples
@@ -931,7 +928,7 @@ describe('Google Schema Transformation (VAL-PROVIDER-GOOGLE-006)', () => {
             });
             
             const options: StructuredOutputOptions<{ email: string }> = {
-                schema,
+                schemaConfig: fromZod(schema),
             };
             
             const result = convertToProviderSchema('google', options);
@@ -957,7 +954,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             });
             
             const rawOutput = '{"name": "Alice", "age": 30}';
-            const result = parseStructured(schema, rawOutput);
+            const result = parseStructured(fromZod(schema), rawOutput);
             
             expect(result).toEqual({ name: 'Alice', age: 30 });
         });
@@ -973,7 +970,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             });
             
             const rawOutput = '{"name": "Bob", "address": {"street": "123 Main", "city": "NYC"}}';
-            const result = parseStructured(personSchema, rawOutput);
+            const result = parseStructured(fromZod(personSchema), rawOutput);
             
             expect(result).toEqual({
                 name: 'Bob',
@@ -990,7 +987,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             // Missing 'age' field
             const rawOutput = '{"name": "Alice"}';
             
-            expect(() => parseStructured(schema, rawOutput)).toThrow(StructuredOutputError);
+            expect(() => parseStructured(fromZod(schema), rawOutput)).toThrow(StructuredOutputError);
         });
 
         it('throws StructuredOutputError with rawOutput when schema validation fails', () => {
@@ -1003,7 +1000,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const rawOutput = '{"name": "Alice", "age": "thirty"}';
             
             try {
-                parseStructured(schema, rawOutput);
+                parseStructured(fromZod(schema), rawOutput);
                 expect(true).toBe(false); // Should not reach here
             } catch (error) {
                 expect(error).toBeInstanceOf(StructuredOutputError);
@@ -1022,7 +1019,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const rawOutput = '{"email": "not-an-email"}';
             
             try {
-                parseStructured(schema, rawOutput);
+                parseStructured(fromZod(schema), rawOutput);
                 expect(true).toBe(false); // Should not reach here
             } catch (error) {
                 expect(error).toBeInstanceOf(StructuredOutputError);
@@ -1040,7 +1037,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const schema = z.object({ name: z.string() });
             const rawOutput = 'not valid json at all';
             
-            expect(() => parseStructured(schema, rawOutput)).toThrow(StructuredOutputError);
+            expect(() => parseStructured(fromZod(schema), rawOutput)).toThrow(StructuredOutputError);
         });
 
         it('includes raw output in error for malformed JSON', () => {
@@ -1048,7 +1045,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const rawOutput = '{"name": "incomplete"';
             
             try {
-                parseStructured(schema, rawOutput);
+                parseStructured(fromZod(schema), rawOutput);
                 expect(true).toBe(false); // Should not reach here
             } catch (error) {
                 expect(error).toBeInstanceOf(StructuredOutputError);
@@ -1065,7 +1062,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const rawOutput = '';
             
             try {
-                parseStructured(schema, rawOutput);
+                parseStructured(fromZod(schema), rawOutput);
                 expect(true).toBe(false); // Should not reach here
             } catch (error) {
                 expect(error).toBeInstanceOf(StructuredOutputError);
@@ -1079,7 +1076,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const schema = z.object({ name: z.string() });
             const rawOutput = 'null';
             
-            expect(() => parseStructured(schema, rawOutput)).toThrow(StructuredOutputError);
+            expect(() => parseStructured(fromZod(schema), rawOutput)).toThrow(StructuredOutputError);
         });
 
         it('handles array when object expected', () => {
@@ -1087,7 +1084,7 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
             const rawOutput = '["not", "an", "object"]';
             
             try {
-                parseStructured(schema, rawOutput);
+                parseStructured(fromZod(schema), rawOutput);
                 expect(true).toBe(false); // Should not reach here
             } catch (error) {
                 expect(error).toBeInstanceOf(StructuredOutputError);
@@ -1109,7 +1106,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             });
             
             const rawOutput = '{"name": "Alice", "age": 30}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(true);
             if (result.ok) {
@@ -1122,9 +1119,9 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             const rawOutput = '{"value": 42}';
             
             // Should not throw, should return result object
-            expect(() => tryParseStructured(schema, rawOutput)).not.toThrow();
+            expect(() => tryParseStructured(fromZod(schema), rawOutput)).not.toThrow();
             
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             expect(result.ok).toBe(true);
         });
 
@@ -1135,7 +1132,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             });
             
             const rawOutput = '{"name": "Bob"}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(true);
             if (result.ok) {
@@ -1154,7 +1151,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             });
             
             const rawOutput = '{"user": {"name": "Carol", "address": {"city": "NYC"}}}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(true);
             if (result.ok) {
@@ -1170,7 +1167,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             });
             
             const rawOutput = '{"items": ["a", "b", "c"]}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(true);
             if (result.ok) {
@@ -1184,7 +1181,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             });
             
             const rawOutput = '{"status": "active"}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(true);
             if (result.ok) {
@@ -1202,7 +1199,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             
             // Missing 'age' field
             const rawOutput = '{"name": "Alice"}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(false);
             if (!result.ok) {
@@ -1214,7 +1211,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
         it('returns { ok: false, ... } on malformed JSON', () => {
             const schema = z.object({ name: z.string() });
             const rawOutput = 'not json';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(false);
             if (!result.ok) {
@@ -1227,13 +1224,13 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             const schema = z.object({ name: z.string() });
             
             // Test with invalid JSON
-            expect(() => tryParseStructured(schema, 'invalid')).not.toThrow();
+            expect(() => tryParseStructured(fromZod(schema), 'invalid')).not.toThrow();
             
             // Test with schema validation failure
-            expect(() => tryParseStructured(schema, '{"age": 30}')).not.toThrow();
+            expect(() => tryParseStructured(fromZod(schema), '{"age": 30}')).not.toThrow();
             
             // Test with type mismatch
-            expect(() => tryParseStructured(schema, '{"name": 123}')).not.toThrow();
+            expect(() => tryParseStructured(fromZod(schema), '{"name": 123}')).not.toThrow();
         });
 
         it('includes ZodError as cause in failure result', () => {
@@ -1242,7 +1239,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
             });
             
             const rawOutput = '{"email": "not-an-email"}';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(false);
             if (!result.ok) {
@@ -1253,7 +1250,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
         it('includes SyntaxError as cause for malformed JSON', () => {
             const schema = z.object({ name: z.string() });
             const rawOutput = '{"incomplete": ';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(false);
             if (!result.ok) {
@@ -1264,7 +1261,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
         it('handles empty string input', () => {
             const schema = z.object({ name: z.string() });
             const rawOutput = '';
-            const result = tryParseStructured(schema, rawOutput);
+            const result = tryParseStructured(fromZod(schema), rawOutput);
             
             expect(result.ok).toBe(false);
             if (!result.ok) {
@@ -1276,7 +1273,7 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
     describe('Type Narrowing', () => {
         it('narrows type correctly with ok check', () => {
             const schema = z.object({ name: z.string() });
-            const result = tryParseStructured(schema, '{"name": "test"}');
+            const result = tryParseStructured(fromZod(schema), '{"name": "test"}');
             
             // TypeScript should narrow the type correctly
             if (result.ok) {
@@ -1291,8 +1288,8 @@ describe('tryParseStructured (VAL-SCHEMA-007)', () => {
 
         it('isStructuredOutputFailure works correctly', () => {
             const schema = z.object({ name: z.string() });
-            const successResult = tryParseStructured(schema, '{"name": "test"}');
-            const failureResult = tryParseStructured(schema, 'invalid json');
+            const successResult = tryParseStructured(fromZod(schema), '{"name": "test"}');
+            const failureResult = tryParseStructured(fromZod(schema), 'invalid json');
             
             expect(isStructuredOutputSuccess(successResult)).toBe(true);
             expect(isStructuredOutputFailure(successResult)).toBe(false);
@@ -1310,7 +1307,7 @@ describe('validateStructuredOutput', () => {
         });
         
         const data = { name: 'test', count: 5 };
-        const result = validateStructuredOutput(schema, data);
+        const result = validateStructuredOutput(fromZod(schema), data);
         
         expect(result).toEqual(data);
     });
@@ -1323,7 +1320,7 @@ describe('validateStructuredOutput', () => {
         
         const data = { name: 'test', count: 'not a number' };
         
-        expect(() => validateStructuredOutput(schema, data)).toThrow(StructuredOutputError);
+        expect(() => validateStructuredOutput(fromZod(schema), data)).toThrow(StructuredOutputError);
     });
 
     it('includes raw output in error for failed validation', () => {
@@ -1331,7 +1328,7 @@ describe('validateStructuredOutput', () => {
         const rawOutput = '{"name": 123}';
         
         try {
-            validateStructuredOutput(schema, JSON.parse(rawOutput), rawOutput);
+            validateStructuredOutput(fromZod(schema), JSON.parse(rawOutput), rawOutput);
             expect(true).toBe(false); // Should not reach here
         } catch (error) {
             expect(error).toBeInstanceOf(StructuredOutputError);

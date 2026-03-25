@@ -1,3 +1,4 @@
+import { fromZod } from '../../zod-adapter.js';
 /**
  * Google/Gemini Provider Structured Output Tests
  *
@@ -92,7 +93,7 @@ describe('GoogleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -115,7 +116,7 @@ describe('GoogleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -155,7 +156,7 @@ describe('GoogleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
             };
 
             await client.chat([
@@ -220,7 +221,7 @@ describe('GoogleClient Structured Output', () => {
             // Should not throw - valid response
             const result = await client.chat([
                 { role: 'user', content: 'Generate user' },
-            ], { schema: UserSchema });
+            ], { schema: fromZod(UserSchema) });
 
             expect(result.message.content).toBe('{"name": "Bob", "age": 25}');
         });
@@ -246,7 +247,7 @@ describe('GoogleClient Structured Output', () => {
             // Provider should NOT throw — validation is done at Router level
             const result = await client.chat([
                 { role: 'user', content: 'Generate user' },
-            ], { schema: UserSchema });
+            ], { schema: fromZod(UserSchema) });
             expect(result.message.content).toBe('not valid json');
         });
 
@@ -272,7 +273,7 @@ describe('GoogleClient Structured Output', () => {
             // Provider should NOT throw — validation is done at Router level
             const result = await client.chat([
                 { role: 'user', content: 'Generate user' },
-            ], { schema: UserSchema });
+            ], { schema: fromZod(UserSchema) });
             expect(result.message.content).toBe('{"name": "Bob", "age": "not a number"}');
         });
 
@@ -290,7 +291,7 @@ describe('GoogleClient Structured Output', () => {
 
             const UserSchema = z.object({ name: z.string() });
             const options: ChatOptions = {
-                schema: UserSchema,
+                schema: fromZod(UserSchema),
                 tools: [{
                     type: 'function',
                     function: { name: 'test', description: 'test', parameters: { type: 'object' } },
@@ -337,7 +338,7 @@ describe('GoogleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: z.object({ description: z.string() }),
+                schema: fromZod(z.object({ description: z.string() })),
             };
 
             await client.chat(messages, options);
@@ -386,9 +387,9 @@ describe('GoogleClient Structured Output', () => {
             }];
 
             const options: ChatOptions = {
-                schema: z.object({
+                schema: fromZod(z.object({
                     difference: z.string(),
-                }),
+                })),
             };
 
             await client.chat(messages, options);
@@ -531,7 +532,7 @@ describe('GoogleClient Structured Output', () => {
             const client = createClient();
 
             const options: ChatOptions = {
-                schema: z.object({ result: z.string() }),
+                schema: fromZod(z.object({ result: z.string() })),
             };
 
             await client.chat([
@@ -556,7 +557,7 @@ describe('GoogleClient Structured Output', () => {
             const client = createClient();
 
             const options: ChatOptions = {
-                schema: z.object({ name: z.string() }),
+                schema: fromZod(z.object({ name: z.string() })),
                 temperature: 0.7,
                 maxTokens: 100,
             };
@@ -607,7 +608,7 @@ describe('GoogleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: z.object({ text: z.string() }),
+                schema: fromZod(z.object({ text: z.string() })),
             };
 
             await client.chat([{ role: 'user', content: 'Test' }], options);
@@ -645,7 +646,7 @@ describe('GoogleClient Structured Output', () => {
             });
 
             const options: ChatOptions = {
-                schema: z.object({ text: z.string() }),
+                schema: fromZod(z.object({ text: z.string() })),
             };
 
             await client.chat([{ role: 'user', content: 'Test' }], options);

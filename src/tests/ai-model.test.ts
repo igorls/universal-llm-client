@@ -1,3 +1,4 @@
+import { fromZod } from '../zod-adapter.js';
 /**
  * Tests for ai-model.ts — Universal Client (AIModel)
  */
@@ -312,7 +313,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.generateStructured(UserSchema, [
+            const result = await model.generateStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -331,7 +332,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.generateStructured(UserSchema, [
+            const result = await model.generateStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user with email' },
             ]);
 
@@ -355,7 +356,7 @@ describe('AIModel', () => {
             }) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            await model.generateStructured(UserSchema, [
+            await model.generateStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ], { temperature: 0.5, maxTokens: 100 });
 
@@ -395,7 +396,7 @@ describe('AIModel', () => {
                 ],
             }));
 
-            const result = await model.generateStructured(UserSchema, [
+            const result = await model.generateStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -416,7 +417,7 @@ describe('AIModel', () => {
             const model = new AIModel(createTestConfig());
 
             expect(
-                model.generateStructured(UserSchema, [{ role: 'user', content: 'Generate a user' }])
+                model.generateStructured(fromZod(UserSchema), [{ role: 'user', content: 'Generate a user' }])
             ).rejects.toThrow(StructuredOutputError);
         });
 
@@ -433,7 +434,7 @@ describe('AIModel', () => {
             const model = new AIModel(createTestConfig());
 
             expect(
-                model.generateStructured(UserSchema, [{ role: 'user', content: 'Generate a user' }])
+                model.generateStructured(fromZod(UserSchema), [{ role: 'user', content: 'Generate a user' }])
             ).rejects.toThrow(StructuredOutputError);
         });
 
@@ -448,8 +449,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.generateStructured(
-                UserSchema,
+            const result = await model.generateStructured(fromZod(UserSchema),
                 [{ role: 'user', content: 'Generate a user' }],
             );
 
@@ -481,7 +481,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.generateStructured(NestedSchema, [
+            const result = await model.generateStructured(fromZod(NestedSchema), [
                 { role: 'user', content: 'Generate a nested user' },
             ]);
 
@@ -504,7 +504,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.generateStructured(ArraySchema, [
+            const result = await model.generateStructured(fromZod(ArraySchema), [
                 { role: 'user', content: 'Generate items' },
             ]);
 
@@ -526,7 +526,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.generateStructured(EnumSchema, [
+            const result = await model.generateStructured(fromZod(EnumSchema), [
                 { role: 'user', content: 'Generate status' },
             ]);
 
@@ -553,7 +553,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.tryParseStructured(UserSchema, [
+            const result = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -575,7 +575,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.tryParseStructured(UserSchema, [
+            const result = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -597,7 +597,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.tryParseStructured(UserSchema, [
+            const result = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -622,7 +622,7 @@ describe('AIModel', () => {
             const model = new AIModel(createTestConfig());
 
             // Should not throw on success
-            const result1 = await model.tryParseStructured(UserSchema, [
+            const result1 = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Test' },
             ]);
             expect(result1.ok).toBe(true);
@@ -638,7 +638,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             // Should not throw on failure
-            const result2 = await model.tryParseStructured(UserSchema, [
+            const result2 = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Test' },
             ]);
             expect(result2.ok).toBe(false);
@@ -655,7 +655,7 @@ describe('AIModel', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.tryParseStructured(UserSchema, [
+            const result = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -681,7 +681,7 @@ describe('AIModel', () => {
             }) as typeof fetch;
 
             const model = new AIModel(createTestConfig());
-            const result = await model.tryParseStructured(UserSchema, [
+            const result = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ], { temperature: 0.3, maxTokens: 50 });
 
@@ -721,7 +721,7 @@ describe('AIModel', () => {
                 ],
             }));
 
-            const result = await model.tryParseStructured(UserSchema, [
+            const result = await model.tryParseStructured(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -757,7 +757,7 @@ describe('AIModel', () => {
             const response = await model.chat([
                 { role: 'user', content: 'Generate a user' },
             ], {
-                output: { schema: UserSchema },
+                output: { schema: fromZod(UserSchema) },
             });
 
             // Response should have both message.content and structured property
@@ -781,7 +781,7 @@ describe('AIModel', () => {
             const response = await model.chat([
                 { role: 'user', content: 'Generate a user' },
             ], {
-                output: { schema: UserSchema },
+                output: { schema: fromZod(UserSchema) },
             });
 
             // Type check: response.structured should be typed correctly
@@ -808,7 +808,7 @@ describe('AIModel', () => {
                 { role: 'user', content: 'Generate a user' },
             ], {
                 output: {
-                    schema: UserSchema,
+                    schema: fromZod(UserSchema),
                     name: 'User',
                     description: 'A user object',
                 },
@@ -832,7 +832,7 @@ describe('AIModel', () => {
 
             expect(
                 model.chat([{ role: 'user', content: 'Generate a user' }], {
-                    output: { schema: UserSchema },
+                    output: { schema: fromZod(UserSchema) },
                 })
             ).rejects.toThrow(StructuredOutputError);
         });
@@ -876,7 +876,7 @@ describe('AIModel', () => {
 
             const response = await model.chat(
                 [{ role: 'user', content: 'Generate a user' }],
-                { output: { schema: UserSchema } },
+                { output: { schema: fromZod(UserSchema) } },
             );
 
             expect(response.structured?.name).toBe('OpenAI');
@@ -903,7 +903,7 @@ describe('AIModel', () => {
 
             const response = await model.chat(
                 [{ role: 'user', content: 'Generate a user' }],
-                { output: { schema: UserSchema } },
+                { output: { schema: fromZod(UserSchema) } },
             );
 
             expect(response.structured?.name).toBe('Google');
@@ -928,7 +928,7 @@ describe('AIModel', () => {
 
             const model = new AIModel(createTestConfig());
             const response = await model.chat([{ role: 'user', content: 'test' }], {
-                output: { schema: TestSchema },
+                output: { schema: fromZod(TestSchema) },
                 tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
             });
 
@@ -952,7 +952,7 @@ describe('AIModel', () => {
 
             const model = new AIModel(createTestConfig());
             const response = await model.chat([{ role: 'user', content: 'test' }], {
-                output: { schema: TestSchema },
+                output: { schema: fromZod(TestSchema) },
                 tools: [{ type: 'function', function: { name: 'test', description: 'test', parameters: { type: 'object' } } }],
             });
 
@@ -973,7 +973,7 @@ describe('AIModel', () => {
 
             const model = new AIModel(createTestConfig());
             const response = await model.chat([{ role: 'user', content: 'test' }], {
-                output: { schema: TestSchema },
+                output: { schema: fromZod(TestSchema) },
             });
 
             expect(response.structured?.result).toBe('success');
@@ -1012,7 +1012,7 @@ describe('AIModel', () => {
 
             // Empty tools array should be allowed with output (no actual tools)
             const response = await model.chat([{ role: 'user', content: 'test' }], {
-                output: { schema: TestSchema },
+                output: { schema: fromZod(TestSchema) },
                 tools: [],
             });
 
@@ -1050,7 +1050,7 @@ describe('AIModel', () => {
             }));
 
             const partials: unknown[] = [];
-            const stream = model.generateStructuredStream(UserSchema, [
+            const stream = model.generateStructuredStream(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -1087,7 +1087,7 @@ describe('AIModel', () => {
                 providers: [{ type: 'openai', apiKey: 'sk-test' }],
             }));
 
-            const stream = model.generateStructuredStream(UserSchema, [
+            const stream = model.generateStructuredStream(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -1122,7 +1122,7 @@ describe('AIModel', () => {
                 providers: [{ type: 'openai', apiKey: 'sk-test' }],
             }));
 
-            const stream = model.generateStructuredStream(UserSchema, [
+            const stream = model.generateStructuredStream(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -1158,7 +1158,7 @@ describe('AIModel', () => {
 
             const model = new AIModel(createTestConfig());
 
-            const stream = model.generateStructuredStream(UserSchema, [
+            const stream = model.generateStructuredStream(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -1192,7 +1192,7 @@ describe('AIModel', () => {
                 providers: [{ type: 'google', apiKey: 'test-key' }],
             }));
 
-            const stream = model.generateStructuredStream(UserSchema, [
+            const stream = model.generateStructuredStream(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -1224,7 +1224,7 @@ describe('AIModel', () => {
                 providers: [{ type: 'openai', apiKey: 'sk-test' }],
             }));
 
-            const stream = model.generateStructuredStream(UserSchema, [
+            const stream = model.generateStructuredStream(fromZod(UserSchema), [
                 { role: 'user', content: 'Generate a user' },
             ], { temperature: 0.5, maxTokens: 100 });
 
@@ -1262,7 +1262,7 @@ describe('AIModel', () => {
                 age: z.number(), // Required
             });
 
-            const stream = model.generateStructuredStream(StrictSchema, [
+            const stream = model.generateStructuredStream(fromZod(StrictSchema), [
                 { role: 'user', content: 'Generate a user' },
             ]);
 
@@ -1314,7 +1314,7 @@ describe('structured output auditor events', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig({ auditor }));
-            await model.generateStructured(TestSchema, [
+            await model.generateStructured(fromZod(TestSchema), [
                 { role: 'user', content: 'Generate data' },
             ]);
 
@@ -1349,7 +1349,7 @@ describe('structured output auditor events', () => {
             const model = new AIModel(createTestConfig({ auditor }));
 
             try {
-                await model.generateStructured(TestSchema, [
+                await model.generateStructured(fromZod(TestSchema), [
                     { role: 'user', content: 'Generate data' },
                 ]);
             } catch {
@@ -1382,7 +1382,7 @@ describe('structured output auditor events', () => {
             ) as typeof fetch;
 
             const model = new AIModel(createTestConfig({ auditor }));
-            await model.generateStructured(TestSchema, [
+            await model.generateStructured(fromZod(TestSchema), [
                 { role: 'user', content: 'Generate data' },
             ], { schemaName: 'CustomSchema' });
 
@@ -1413,7 +1413,7 @@ describe('structured output auditor events', () => {
             const model = new AIModel(createTestConfig({ auditor }));
             const response = await model.chat([
                 { role: 'user', content: 'Generate data' },
-            ], { output: { schema: TestSchema, name: 'TestData' } });
+            ], { output: { schema: fromZod(TestSchema), name: 'TestData' } });
 
             const events = auditor.getEvents();
             const types = events.map(e => e.type);
@@ -1443,7 +1443,7 @@ describe('structured output auditor events', () => {
             try {
                 await model.chat([
                     { role: 'user', content: 'Generate data' },
-                ], { output: { schema: TestSchema } });
+                ], { output: { schema: fromZod(TestSchema) } });
             } catch {
                 // Expected to throw StructuredOutputError
             }
@@ -1482,7 +1482,7 @@ describe('structured output auditor events', () => {
                 providers: [{ type: 'openai', apiKey: 'sk-test' }],
             }));
 
-            const stream = model.generateStructuredStream(TestSchema, [
+            const stream = model.generateStructuredStream(fromZod(TestSchema), [
                 { role: 'user', content: 'Generate data' },
             ]);
 
@@ -1532,7 +1532,7 @@ describe('structured output auditor events', () => {
             });
 
             try {
-                const stream = model.generateStructuredStream(StrictSchema, [
+                const stream = model.generateStructuredStream(fromZod(StrictSchema), [
                     { role: 'user', content: 'Generate data' },
                 ]);
                 for await (const _ of stream) {

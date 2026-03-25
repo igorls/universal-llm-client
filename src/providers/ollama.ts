@@ -422,13 +422,13 @@ export class OllamaClient extends BaseLLMClient {
      * - format: "json" for simple JSON mode
      * - format: { ...schema } for structured output with JSON Schema
      */
-    private buildFormatParameter(options: import('../interfaces.js').ChatOptions): string | import('../structured-output.js').JSONSchema {
+    private buildFormatParameter(options: { schemaConfig?: import('../structured-output.js').SchemaConfig<unknown>, jsonSchema?: import('../structured-output.js').JSONSchema }): string | import('../structured-output.js').JSONSchema {
         if (options.jsonSchema) {
             return normalizeJsonSchema(options.jsonSchema);
         }
 
-        if (options.schema) {
-            return getJsonSchemaFromConfig(options.schema);
+        if (options.schemaConfig) {
+            return getJsonSchemaFromConfig(options.schemaConfig);
         }
 
         return 'json';

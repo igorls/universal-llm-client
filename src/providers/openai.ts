@@ -97,6 +97,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 inputTokens: data.usage.prompt_tokens,
                 outputTokens: data.usage.completion_tokens,
                 totalTokens: data.usage.total_tokens,
+                cachedTokens: data.usage.prompt_tokens_details?.cached_tokens,
             }
             : undefined;
 
@@ -201,6 +202,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                         prompt_tokens: number;
                         completion_tokens: number;
                         total_tokens: number;
+                        prompt_tokens_details?: {
+                            cached_tokens?: number;
+                        };
                     };
                 };
 
@@ -209,6 +213,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                         inputTokens: parsed.usage.prompt_tokens,
                         outputTokens: parsed.usage.completion_tokens,
                         totalTokens: parsed.usage.total_tokens,
+                        cachedTokens: parsed.usage.prompt_tokens_details?.cached_tokens,
                     };
                 }
 

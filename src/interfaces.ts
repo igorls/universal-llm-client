@@ -296,6 +296,8 @@ export interface ChatOptions {
     signal?: AbortSignal;
     /** Enable/disable tool execution for chatWithTools */
     executeTools?: boolean;
+    /** Enable prompt caching (Provider specific feature, opt-in for Anthropic) */
+    enablePromptCaching?: boolean;
     /** Maximum tool execution rounds (default: 10) */
     maxIterations?: number;
     /**
@@ -376,6 +378,7 @@ export interface TokenUsageInfo {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    cachedTokens?: number;
 }
 
 // ============================================================================
@@ -451,6 +454,10 @@ export interface OpenAIResponse {
         prompt_tokens: number;
         completion_tokens: number;
         total_tokens: number;
+        prompt_tokens_details?: {
+            cached_tokens?: number;
+            audio_tokens?: number;
+        };
     };
 }
 
@@ -555,6 +562,7 @@ export interface GoogleResponse {
         promptTokenCount: number;
         candidatesTokenCount: number;
         totalTokenCount: number;
+        cachedContentTokenCount?: number;
     };
 }
 

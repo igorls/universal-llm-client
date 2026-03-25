@@ -186,6 +186,7 @@ export class GoogleClient extends BaseLLMClient {
                             inputTokens: data.usageMetadata.promptTokenCount ?? 0,
                             outputTokens: data.usageMetadata.candidatesTokenCount ?? 0,
                             totalTokens: data.usageMetadata.totalTokenCount ?? 0,
+                            cachedTokens: data.usageMetadata.cachedContentTokenCount,
                         };
                     }
 
@@ -537,6 +538,7 @@ export class GoogleClient extends BaseLLMClient {
                 inputTokens: data.usageMetadata.promptTokenCount,
                 outputTokens: data.usageMetadata.candidatesTokenCount,
                 totalTokens: data.usageMetadata.totalTokenCount,
+                cachedTokens: data.usageMetadata.cachedContentTokenCount,
             }
             : undefined;
 
