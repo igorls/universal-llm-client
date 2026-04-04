@@ -31,6 +31,7 @@ export {
     type LLMContentPart,
     type LLMTextContent,
     type LLMImageContent,
+    type LLMAudioContent,
     // Responses
     type LLMChatResponse,
     type TokenUsageInfo,
@@ -54,6 +55,8 @@ export {
     multimodalMessage,
     extractTextContent,
     hasImages,
+    audioContent,
+    hasAudio,
 } from './interfaces.js';
 
 // ============================================================================

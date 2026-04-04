@@ -620,6 +620,9 @@ export class AnthropicClient extends BaseLLMClient {
         for (const part of content as LLMContentPart[]) {
             if (part.type === 'text') {
                 blocks.push({ type: 'text', text: part.text });
+            } else if (part.type === 'audio') {
+                // Anthropic does not yet support audio input — skip silently
+                this.debugLog('[Anthropic] Audio content dropped — not supported');
             } else if (part.type === 'image_url') {
                 const url = part.image_url.url;
                 if (url.startsWith('data:')) {

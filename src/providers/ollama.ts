@@ -368,6 +368,8 @@ export class OllamaClient extends BaseLLMClient {
                 for (const part of msg.content) {
                     if (part.type === 'text') {
                         textParts.push(part.text);
+                    } else if (part.type === 'audio') {
+                        this.debugLog('Ollama: skipping audio content (not supported)');
                     } else if (part.type === 'image_url' && part.image_url?.url) {
                         // Extract base64 data from data URL or use raw base64
                         const url = part.image_url.url;

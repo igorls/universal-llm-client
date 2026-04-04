@@ -483,6 +483,14 @@ export class GoogleClient extends BaseLLMClient {
             if (part.type === 'text') {
                 return { text: part.text };
             }
+            if (part.type === 'audio') {
+                return {
+                    inlineData: {
+                        mimeType: part.audio.mimeType,
+                        data: part.audio.data,
+                    },
+                };
+            }
             // Image content
             const url = part.image_url.url;
             if (url.startsWith('data:')) {

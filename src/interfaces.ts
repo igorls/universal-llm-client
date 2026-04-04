@@ -132,7 +132,17 @@ export interface LLMImageContent {
     };
 }
 
-export type LLMContentPart = LLMTextContent | LLMImageContent;
+export interface LLMAudioContent {
+    type: 'audio';
+    audio: {
+        /** Raw base64-encoded audio data */
+        data: string;
+        /** MIME type (e.g. 'audio/ogg', 'audio/wav', 'audio/mp3') */
+        mimeType: string;
+    };
+}
+
+export type LLMContentPart = LLMTextContent | LLMImageContent | LLMAudioContent;
 export type LLMMessageContent = string | LLMContentPart[];
 
 // ============================================================================
@@ -630,4 +640,18 @@ export function extractTextContent(content: LLMMessageContent): string {
 export function hasImages(content: LLMMessageContent): boolean {
     if (typeof content === 'string') return false;
     return content.some(part => part.type === 'image_url');
+}
+
+/** Create an audio content part from raw base64 data */
+export function audioContent(base64Data: string, mimeType: string): LLMAudioContent {
+    return {
+        type: 'audio',
+        audio: { data: base64Data, mimeType },
+    };
+}
+
+/** Check if message content contains audio */
+export function hasAudio(content: LLMMessageContent): boolean {
+    if (typeof content === 'string') return false;
+    return content.some(part => part.type === 'audio');
 }
