@@ -346,6 +346,50 @@ describe('OllamaClient', () => {
             expect(result.message.tool_calls![0]!.id).toBeTruthy();
             expect(result.message.tool_calls![0]!.id.length).toBeGreaterThan(0);
         });
+
+        test('prefers live deployment context from /api/ps over trained maximum', async () => {
+            globalThis.fetch = mock(async (input: string | URL | Request) => {
+                const url = typeof input === 'string'
+                    ? input
+                    : input instanceof URL
+                        ? input.toString()
+                        : input.url;
+
+                if (url.endsWith('/api/show')) {
+                    return new Response(JSON.stringify({
+                        model_info: {
+                            'general.architecture': 'gemma4',
+                            'gemma4.context_length': 262144,
+                        },
+                        capabilities: ['completion', 'vision', 'tools', 'thinking'],
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+
+                if (url.endsWith('/api/ps')) {
+                    return new Response(JSON.stringify({
+                        models: [{ name: 'test-model', context_length: 32768 }],
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+
+                return new Response(JSON.stringify(OLLAMA_RESPONSE), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+
+            const client = createClient();
+            const info = await client.getModelInfo();
+
+            expect(info.contextLength).toBe(32768);
+            expect(info.architecture).toBe('gemma4');
+            expect(info.capabilities).toEqual(['completion', 'vision', 'tools', 'thinking']);
+        });
     });
 
     // ========================================================================

@@ -281,9 +281,10 @@ export class OllamaClient extends BaseLLMClient {
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         const url = `${this.options.url}/api/show`;
         try {
+            const targetModel = modelName ?? this.options.model;
             const response = await httpRequest<Record<string, unknown>>(url, {
                 method: 'POST',
-                body: { name: modelName ?? this.options.model },
+                body: { name: targetModel },
                 timeout: 5000,
             });
 
@@ -300,13 +301,32 @@ export class OllamaClient extends BaseLLMClient {
                 if (ctxValue) contextLength = ctxValue;
             }
 
+            // Prefer the live deployment context when available. /api/show reports
+            // the trained maximum; /api/ps reports what the daemon has actually loaded.
+            try {
+                const psResponse = await httpRequest<{ models?: Array<{ name?: string; context_length?: number }> }>(
+                    `${this.options.url}/api/ps`,
+                    { timeout: 5000 },
+                );
+                const liveModel = psResponse.data.models?.find(
+                    model => model.name?.toLowerCase() === targetModel.toLowerCase(),
+                );
+                if (liveModel?.context_length && liveModel.context_length > 0) {
+                    contextLength = Math.min(contextLength, liveModel.context_length);
+                }
+            } catch {
+                // Ignore /api/ps failures — /api/show is still a valid fallback
+            }
+
             const paramCountRaw = modelInfo['general.parameter_count'] as number | undefined;
+            const capabilities = response.data['capabilities'] as string[] | undefined;
 
             return {
-                model: modelName ?? this.options.model,
+                model: targetModel,
                 contextLength,
                 architecture: arch,
                 parameterCount: paramCountRaw,
+                capabilities,
             };
         } catch {
             return { contextLength: 8192 };
