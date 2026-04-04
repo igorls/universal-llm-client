@@ -368,6 +368,16 @@ export interface ChatOptions {
      * Use { type: 'json_object' } for legacy JSON mode without schema validation.
      */
     responseFormat?: ResponseFormat;
+
+    // ========================================================================
+    // Inference Tier Selection
+    // ========================================================================
+
+    /** Inference tier selection (provider-specific; Google supports 'flex' and 'priority').
+     *  - 'flex': 50% cost reduction, best-effort, higher latency (background tasks)
+     *  - 'priority': Premium pricing, lowest latency, highest reliability (interactive)
+     *  - 'standard': Default behavior (omitted from request) */
+    serviceTier?: 'flex' | 'priority' | 'standard';
 }
 
 // ============================================================================
@@ -414,6 +424,8 @@ export interface LLMChatResponse<T = unknown> {
      * ```
      */
     structured?: T;
+    /** Which inference tier actually served this response (from provider response headers, e.g. x-gemini-service-tier) */
+    serviceTier?: 'flex' | 'priority' | 'standard';
 }
 
 // ============================================================================
@@ -545,6 +557,8 @@ export interface GoogleRequest {
         functionDeclarations: GoogleFunctionDeclaration[];
     }>;
     toolConfig?: GoogleToolConfig;
+    /** Inference tier: FLEX (50% off, best-effort) or PRIORITY (premium, highest reliability) */
+    service_tier?: 'FLEX' | 'PRIORITY' | 'STANDARD';
 }
 
 export interface GoogleCandidate {

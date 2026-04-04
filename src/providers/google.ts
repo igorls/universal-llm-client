@@ -105,6 +105,12 @@ export class GoogleClient extends BaseLLMClient {
         const url = this.getChatUrl();
         const body = this.buildRequestBody(messages, options);
 
+        // Flex tier: increase timeout (Google recommends 600s+) and use retry logic
+        const tier = options?.serviceTier;
+        const effectiveTimeout = tier === 'flex'
+            ? Math.max(this.options.timeout ?? 60000, 600_000)
+            : (this.options.timeout ?? 60000);
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
@@ -113,14 +119,24 @@ export class GoogleClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        const response = await httpRequest<GoogleResponse>(url, {
-            method: 'POST',
+        const reqOptions = {
+            method: 'POST' as const,
             headers: this.getHeaders(),
             body,
-            timeout: this.options.timeout ?? 60000,
-        });
+            timeout: effectiveTimeout,
+        };
+
+        const response = tier === 'flex'
+            ? await this.fetchWithFlexRetry<GoogleResponse>(url, reqOptions)
+            : await httpRequest<GoogleResponse>(url, reqOptions);
 
         const result = this.parseGoogleResponse(response.data);
+
+        // Surface the tier that actually served the request
+        const resolvedTier = response.headers?.get('x-gemini-service-tier');
+        if (resolvedTier) {
+            result.serviceTier = resolvedTier.toLowerCase() as 'flex' | 'priority' | 'standard';
+        }
 
         this.auditor.record({
             timestamp: Date.now(),
@@ -145,6 +161,12 @@ export class GoogleClient extends BaseLLMClient {
         const url = this.getStreamUrl();
         const body = this.buildRequestBody(messages, options);
 
+        // Flex tier: increase timeout (Google recommends 600s+)
+        const tier = options?.serviceTier;
+        const effectiveTimeout = tier === 'flex'
+            ? Math.max(this.options.timeout ?? 120000, 600_000)
+            : (this.options.timeout ?? 120000);
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
@@ -161,7 +183,7 @@ export class GoogleClient extends BaseLLMClient {
             method: 'POST',
             headers: this.getHeaders(),
             body,
-            timeout: this.options.timeout ?? 120000,
+            timeout: effectiveTimeout,
         });
 
         // Google streams SSE with JSON payloads
@@ -311,6 +333,12 @@ export class GoogleClient extends BaseLLMClient {
             body.tools = [{
                 functionDeclarations: tools.map(t => this.convertToGoogleTool(t)),
             }];
+        }
+
+        // Inference tier (Flex / Priority)
+        const tier = options?.serviceTier;
+        if (tier && tier !== 'standard') {
+            body.service_tier = tier.toUpperCase() as 'FLEX' | 'PRIORITY';
         }
 
         return body;
@@ -551,6 +579,34 @@ export class GoogleClient extends BaseLLMClient {
             usage,
             provider: this.isVertex ? 'vertex' : 'google',
         };
+    }
+
+    // ========================================================================
+    // Flex Retry Logic
+    // ========================================================================
+
+    /**
+     * Retry HTTP requests for Flex tier when receiving 503/429 errors.
+     * Uses exponential backoff (5s → 10s → 20s) as recommended by Google.
+     */
+    private async fetchWithFlexRetry<T>(
+        url: string,
+        reqOptions: { method: 'POST'; headers: Record<string, string>; body: unknown; timeout: number },
+        maxRetries = 3,
+        baseDelay = 5000,
+    ): Promise<import('../http.js').HttpResponse<T>> {
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                return await httpRequest<T>(url, reqOptions);
+            } catch (error) {
+                const isRetryable = error instanceof Error
+                    && (error.message.includes('HTTP 503') || error.message.includes('HTTP 429'));
+                if (!isRetryable || attempt >= maxRetries - 1) throw error;
+                const delay = baseDelay * (2 ** attempt);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+        throw new Error('Unreachable');
     }
 
 }

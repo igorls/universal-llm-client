@@ -23,6 +23,8 @@ export interface HttpResponse<T = unknown> {
     ok: boolean;
     status: number;
     data: T;
+    /** Response headers (when available) */
+    headers?: Headers;
 }
 
 // ============================================================================
@@ -71,6 +73,7 @@ export async function httpRequest<T = unknown>(
             ok: response.ok,
             status: response.status,
             data,
+            headers: response.headers,
         };
     } catch (error) {
         clearTimeout(timeoutId);
