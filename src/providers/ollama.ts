@@ -175,11 +175,15 @@ export class OllamaClient extends BaseLLMClient {
         let lastResponse: OllamaResponse | undefined;
         const streamedToolCalls: import('../interfaces.js').LLMToolCall[] = [];
 
+        // Stream idle timeout: thinking models can pause for minutes between chunks.
+        // Ensure at least 5 minutes regardless of the base request timeout.
+        const streamTimeout = Math.max(this.options.timeout ?? 300000, 300000);
+
         const stream = httpStream(url, {
             method: 'POST',
             headers: buildHeaders(this.options),
             body,
-            timeout: this.options.timeout ?? 120000,
+            timeout: streamTimeout,
         });
 
         for await (const chunk of parseNDJSON<OllamaResponse>(stream)) {
