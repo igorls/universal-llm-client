@@ -64,10 +64,9 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        // Always send think parameter — Ollama uses a pointer type,
-        // so omitting it means "use model default" (which for qwen3.5 is to think).
-        // We must explicitly send false to suppress thinking.
-        body['think'] = this.options.thinking ?? false;
+        // Enable native thinking by default — thinking models produce better
+        // tool selections and reasoning when allowed to think before acting.
+        body['think'] = this.options.thinking ?? true;
 
         // Handle structured output via format parameter
         const schemaOptions = this.extractSchemaOptions(options);
@@ -162,7 +161,7 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        body['think'] = this.options.thinking ?? false;
+        body['think'] = this.options.thinking ?? true;
 
         const start = Date.now();
         this.auditor.record({
@@ -174,6 +173,7 @@ export class OllamaClient extends BaseLLMClient {
 
         const decoder = new StandardChatDecoder(() => {});
         let lastResponse: OllamaResponse | undefined;
+        const streamedToolCalls: import('../interfaces.js').LLMToolCall[] = [];
 
         const stream = httpStream(url, {
             method: 'POST',
@@ -206,6 +206,7 @@ export class OllamaClient extends BaseLLMClient {
                             : JSON.stringify(tc.function.arguments),
                     },
                 }));
+                streamedToolCalls.push(...normalized);
                 yield { type: 'tool_call', calls: normalized };
             }
         }
@@ -233,6 +234,7 @@ export class OllamaClient extends BaseLLMClient {
             message: {
                 role: 'assistant',
                 content: decoder.getCleanContent(),
+                tool_calls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
             },
             reasoning: decoder.getReasoning(),
             usage,
@@ -407,6 +409,11 @@ export class OllamaClient extends BaseLLMClient {
                             : tc.function.arguments,
                     },
                 }));
+            }
+
+            // Preserve tool_call_id for tool result messages
+            if (msg.tool_call_id) {
+                converted['tool_call_id'] = msg.tool_call_id;
             }
 
             return converted;
