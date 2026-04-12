@@ -450,10 +450,48 @@ export function convertToProviderSchema<T>(
 // ============================================================================
 
 /**
+ * Strip markdown code fences from raw LLM output.
+ *
+ * Some providers/models — notably Gemma variants via Ollama — wrap
+ * structured JSON output in ` ```json ... ``` ` fences even when a JSON
+ * schema is passed via the `format` field. This helper extracts the
+ * inner payload so it can be fed to `JSON.parse`.
+ *
+ * Behavior:
+ * - If the input contains no triple-backtick fences, the input is
+ *   returned unchanged (zero risk of disturbing well-formed output).
+ * - Otherwise, the first fenced block is extracted and returned trimmed.
+ *   Language tags (` ```json `, ` ```JSON `, etc.) are handled.
+ * - Callers should still treat the return value as untrusted — it may
+ *   not be valid JSON (e.g. the model emitted prose, not JSON).
+ *
+ * This helper is idempotent: `stripJsonFences(stripJsonFences(x)) === stripJsonFences(x)`.
+ *
+ * @param rawOutput The raw LLM response text
+ * @returns Fence-stripped content if fences were present, otherwise `rawOutput` unchanged
+ */
+export function stripJsonFences(rawOutput: string): string {
+    if (!rawOutput.includes('```')) return rawOutput;
+
+    // Match the first fenced block, optionally with a language tag.
+    // The non-greedy `[\s\S]*?` keeps us from swallowing content after
+    // the first closing fence. Whitespace/newlines around the payload
+    // are tolerated so we accept both inline and multi-line fences.
+    const fenceMatch = rawOutput.match(
+        /```(?:[a-zA-Z0-9_-]*)[ \t]*\n?([\s\S]*?)\n?[ \t]*```/,
+    );
+    if (fenceMatch && fenceMatch[1] !== undefined) {
+        return fenceMatch[1].trim();
+    }
+    return rawOutput;
+}
+
+/**
  * Parse and validate structured output from raw LLM response text.
  *
  * This function:
- * 1. Parses JSON from the raw output string
+ * 1. Parses JSON from the raw output string (with fallback fence stripping
+ *    for models that wrap structured output in ` ```json ... ``` `)
  * 2. Validates using the SchemaConfig's validate function (if provided)
  * 3. Throws StructuredOutputError on failure
  *
@@ -466,18 +504,37 @@ export function parseStructured<T>(
     config: SchemaConfig<T>,
     rawOutput: string,
 ): T {
-    // Step 1: Parse JSON
+    // Step 1: Parse JSON. Try the raw output first — well-behaved providers
+    // return clean JSON and we don't want to pay any cost in the fast path.
+    // If that fails, fall back to stripping markdown code fences before
+    // re-trying; some models (e.g. Gemma via Ollama) wrap structured output
+    // in ` ```json ... ``` ` even when a JSON schema is requested.
     let parsed: unknown;
+    let parseError: SyntaxError | undefined;
     try {
         parsed = JSON.parse(rawOutput);
     } catch (error) {
-        // JSON parsing failed - wrap in StructuredOutputError
-        const syntaxError = error instanceof SyntaxError
+        parseError = error instanceof SyntaxError
             ? error
             : new SyntaxError(String(error));
+
+        const fenceStripped = stripJsonFences(rawOutput);
+        if (fenceStripped !== rawOutput) {
+            try {
+                parsed = JSON.parse(fenceStripped);
+                parseError = undefined;
+            } catch {
+                // Fence stripping didn't help — fall through to throw the
+                // original parse error so error messages reflect what the
+                // model actually emitted, not the post-processed variant.
+            }
+        }
+    }
+
+    if (parseError) {
         throw new StructuredOutputError(
-            `Failed to parse JSON: ${syntaxError.message}`,
-            { rawOutput, cause: syntaxError },
+            `Failed to parse JSON: ${parseError.message}`,
+            { rawOutput, cause: parseError },
         );
     }
 

@@ -26,6 +26,7 @@ import {
     parseStructured,
     tryParseStructured,
     validateStructuredOutput,
+    stripJsonFences,
 } from '../structured-output.js';
 import {  fromZod } from '../zod-adapter.js';
 
@@ -1029,6 +1030,115 @@ describe('Validation Logic (VAL-SCHEMA-005)', () => {
                     expect(zodError.issues.length).toBeGreaterThan(0);
                 }
             }
+        });
+    });
+
+    describe('Markdown Fence Tolerance (VAL-SCHEMA-008)', () => {
+        // Some providers/models wrap structured output in ```json ... ```
+        // fences even when a JSON schema is supplied via the `format`
+        // field (observed with Gemma variants via Ollama). parseStructured
+        // must tolerate this so the first such response doesn't fail the
+        // whole scoring run.
+
+        const schema = z.object({
+            score: z.number(),
+            reasoning: z.string(),
+            correct: z.boolean(),
+        });
+
+        it('parses JSON wrapped in ```json fences', () => {
+            const rawOutput = '```json\n{"score": 0.9, "reasoning": "matches", "correct": true}\n```';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 0.9, reasoning: 'matches', correct: true });
+        });
+
+        it('parses JSON wrapped in bare ``` fences (no language tag)', () => {
+            const rawOutput = '```\n{"score": 0.5, "reasoning": "partial", "correct": false}\n```';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 0.5, reasoning: 'partial', correct: false });
+        });
+
+        it('parses JSON wrapped in ```JSON (uppercase language tag)', () => {
+            const rawOutput = '```JSON\n{"score": 1.0, "reasoning": "exact", "correct": true}\n```';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 1.0, reasoning: 'exact', correct: true });
+        });
+
+        it('parses JSON with inline fences on a single line', () => {
+            const rawOutput = '```json{"score": 0.0, "reasoning": "wrong", "correct": false}```';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 0.0, reasoning: 'wrong', correct: false });
+        });
+
+        it('parses JSON with leading/trailing whitespace around fences', () => {
+            const rawOutput = '  \n```json\n{"score": 0.7, "reasoning": "ok", "correct": true}\n```\n  ';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 0.7, reasoning: 'ok', correct: true });
+        });
+
+        it('falls back to first fenced block when prose precedes the JSON', () => {
+            const rawOutput = "Here's the evaluation:\n```json\n{\"score\": 0.3, \"reasoning\": \"weak\", \"correct\": false}\n```\nHope that helps!";
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 0.3, reasoning: 'weak', correct: false });
+        });
+
+        it('does not disturb well-formed JSON without fences (fast path)', () => {
+            const rawOutput = '{"score": 0.8, "reasoning": "good", "correct": true}';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result).toEqual({ score: 0.8, reasoning: 'good', correct: true });
+        });
+
+        it('preserves JSON string values that contain literal backticks', () => {
+            // The reasoning field contains the sequence ``` inside a string
+            // literal but there is no fenced block. parseStructured should
+            // take the fast path and not touch the value.
+            const rawOutput = '{"score": 0.5, "reasoning": "the model emitted ``` once", "correct": false}';
+            const result = parseStructured(fromZod(schema), rawOutput);
+            expect(result.reasoning).toBe('the model emitted ``` once');
+        });
+
+        it('throws with the original rawOutput when fence stripping does not yield valid JSON', () => {
+            const rawOutput = '```json\nthis is not json at all\n```';
+            try {
+                parseStructured(fromZod(schema), rawOutput);
+                expect(true).toBe(false);
+            } catch (error) {
+                expect(error).toBeInstanceOf(StructuredOutputError);
+                if (error instanceof StructuredOutputError) {
+                    // The error should report the original raw output so
+                    // users debugging can see exactly what the model sent.
+                    expect(error.rawOutput).toBe(rawOutput);
+                }
+            }
+        });
+    });
+
+    describe('stripJsonFences helper', () => {
+        it('returns input unchanged when no fences are present', () => {
+            expect(stripJsonFences('{"a": 1}')).toBe('{"a": 1}');
+            expect(stripJsonFences('plain text')).toBe('plain text');
+            expect(stripJsonFences('')).toBe('');
+        });
+
+        it('strips ```json fences', () => {
+            expect(stripJsonFences('```json\n{"a": 1}\n```')).toBe('{"a": 1}');
+        });
+
+        it('strips bare ``` fences', () => {
+            expect(stripJsonFences('```\n{"a": 1}\n```')).toBe('{"a": 1}');
+        });
+
+        it('is idempotent', () => {
+            const once = stripJsonFences('```json\n{"a": 1}\n```');
+            const twice = stripJsonFences(once);
+            expect(twice).toBe(once);
+        });
+
+        it('returns input unchanged if a stray ``` has no closing fence', () => {
+            // No matched pair — leave the input alone so the JSON parser
+            // sees the real output and produces a meaningful error.
+            const input = '{"a": 1, "note": "stray ``` here"}';
+            expect(stripJsonFences(input)).toBe(input);
         });
     });
 

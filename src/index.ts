@@ -154,6 +154,7 @@ export {
     parseStructured,
     tryParseStructured,
     validateStructuredOutput,
+    stripJsonFences,
     // Streaming parser
     StreamingJsonParser,
     type StreamingStructuredResult,
