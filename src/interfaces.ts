@@ -396,9 +396,23 @@ export interface ChatOptions {
 
 export interface TokenUsageInfo {
     inputTokens: number;
+    /**
+     * Visible output tokens (the streamed `text` content). For providers
+     * that bill thinking separately (Google Gemini), this excludes the
+     * reasoning trace — see `reasoningTokens`.
+     */
     outputTokens: number;
     totalTokens: number;
     cachedTokens?: number;
+    /**
+     * Server-side reasoning/thinking tokens that were generated but not
+     * yielded as visible text. Currently populated by the Google provider
+     * from `usageMetadata.thoughtsTokenCount` for thinking-enabled models.
+     * Other providers may roll thinking into `outputTokens` (Ollama) or
+     * stream it as `thinking` events (the universal client surfaces these
+     * via `DecodedEvent { type: 'thinking' }`); consult the provider.
+     */
+    reasoningTokens?: number;
 }
 
 // ============================================================================
@@ -587,6 +601,12 @@ export interface GoogleResponse {
         candidatesTokenCount: number;
         totalTokenCount: number;
         cachedContentTokenCount?: number;
+        /**
+         * Server-side reasoning tokens emitted by Gemini thinking models
+         * (e.g. 2.5 Pro / 3.x Pro). Counted toward billing as output but
+         * not included in `candidatesTokenCount` and not streamed as text.
+         */
+        thoughtsTokenCount?: number;
     };
 }
 
