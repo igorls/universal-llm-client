@@ -8,6 +8,7 @@
  */
 
 import type { LLMToolCall } from './interfaces.js';
+import { GEMMA_THOUGHT_OPENERS, normalizeGemmaThought } from './gemma-channel.js';
 
 // ============================================================================
 // Decoded Event Types
@@ -103,20 +104,113 @@ export class StandardChatDecoder implements StreamDecoder {
     private content = '';
     private reasoning = '';
     private readonly callback: DecoderCallback;
+    private tagBuffer = '';
+    private inProgressTag = false;
+    private progressBody = '';
+    private inGemmaThought = false;
+    private gemmaThoughtBody = '';
+    private gemmaThoughtClose = '';
 
     constructor(callback: DecoderCallback) {
         this.callback = callback;
     }
 
     push(token: string): void {
-        this.content += token;
-        this.callback({ type: 'text', content: token });
+        let pos = 0;
+
+        while (pos < token.length) {
+            if (this.inGemmaThought) {
+                this.gemmaThoughtBody += token.slice(pos);
+                const closeIdx = this.gemmaThoughtBody.indexOf(this.gemmaThoughtClose);
+                if (closeIdx !== -1) {
+                    const body = this.gemmaThoughtBody.slice(0, closeIdx);
+                    const remainder = this.gemmaThoughtBody.slice(closeIdx + this.gemmaThoughtClose.length);
+                    this.emitReasoning(normalizeGemmaThought(body));
+                    this.inGemmaThought = false;
+                    this.gemmaThoughtBody = '';
+                    this.gemmaThoughtClose = '';
+                    if (remainder) this.push(remainder);
+                }
+                return;
+            }
+
+            if (this.inProgressTag) {
+                this.progressBody += token.slice(pos);
+                const closeIdx = this.progressBody.indexOf('</progress>');
+                if (closeIdx !== -1) {
+                    const body = this.progressBody.slice(0, closeIdx);
+                    const remainder = this.progressBody.slice(closeIdx + '</progress>'.length);
+                    if (body) {
+                        this.callback({ type: 'progress', content: body });
+                    }
+                    this.inProgressTag = false;
+                    this.progressBody = '';
+                    if (remainder) this.push(remainder);
+                }
+                return;
+            }
+
+            if (this.tagBuffer.length > 0) {
+                const ch = token[pos]!;
+                pos++;
+                this.tagBuffer += ch;
+                if (this.matchesStructuralOpenerPrefix(this.tagBuffer)) {
+                    if (this.tagBuffer === '<progress>') {
+                        this.inProgressTag = true;
+                        this.progressBody = '';
+                        this.tagBuffer = '';
+                    } else if (this.tagBuffer === '<|channel>thought') {
+                        this.inGemmaThought = true;
+                        this.gemmaThoughtBody = '';
+                        this.gemmaThoughtClose = '<channel|>';
+                        this.tagBuffer = '';
+                    } else if (this.tagBuffer === '<|thought') {
+                        this.inGemmaThought = true;
+                        this.gemmaThoughtBody = '';
+                        this.gemmaThoughtClose = '|>';
+                        this.tagBuffer = '';
+                    }
+                } else {
+                    this.emitText(this.tagBuffer);
+                    this.tagBuffer = '';
+                }
+                continue;
+            }
+
+            const ltIdx = token.indexOf('<', pos);
+            if (ltIdx === -1) {
+                this.emitText(token.slice(pos));
+                return;
+            }
+
+            if (ltIdx > pos) {
+                this.emitText(token.slice(pos, ltIdx));
+            }
+            this.tagBuffer = '<';
+            pos = ltIdx + 1;
+        }
+    }
+
+    private emitText(text: string): void {
+        if (!text) return;
+        this.content += text;
+        this.callback({ type: 'text', content: text });
+    }
+
+    private emitReasoning(content: string): void {
+        if (!content) return;
+        this.reasoning += content;
+        this.callback({ type: 'thinking', content });
+    }
+
+    private matchesStructuralOpenerPrefix(candidate: string): boolean {
+        if ('<progress>'.startsWith(candidate)) return true;
+        return GEMMA_THOUGHT_OPENERS.some(opener => opener.startsWith(candidate));
     }
 
     /** Feed native reasoning tokens from the provider */
     pushReasoning(content: string): void {
-        this.reasoning += content;
-        this.callback({ type: 'thinking', content });
+        this.emitReasoning(content);
     }
 
     /** Feed structured tool calls from the provider API response */
@@ -125,7 +219,23 @@ export class StandardChatDecoder implements StreamDecoder {
     }
 
     flush(): void {
-        // Nothing to flush — all events emitted as they arrive
+        if (this.tagBuffer) {
+            this.emitText(this.tagBuffer);
+            this.tagBuffer = '';
+        }
+        if (this.inGemmaThought) {
+            this.emitReasoning(normalizeGemmaThought(this.gemmaThoughtBody));
+            this.inGemmaThought = false;
+            this.gemmaThoughtBody = '';
+            this.gemmaThoughtClose = '';
+        }
+        if (this.inProgressTag) {
+            if (this.progressBody) {
+                this.emitText('<progress>' + this.progressBody);
+            }
+            this.inProgressTag = false;
+            this.progressBody = '';
+        }
     }
 
     getCleanContent(): string {

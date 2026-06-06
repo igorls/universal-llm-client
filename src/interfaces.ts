@@ -421,6 +421,8 @@ export interface TokenUsageInfo {
 
 export interface LLMChatResponse<T = unknown> {
     message: LLMChatMessage;
+    /** Provider finish reason when available (e.g. Ollama done_reason, Google finishReason) */
+    finishReason?: string;
     /** Reasoning/thinking content from the model (if supported) */
     reasoning?: string;
     /** Token usage info */
@@ -466,6 +468,7 @@ export interface OllamaResponse {
         tool_calls?: LLMToolCall[];
     };
     done: boolean;
+    done_reason?: string;
     prompt_eval_count?: number;
     eval_count?: number;
     prompt_eval_duration?: number;

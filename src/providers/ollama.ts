@@ -18,6 +18,7 @@ import {
     normalizeJsonSchema,
     getJsonSchemaFromConfig,
 } from '../structured-output.js';
+import { extractGemmaThoughtChannels } from '../gemma-channel.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -113,16 +114,17 @@ export class OllamaClient extends BaseLLMClient {
             },
         }));
 
-        // Get content, handling potential null
-        const content = data.message.content || data.message.thinking || '';
+        const gemmaContent = extractGemmaThoughtChannels(data.message.content || '');
+        const reasoning = [data.message.thinking, gemmaContent.reasoning].filter(Boolean).join('\n\n') || undefined;
 
         const result: LLMChatResponse = {
             message: {
                 role: 'assistant',
-                content,
+                content: gemmaContent.content,
                 tool_calls: toolCalls,
             },
-            reasoning: data.message.content ? data.message.thinking : undefined,
+            finishReason: data.done_reason,
+            reasoning,
             usage,
             provider: 'ollama',
         };
@@ -171,7 +173,8 @@ export class OllamaClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        const decoder = new StandardChatDecoder(() => {});
+        const decoderEvents: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(event => decoderEvents.push(event));
         let lastResponse: OllamaResponse | undefined;
         const streamedToolCalls: import('../interfaces.js').LLMToolCall[] = [];
 
@@ -191,12 +194,18 @@ export class OllamaClient extends BaseLLMClient {
 
             if (chunk.message?.thinking) {
                 decoder.pushReasoning(chunk.message.thinking);
-                yield { type: 'thinking', content: chunk.message.thinking };
+                const pending = decoderEvents.splice(0);
+                for (const event of pending) {
+                    yield event;
+                }
             }
 
             if (chunk.message?.content) {
                 decoder.push(chunk.message.content);
-                yield { type: 'text', content: chunk.message.content };
+                const pending = decoderEvents.splice(0);
+                for (const event of pending) {
+                    yield event;
+                }
             }
 
             if (chunk.message?.tool_calls?.length) {
@@ -216,6 +225,10 @@ export class OllamaClient extends BaseLLMClient {
         }
 
         decoder.flush();
+        const pending = decoderEvents.splice(0);
+        for (const event of pending) {
+            yield event;
+        }
 
         const usage: TokenUsageInfo | undefined = lastResponse?.prompt_eval_count
             ? {
@@ -240,6 +253,7 @@ export class OllamaClient extends BaseLLMClient {
                 content: decoder.getCleanContent(),
                 tool_calls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
             },
+            finishReason: lastResponse?.done_reason,
             reasoning: decoder.getReasoning(),
             usage,
             provider: 'ollama',

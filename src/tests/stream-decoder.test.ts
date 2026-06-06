@@ -82,6 +82,44 @@ describe('StandardChatDecoder', () => {
         expect(decoder.getCleanContent()).toBe('Text');
         expect(decoder.getReasoning()).toBe('Reason');
     });
+
+    it('parses Gemma thought channel into reasoning', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+
+        decoder.push('<|channel>thought\nNeed Portuguese.<channel|>Olá!');
+        decoder.flush();
+
+        expect(events.filter(e => e.type === 'thinking')).toEqual([
+            { type: 'thinking', content: 'Need Portuguese.' },
+        ]);
+        expect(events.filter(e => e.type === 'text').map(e => e.content).join('')).toBe('Olá!');
+        expect(decoder.getCleanContent()).toBe('Olá!');
+        expect(decoder.getReasoning()).toBe('Need Portuguese.');
+    });
+
+    it('parses Gemma thought channel split across chunks', () => {
+        const decoder = new StandardChatDecoder(() => {});
+
+        decoder.push('<|chan');
+        decoder.push('nel>thought\nNeed');
+        decoder.push(' Portuguese.<chan');
+        decoder.push('nel|>Olá!');
+        decoder.flush();
+
+        expect(decoder.getCleanContent()).toBe('Olá!');
+        expect(decoder.getReasoning()).toBe('Need Portuguese.');
+    });
+
+    it('strips compact empty Gemma thought marker', () => {
+        const decoder = new StandardChatDecoder(() => {});
+
+        decoder.push('<|thought\n|>Olá!');
+        decoder.flush();
+
+        expect(decoder.getCleanContent()).toBe('Olá!');
+        expect(decoder.getReasoning()).toBeUndefined();
+    });
 });
 
 describe('InterleavedReasoningDecoder', () => {
