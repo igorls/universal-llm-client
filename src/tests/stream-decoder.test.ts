@@ -120,6 +120,52 @@ describe('StandardChatDecoder', () => {
         expect(decoder.getCleanContent()).toBe('Olá!');
         expect(decoder.getReasoning()).toBeUndefined();
     });
+
+    it('strips tool_call and tool_response tags', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+
+        decoder.push('<tool_call|><|tool_response>');
+        decoder.flush();
+
+        expect(events.filter(e => e.type === 'tool_call')).toHaveLength(0);
+        expect(decoder.getCleanContent()).toBe('');
+    });
+
+    it('parses tool_call containing JSON content', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+
+        decoder.push("<tool_call|>{'name': 'get_weather', 'arguments': {'city': 'Tokyo'}}<|tool_response>");
+        decoder.flush();
+
+        const toolCalls = events.filter(e => e.type === 'tool_call');
+        expect(toolCalls).toHaveLength(1);
+        expect(toolCalls[0]).toEqual({
+            type: 'tool_call',
+            calls: [
+                {
+                    id: expect.any(String),
+                    type: 'function',
+                    function: {
+                        name: 'get_weather',
+                        arguments: JSON.stringify({ city: 'Tokyo' }),
+                    },
+                },
+            ],
+        });
+        expect(decoder.getCleanContent()).toBe('');
+    });
+
+    it('strips stray tool_response tags', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+
+        decoder.push('Hello<|tool_response> World');
+        decoder.flush();
+
+        expect(decoder.getCleanContent()).toBe('Hello World');
+    });
 });
 
 describe('InterleavedReasoningDecoder', () => {

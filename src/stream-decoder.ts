@@ -110,6 +110,9 @@ export class StandardChatDecoder implements StreamDecoder {
     private inGemmaThought = false;
     private gemmaThoughtBody = '';
     private gemmaThoughtClose = '';
+    private inToolCallTag = false;
+    private toolCallBody = '';
+    private toolCallClose = '';
 
     constructor(callback: DecoderCallback) {
         this.callback = callback;
@@ -129,6 +132,53 @@ export class StandardChatDecoder implements StreamDecoder {
                     this.inGemmaThought = false;
                     this.gemmaThoughtBody = '';
                     this.gemmaThoughtClose = '';
+                    if (remainder) this.push(remainder);
+                }
+                return;
+            }
+
+            if (this.inToolCallTag) {
+                this.toolCallBody += token.slice(pos);
+                const closeIdx = this.toolCallBody.indexOf(this.toolCallClose);
+                if (closeIdx !== -1) {
+                    const body = this.toolCallBody.slice(0, closeIdx);
+                    const remainder = this.toolCallBody.slice(closeIdx + this.toolCallClose.length);
+
+                    if (body.trim()) {
+                        try {
+                            const normalizedJson = body.trim()
+                                .replace(/'/g, '"')
+                                .replace(/True/g, 'true')
+                                .replace(/False/g, 'false')
+                                .replace(/None/g, 'null');
+                            const parsed = JSON.parse(normalizedJson);
+                            const calls = Array.isArray(parsed) ? parsed : [parsed];
+                            const validatedCalls: LLMToolCall[] = [];
+                            for (const call of calls) {
+                                if (call && typeof call === 'object' && call.name) {
+                                    validatedCalls.push({
+                                        id: call.id || `recovered_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                                        type: 'function',
+                                        function: {
+                                            name: call.name,
+                                            arguments: typeof call.arguments === 'string'
+                                                ? call.arguments
+                                                : JSON.stringify(call.arguments ?? {}),
+                                        }
+                                    });
+                                }
+                            }
+                            if (validatedCalls.length > 0) {
+                                this.callback({ type: 'tool_call', calls: validatedCalls });
+                            }
+                        } catch {
+                            // ignore
+                        }
+                    }
+
+                    this.inToolCallTag = false;
+                    this.toolCallBody = '';
+                    this.toolCallClose = '';
                     if (remainder) this.push(remainder);
                 }
                 return;
@@ -158,6 +208,13 @@ export class StandardChatDecoder implements StreamDecoder {
                     if (this.tagBuffer === '<progress>') {
                         this.inProgressTag = true;
                         this.progressBody = '';
+                        this.tagBuffer = '';
+                    } else if (this.tagBuffer === '<tool_call|>') {
+                        this.inToolCallTag = true;
+                        this.toolCallBody = '';
+                        this.toolCallClose = '<|tool_response>';
+                        this.tagBuffer = '';
+                    } else if (this.tagBuffer === '<|tool_response>') {
                         this.tagBuffer = '';
                     } else if (this.tagBuffer === '<|channel>thought') {
                         this.inGemmaThought = true;
@@ -205,6 +262,8 @@ export class StandardChatDecoder implements StreamDecoder {
 
     private matchesStructuralOpenerPrefix(candidate: string): boolean {
         if ('<progress>'.startsWith(candidate)) return true;
+        if ('<tool_call|>'.startsWith(candidate)) return true;
+        if ('<|tool_response>'.startsWith(candidate)) return true;
         return GEMMA_THOUGHT_OPENERS.some(opener => opener.startsWith(candidate));
     }
 
@@ -235,6 +294,11 @@ export class StandardChatDecoder implements StreamDecoder {
             }
             this.inProgressTag = false;
             this.progressBody = '';
+        }
+        if (this.inToolCallTag) {
+            this.inToolCallTag = false;
+            this.toolCallBody = '';
+            this.toolCallClose = '';
         }
     }
 
