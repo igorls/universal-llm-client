@@ -25,8 +25,18 @@ import type {
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
+import { isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
 
 export class OpenAICompatibleClient extends BaseLLMClient {
+    /**
+     * DiffusionGemma on trimmed vLLM builds has no server-side reasoning or
+     * tool-call parser — the native channel protocol is handled client-side
+     * (see gemma-diffusion.ts). Auto-detected from the model name; override
+     * with `gemmaNativeProtocol` in LLMClientOptions.
+     */
+    private get gemmaNative(): boolean {
+        return this.options.gemmaNativeProtocol ?? isGemmaDiffusionModel(this.options.model);
+    }
     constructor(options: LLMClientOptions, auditor?: Auditor) {
         // Ensure URL ends with /v1 for standard endpoints
         let url = (options.url || 'https://api.openai.com').replace(/\/+$/, '');
@@ -70,6 +80,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             }
         }
 
+        if (this.gemmaNative) {
+            // Markers must survive decoding for client-side parsing,
+            // and request-level tool parsing is unavailable server-side.
+            body['skip_special_tokens'] = false;
+            if (tools?.length) body['tool_choice'] = 'none';
+        }
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
@@ -102,13 +119,27 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             : undefined;
 
         // Normalize tool calls (ensure IDs exist)
-        const toolCalls = choice.message.tool_calls?.map(tc => ({
+        let toolCalls = choice.message.tool_calls?.map(tc => ({
             ...tc,
             id: tc.id || this.generateToolCallId(),
         }));
 
         // Get content, handling null case
-        const content = choice.message.content || '';
+        let content = choice.message.content || '';
+        let reasoning: string | undefined;
+
+        if (this.gemmaNative && content) {
+            const parsed = parseGemmaDiffusionOutput(content);
+            content = parsed.content;
+            if (parsed.reasoning) reasoning = parsed.reasoning;
+            if (!toolCalls?.length && parsed.toolCalls.length) {
+                toolCalls = parsed.toolCalls.map(tc => ({
+                    id: this.generateToolCallId(),
+                    type: 'function' as const,
+                    function: { name: tc.name, arguments: tc.argumentsJson },
+                }));
+            }
+        }
 
         const result: LLMChatResponse = {
             message: {
@@ -116,6 +147,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 content,
                 tool_calls: toolCalls,
             },
+            ...(reasoning !== undefined && { reasoning }),
             usage,
             provider: 'openai',
         };
@@ -157,6 +189,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             }
         }
 
+        if (this.gemmaNative) {
+            body['skip_special_tokens'] = false;
+            if (tools?.length) body['tool_choice'] = 'none';
+        }
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
@@ -165,7 +202,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        const decoder = new StandardChatDecoder(() => {});
+        // In gemma-native mode the decoder classifies thought-channel content,
+        // so we yield ITS events (thinking vs text) instead of the raw deltas.
+        const decoderEvents: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(
+            this.gemmaNative ? e => decoderEvents.push(e) : () => {},
+        );
 
         // Track accumulated tool calls across chunks
         const toolCallAccum: Map<number, {
@@ -222,7 +264,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
                 if (delta.content) {
                     decoder.push(delta.content);
-                    yield { type: 'text', content: delta.content };
+                    if (this.gemmaNative) {
+                        while (decoderEvents.length) yield decoderEvents.shift()!;
+                    } else {
+                        yield { type: 'text', content: delta.content };
+                    }
                 }
 
                 // Accumulate streamed tool calls
@@ -262,6 +308,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         }
 
         decoder.flush();
+        if (this.gemmaNative) {
+            while (decoderEvents.length) yield decoderEvents.shift()!;
+        }
 
         this.auditor.record({
             timestamp: Date.now(),
@@ -272,17 +321,36 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             usage,
         });
 
-        const finalToolCalls = toolCallAccum.size > 0
+        let finalToolCalls = toolCallAccum.size > 0
             ? Array.from(toolCallAccum.values())
             : undefined;
+        let cleanContent = decoder.getCleanContent();
+        let reasoning = decoder.getReasoning();
+
+        if (this.gemmaNative) {
+            // Native tool-call blocks live in the text channel; extract them.
+            const parsed = parseGemmaDiffusionOutput(cleanContent);
+            cleanContent = parsed.content;
+            if (parsed.reasoning) {
+                reasoning = reasoning ? `${reasoning}\n\n${parsed.reasoning}` : parsed.reasoning;
+            }
+            if (!finalToolCalls?.length && parsed.toolCalls.length) {
+                finalToolCalls = parsed.toolCalls.map(tc => ({
+                    id: this.generateToolCallId(),
+                    type: 'function' as const,
+                    function: { name: tc.name, arguments: tc.argumentsJson },
+                }));
+                yield { type: 'tool_call', calls: finalToolCalls };
+            }
+        }
 
         return {
             message: {
                 role: 'assistant',
-                content: decoder.getCleanContent(),
+                content: cleanContent,
                 tool_calls: finalToolCalls,
             },
-            reasoning: decoder.getReasoning(),
+            reasoning,
             usage,
             provider: 'openai',
         };

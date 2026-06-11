@@ -117,6 +117,18 @@ export {
 } from './http.js';
 
 // ============================================================================
+// DiffusionGemma Native Protocol (vLLM without server-side parsers)
+// ============================================================================
+
+export {
+    isGemmaDiffusionModel,
+    parseGemmaDiffusionOutput,
+    gemmaArgsToJson,
+    type GemmaDiffusionParsed,
+    type GemmaParsedToolCall,
+} from './gemma-diffusion.js';
+
+// ============================================================================
 // MCP Integration
 // ============================================================================
 

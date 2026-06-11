@@ -113,6 +113,13 @@ export interface LLMClientOptions {
     region?: string;
     /** Google API version */
     apiVersion?: 'v1' | 'v1beta';
+    /**
+     * Force the DiffusionGemma native channel protocol on/off for
+     * OpenAI-compatible backends (skip_special_tokens:false + client-side
+     * reasoning/tool-call parsing). Auto-detected from the model name when
+     * omitted. See gemma-diffusion.ts.
+     */
+    gemmaNativeProtocol?: boolean;
 }
 
 // ============================================================================
