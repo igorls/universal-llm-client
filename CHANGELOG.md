@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-06-11
+
+### Added
+
+- **Diffusion LM support (DiffusionGemma family)** — First-class client-side protocol for diffusion language models served by OpenAI-compatible endpoints that ship without server-side reasoning or tool-call parsers (e.g. current vLLM diffusion builds, which reject request-level `tools` with auto tool choice):
+  - `gemma-diffusion.ts` — model detection (`isGemmaDiffusionModel`), native channel parsing (`<|channel>thought … <channel|>` reasoning, `<|tool_call>call:name{…}<tool_call|>` tool calls), and pseudo-JSON argument conversion (`gemmaArgsToJson`: `<|"|>` quote tokens, bare keys, nested objects/arrays)
+  - OpenAI provider native mode (auto-detected from the model name, `gemmaNativeProtocol` option to override): sends `skip_special_tokens: false` and `tools` + `tool_choice: "none"` (declarations still render into the chat template), parses reasoning and tool calls client-side, and yields decoder-classified `thinking`/`text` streaming events
+  - Full agentic `chatWithTools` loop works end-to-end against DiffusionGemma; history tool turns use standard structured `tool_calls` + `role: "tool"` messages
+- **"Signal from Noise" demo** (`src/demos/diffusion-gemma/`) — vLLM test harness plus a diffusion chat canvas that animates block-parallel denoising paced by real block arrivals, with replay/scrubbing, reasoning-channel separation, a rendered-markdown reading view, and an engine-reload entropy control
+
+### Fixed
+
+- Stray unbalanced `<channel|>` / `<turn|>` markers emitted by diffusion models are stripped from parsed content
+
 ## [4.0.0] - 2026-03-13
 
 ### ⚠ BREAKING CHANGES
