@@ -17,6 +17,7 @@ import {
     type StructuredOutputOptions,
     parseStructured,
 } from '../../structured-output.js';
+import type { DecodedEvent } from '../../stream-decoder.js';
 
 // ============================================================================
 // Helpers
@@ -1166,6 +1167,13 @@ describe('OpenAICompatibleClient Structured Output', () => {
                             function: {
                                 name: 'get_time',
                             },
+                        }, {
+                            id: '',
+                            type: 'function',
+                            function: {
+                                name: 'get_location',
+                                arguments: " \n\t",
+                            },
                         }],
                     },
                     finish_reason: 'tool_calls',
@@ -1175,11 +1183,65 @@ describe('OpenAICompatibleClient Structured Output', () => {
 
             const response = await client.chat([{ role: 'user', content: 'Use a tool' }]);
 
-            expect(response.message.tool_calls).toHaveLength(2);
+            expect(response.message.tool_calls).toHaveLength(3);
             expect(response.message.tool_calls![0]!.id).toStartWith('call_');
             expect(response.message.tool_calls![0]!.function.arguments).toBe('{}');
             expect(response.message.tool_calls![1]!.id).toStartWith('call_');
             expect(response.message.tool_calls![1]!.function.arguments).toBe('{}');
+            expect(response.message.tool_calls![2]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![2]!.function.arguments).toBe('{}');
+        });
+
+        test('normalizes blank streamed tool call arguments', async () => {
+            const chunks = [{
+                choices: [{
+                    delta: {
+                        tool_calls: [{
+                            index: 0,
+                            id: 'call_blank',
+                            type: 'function',
+                            function: {
+                                name: 'get_weather',
+                                arguments: " \n",
+                            },
+                        }],
+                    },
+                }],
+            }, {
+                choices: [{
+                    delta: {},
+                    finish_reason: 'tool_calls',
+                }],
+            }];
+
+            globalThis.fetch = mock(async () => new Response(
+                chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join(''),
+                {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                },
+            )) as typeof fetch;
+            const client = createClient();
+
+            const events: DecodedEvent[] = [];
+            const stream = client.chatStream([{ role: 'user', content: 'Use a tool' }]);
+            let finalResult: Awaited<ReturnType<typeof client.chat>> | undefined;
+            while (true) {
+                const next = await stream.next();
+                if (next.done) {
+                    finalResult = next.value || undefined;
+                    break;
+                }
+                events.push(next.value);
+            }
+
+            const toolEvent = events.find(event => event.type === 'tool_call');
+            expect(toolEvent?.type).toBe('tool_call');
+            if (toolEvent?.type !== 'tool_call') {
+                throw new Error('Expected a tool_call stream event');
+            }
+            expect(toolEvent.calls[0]!.function.arguments).toBe('{}');
+            expect(finalResult?.message.tool_calls![0]!.function.arguments).toBe('{}');
         });
 
         test('passes through non-empty malformed tool call arguments', async () => {

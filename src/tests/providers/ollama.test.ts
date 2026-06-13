@@ -348,7 +348,7 @@ describe('OllamaClient', () => {
             expect(result.message.tool_calls![0]!.id.length).toBeGreaterThan(0);
         });
 
-        test('normalizes empty and missing tool call arguments to JSON objects', async () => {
+        test('normalizes empty, blank, and missing tool call arguments to JSON objects', async () => {
             mockFetchAndCapture({
                 ...OLLAMA_RESPONSE,
                 message: {
@@ -362,6 +362,10 @@ describe('OllamaClient', () => {
                         id: '',
                         type: 'function',
                         function: {},
+                    }, {
+                        id: '',
+                        type: 'function',
+                        function: { name: 'get_location', arguments: " \n\t" },
                     }],
                 },
             });
@@ -369,13 +373,14 @@ describe('OllamaClient', () => {
 
             const result = await client.chat([{ role: 'user', content: 'Hi' }]);
 
-            expect(result.message.tool_calls).toHaveLength(2);
+            expect(result.message.tool_calls).toHaveLength(3);
             expect(result.message.tool_calls![0]!.function.arguments).toBe('{}');
             expect(result.message.tool_calls![1]!.function.name).toBe('');
             expect(result.message.tool_calls![1]!.function.arguments).toBe('{}');
+            expect(result.message.tool_calls![2]!.function.arguments).toBe('{}');
         });
 
-        test('normalizes empty tool call arguments while streaming', async () => {
+        test('normalizes blank tool call arguments while streaming', async () => {
             globalThis.fetch = mock(async () => new Response([
                 JSON.stringify({
                     ...OLLAMA_RESPONSE,
@@ -385,7 +390,7 @@ describe('OllamaClient', () => {
                         tool_calls: [{
                             id: '',
                             type: 'function',
-                            function: { name: 'get_weather', arguments: '' },
+                            function: { name: 'get_weather', arguments: " \n" },
                         }],
                     },
                     done: false,

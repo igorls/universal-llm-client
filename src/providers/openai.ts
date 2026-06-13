@@ -372,7 +372,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
     private normalizeToolArguments(args: unknown): string {
         if (typeof args === 'string') {
-            return args.length > 0 ? args : '{}';
+            return args.trim().length > 0 ? args : '{}';
         }
         if (args == null) {
             return '{}';
