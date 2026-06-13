@@ -38,13 +38,49 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     private get gemmaNative(): boolean {
         return this.options.gemmaNativeProtocol ?? isGemmaDiffusionModel(this.options.model);
     }
-    constructor(options: LLMClientOptions, auditor?: Auditor) {
-        // Ensure URL ends with /v1 for standard endpoints
-        let url = (options.url || 'https://api.openai.com').replace(/\/+$/, '');
-        if (!url.endsWith('/v1')) {
-            url += '/v1';
+
+    /**
+     * Build a full endpoint URL, respecting apiBasePath (already baked into this.options.url)
+     * and any queryParams provided at the provider config level.
+     */
+    private buildUrl(suffix: string): string {
+        const base = this.options.url.replace(/\/+$/, '');
+        const path = suffix.startsWith('/') ? suffix : '/' + suffix;
+        let full = base + path;
+
+        const qp = this.options.queryParams;
+        if (qp && Object.keys(qp).length > 0) {
+            const search = new URLSearchParams();
+            for (const [k, v] of Object.entries(qp)) {
+                if (v != null) search.append(k, String(v));
+            }
+            const qs = search.toString();
+            if (qs) {
+                full += (full.includes('?') ? '&' : '?') + qs;
+            }
         }
-        super({ ...options, url }, auditor);
+        return full;
+    }
+
+    constructor(options: LLMClientOptions, auditor?: Auditor) {
+        let base = (options.url || 'https://api.openai.com').replace(/\/+$/, '');
+
+        // Respect apiBasePath (from ProviderConfig.apiBasePath). Default "/v1" for broad compatibility.
+        // Set apiBasePath: '' (or '/') when you are supplying a *complete* path already
+        // (e.g. full Azure ".../deployments/my-model" URL) or for non-/v1 OpenAI-compatible servers.
+        const desired = options.apiBasePath;
+        const shouldAppend = desired !== '' && desired !== '/';
+
+        if (shouldAppend) {
+            const basePath = (desired || '/v1')
+                .replace(/^\/?/, '/')
+                .replace(/\/+$/, '');
+            if (!base.endsWith(basePath)) {
+                base += basePath;
+            }
+        }
+
+        super({ ...options, url: base }, auditor);
     }
 
     // ========================================================================
@@ -57,7 +93,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     ): Promise<LLMChatResponse> {
         // Structured output and tools can now be used together.\n        // The provider sends both response_format and tools in the request.\n        // The Router handles skipping validation when the response contains tool calls.
 
-        const url = `${this.options.url}/chat/completions`;
+        const url = this.buildUrl('/chat/completions');
         const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
 
         const body: Record<string, unknown> = {
@@ -170,7 +206,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
-        const url = `${this.options.url}/chat/completions`;
+        const url = this.buildUrl('/chat/completions');
         const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
 
         const body: Record<string, unknown> = {
@@ -385,7 +421,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // ========================================================================
 
     async embed(text: string): Promise<number[]> {
-        const url = `${this.options.url}/embeddings`;
+        const url = this.buildUrl('/embeddings');
         const response = await httpRequest<{
             data: Array<{ embedding: number[] }>;
         }>(url, {
@@ -405,7 +441,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // ========================================================================
 
     async getModels(): Promise<string[]> {
-        const url = `${this.options.url}/models`;
+        const url = this.buildUrl('/models');
         try {
             const response = await httpRequest<{
                 data: OpenAIModelInfo[];

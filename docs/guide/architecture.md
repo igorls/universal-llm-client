@@ -13,10 +13,10 @@ Universal LLM Client uses a layered architecture that separates concerns cleanly
 │  └──────────┴──────────┴──────────────┘ │
 ├─────────────────────────────────────────┤
 │           BaseLLMClient                 │  ← Common provider logic
-├──────────┬──────────┬───────────────────┤
-│ OpenAI   │  Google  │     Ollama       │  ← Provider implementations
-│Compatible│  Client  │     Client       │
-└──────────┴──────────┴───────────────────┘
+├────────────────────┬───────────┬─────────────┬──────────┤
+│ OpenAICompatible   │  Google   │ Anthropic   │ Ollama   │  ← Provider implementations
+│ (ecosystem lingua) │  Client   │ Client      │ Client   │
+└────────────────────┴───────────┴─────────────┴──────────┘
 ```
 
 ## Layer Responsibilities
@@ -70,13 +70,10 @@ Common logic shared by all providers:
 
 ### Providers
 
-Each provider implements the LLM-specific API protocol:
+Each provider implements the LLM-specific API protocol. The design deliberately avoids one adapter per provider (see `docs/research/provider-api-landscape-2026.md` for the full 2026 survey):
 
-| Provider | API Format | Structured Output Format |
-|----------|-----------|-------------------------|
-| OpenAI Compatible | OpenAI Chat Completions | `response_format: { type: 'json_schema' }` |
-| Google Client | Gemini API / Vertex AI | `responseMimeType` + `responseSchema` |
-| Ollama Client | Ollama REST API | `format` parameter |
+- **OpenAICompatibleClient** is the primary transport (covers the vast majority of providers via the OpenAI Chat Completions wire format: official OpenAI, xAI, Mistral, DeepSeek, Cohere compat, Groq, Together, Fireworks, OpenRouter, Perplexity, vLLM, etc.).
+- Dedicated clients exist **only** for protocols that are sufficiently different *and* expose unique high-value features (Anthropic thinking+caching, Google thinking+grounding+Vertex, Ollama local ergonomics).
 
 ## Module Structure
 
@@ -93,7 +90,8 @@ src/
 ├── mcp.ts              # MCP server bridge
 ├── http.ts             # HTTP utilities (request, streaming, SSE)
 └── providers/
-    ├── openai.ts       # OpenAI-compatible provider
+    ├── openai.ts       # OpenAI-compatible provider (primary; used for xAI, Mistral, DeepSeek, Groq, Together, vLLM, etc.)
     ├── google.ts       # Google/Vertex AI provider
+    ├── anthropic.ts    # Anthropic Messages (Claude) provider
     └── ollama.ts       # Ollama provider
 ```
