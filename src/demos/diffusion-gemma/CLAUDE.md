@@ -6,19 +6,21 @@ Standalone Bun server exercising `universal-llm-client` against DiffusionGemma
 ## Run
 
 ```bash
-bun run src/demos/diffusion-gemma/server.ts   # from packages/universal-llm-client
+bun run demo:diffusion-gemma:engine  # starts vLLM via demo-local docker compose
+bun run demo:diffusion-gemma         # starts the Bun demo server
 ```
 
 - Demo server: **http://localhost:3333** (`/` test harness, `/canvas` diffusion chat UI)
 - vLLM upstream: `VLLM_URL` env, default `http://localhost:8000`
 - Model: `MODEL_NAME` env, default `RedHatAI/diffusiongemma-26B-A4B-it-NVFP4`
-- vLLM is started via `scripts/diffusiongemma-start.sh` (repo root) — includes a
-  WSL2 UVA patch and the `entropy_bound` diffusion sampler. Runs as docker
-  container `diffusiongemma` (script is bind-mounted as `/start.sh`, so edits
-  apply on `docker restart diffusiongemma`). The script also sources
-  `~/.cache/huggingface/diffusion-env.sh` (host-writable through the HF-cache
-  bind mount) — that's how `/api/engine-config` changes settings without
-  recreating the container.
+- vLLM is started via `src/demos/diffusion-gemma/docker-compose.yml` and
+  `src/demos/diffusion-gemma/start-vllm.sh` — includes a WSL2 UVA patch and
+  the `entropy_bound` diffusion sampler. Runs as docker container
+  `diffusiongemma` (script is bind-mounted as `/start-vllm.sh`, so edits apply
+  on `docker restart diffusiongemma`). The script also sources
+  `src/demos/diffusion-gemma/.cache/huggingface/diffusion-env.sh`
+  (host-writable through the HF-cache bind mount) — that's how
+  `/api/engine-config` changes settings without recreating the container.
 - **Tuned for single-user local serving** (env-overridable in the start script):
   `GPU_MEM_UTIL` (default 0.28 ≈ 27 GiB — without caps vLLM grabbed ~88 GiB:
   69 GiB KV cache for the native 262k context, measured <0.5% used),

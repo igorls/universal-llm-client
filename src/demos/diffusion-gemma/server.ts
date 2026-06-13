@@ -13,7 +13,10 @@
  * Usage: bun run src/demos/diffusion-gemma/server.ts
  */
 
-import { AIModel } from '../../index.js';
+import { mkdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { AIModel, extractTextContent, type LLMChatResponse, type TokenUsageInfo } from '../../index.js';
 import { CANVAS_HTML } from './canvas.js';
 
 const PORT = 3333;
@@ -38,6 +41,33 @@ function createModel(debug = false): AIModel {
             },
         ],
     });
+}
+
+type DemoTokenUsage = TokenUsageInfo & {
+    readonly promptTokens: number;
+    readonly completionTokens: number;
+};
+
+type DemoChatResponse = LLMChatResponse & {
+    readonly content: string;
+    readonly usage?: DemoTokenUsage;
+};
+
+function toDemoChatResponse(response: LLMChatResponse): DemoChatResponse {
+    const content = extractTextContent(response.message.content);
+    const usage = response.usage
+        ? {
+            ...response.usage,
+            promptTokens: response.usage.inputTokens,
+            completionTokens: response.usage.outputTokens,
+        }
+        : undefined;
+
+    return {
+        ...response,
+        content,
+        usage,
+    };
 }
 
 // ============================================================================
@@ -101,7 +131,7 @@ async function handleChat(req: Request): Promise<Response> {
             temperature: body.temperature ?? 0.7,
         });
         await model.dispose();
-        return Response.json(response);
+        return Response.json(toDemoChatResponse(response));
     } catch (err: any) {
         await model.dispose();
         return Response.json({ error: err.message ?? String(err) }, { status: 500 });
@@ -113,6 +143,15 @@ async function handleHealth(): Promise<Response> {
         const model = createModel();
         const models = await model.getModels();
         await model.dispose();
+        if (models.length === 0) {
+            return Response.json({
+                status: 'error',
+                vllm: VLLM_URL,
+                error: 'No models reported by vLLM',
+                timestamp: new Date().toISOString(),
+            }, { status: 503 });
+        }
+
         return Response.json({
             status: 'ok',
             vllm: VLLM_URL,
@@ -188,12 +227,26 @@ async function handleStreamRaw(req: Request): Promise<Response> {
 // `docker restart` the engine. The UI polls /api/health until it returns.
 // ============================================================================
 
-const ENGINE_ENV_FILE = `${process.env.USERPROFILE ?? process.env.HOME ?? ''}/.cache/huggingface/diffusion-env.sh`;
+const DEMO_DIR = fileURLToPath(new URL('.', import.meta.url));
+const DEMO_ENGINE_ENV_FILE = join(DEMO_DIR, '.cache', 'huggingface', 'diffusion-env.sh');
+const USER_ENGINE_ENV_FILE = `${process.env.USERPROFILE ?? process.env.HOME ?? ''}/.cache/huggingface/diffusion-env.sh`;
+const ENGINE_ENV_FILES = [
+    process.env.ENGINE_ENV_FILE,
+    DEMO_ENGINE_ENV_FILE,
+    USER_ENGINE_ENV_FILE,
+].filter((path): path is string => Boolean(path));
 const ENGINE_CONTAINER = process.env.ENGINE_CONTAINER ?? 'diffusiongemma';
+
+async function resolveEngineEnvFile(): Promise<string> {
+    for (const path of ENGINE_ENV_FILES) {
+        if (await Bun.file(path).exists()) return path;
+    }
+    return ENGINE_ENV_FILES[0] ?? DEMO_ENGINE_ENV_FILE;
+}
 
 async function readEngineEntropy(): Promise<number> {
     try {
-        const text = await Bun.file(ENGINE_ENV_FILE).text();
+        const text = await Bun.file(await resolveEngineEnvFile()).text();
         const m = text.match(/DIFFUSION_ENTROPY=([0-9.]+)/);
         if (m?.[1]) return parseFloat(m[1]);
     } catch { /* no env file yet — engine runs script defaults */ }
@@ -211,7 +264,9 @@ async function handleEngineConfig(req: Request): Promise<Response> {
         return Response.json({ error: 'entropy must be in [0.01, 1]' }, { status: 400 });
     }
 
-    await Bun.write(ENGINE_ENV_FILE, `export DIFFUSION_ENTROPY=${entropy}\n`);
+    const engineEnvFile = await resolveEngineEnvFile();
+    await mkdir(dirname(engineEnvFile), { recursive: true });
+    await Bun.write(engineEnvFile, `export DIFFUSION_ENTROPY=${entropy}\n`);
 
     const proc = Bun.spawn(['docker', 'restart', ENGINE_CONTAINER], {
         stdout: 'pipe', stderr: 'pipe',

@@ -55,6 +55,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit --strict",
+    "demo:diffusion-gemma": "bun run src/demos/diffusion-gemma/server.ts",
+    "demo:diffusion-gemma:engine": "docker compose -f src/demos/diffusion-gemma/docker-compose.yml up -d",
     "prepack": "bun run build",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
