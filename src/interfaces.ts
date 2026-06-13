@@ -535,8 +535,8 @@ export interface OpenAIModelInfo {
 export interface GooglePart {
     text?: string;
     functionCall?: {
-        name: string;
-        args: Record<string, unknown>;
+        name?: string;
+        args?: Record<string, unknown>;
     };
     functionResponse?: {
         name: string;

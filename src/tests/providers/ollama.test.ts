@@ -17,6 +17,7 @@ import { z } from 'zod';
 import { OllamaClient } from '../../providers/ollama.js';
 import type { LLMClientOptions, LLMChatMessage, ChatOptions } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
+import type { DecodedEvent } from '../../stream-decoder.js';
 
 // ============================================================================
 // Helpers
@@ -56,7 +57,7 @@ describe('OllamaClient', () => {
     });
 
     /** Capture the body sent to Ollama's /api/chat */
-    function mockFetchAndCapture(response = OLLAMA_RESPONSE) {
+    function mockFetchAndCapture(response: unknown = OLLAMA_RESPONSE, status = 200) {
         let capturedBody: Record<string, unknown> | null = null;
 
         globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
@@ -64,7 +65,7 @@ describe('OllamaClient', () => {
                 capturedBody = JSON.parse(init.body as string);
             }
             return new Response(JSON.stringify(response), {
-                status: 200,
+                status,
                 headers: { 'Content-Type': 'application/json' },
             });
         }) as typeof fetch;
@@ -345,6 +346,85 @@ describe('OllamaClient', () => {
             expect(result.message.tool_calls).toHaveLength(1);
             expect(result.message.tool_calls![0]!.id).toBeTruthy();
             expect(result.message.tool_calls![0]!.id.length).toBeGreaterThan(0);
+        });
+
+        test('normalizes empty, blank, and missing tool call arguments to JSON objects', async () => {
+            mockFetchAndCapture({
+                ...OLLAMA_RESPONSE,
+                message: {
+                    role: 'assistant',
+                    content: '',
+                    tool_calls: [{
+                        id: '',
+                        type: 'function',
+                        function: { name: 'get_weather', arguments: '' },
+                    }, {
+                        id: '',
+                        type: 'function',
+                        function: {},
+                    }, {
+                        id: '',
+                        type: 'function',
+                        function: { name: 'get_location', arguments: " \n\t" },
+                    }],
+                },
+            });
+            const client = createClient();
+
+            const result = await client.chat([{ role: 'user', content: 'Hi' }]);
+
+            expect(result.message.tool_calls).toHaveLength(3);
+            expect(result.message.tool_calls![0]!.function.arguments).toBe('{}');
+            expect(result.message.tool_calls![1]!.function.name).toBe('');
+            expect(result.message.tool_calls![1]!.function.arguments).toBe('{}');
+            expect(result.message.tool_calls![2]!.function.arguments).toBe('{}');
+        });
+
+        test('normalizes blank tool call arguments while streaming', async () => {
+            globalThis.fetch = mock(async () => new Response([
+                JSON.stringify({
+                    ...OLLAMA_RESPONSE,
+                    message: {
+                        role: 'assistant',
+                        content: '',
+                        tool_calls: [{
+                            id: '',
+                            type: 'function',
+                            function: { name: 'get_weather', arguments: " \n" },
+                        }],
+                    },
+                    done: false,
+                }),
+                JSON.stringify({
+                    ...OLLAMA_RESPONSE,
+                    message: { role: 'assistant', content: '' },
+                    done: true,
+                }),
+            ].join('\n') + '\n', {
+                status: 200,
+                headers: { 'Content-Type': 'application/x-ndjson' },
+            })) as typeof fetch;
+            const client = createClient();
+
+            const events: DecodedEvent[] = [];
+            const stream = client.chatStream([{ role: 'user', content: 'Hi' }]);
+            let finalResult: Awaited<ReturnType<typeof client.chat>> | undefined;
+            while (true) {
+                const next = await stream.next();
+                if (next.done) {
+                    finalResult = next.value || undefined;
+                    break;
+                }
+                events.push(next.value);
+            }
+
+            const toolEvent = events.find(event => event.type === 'tool_call');
+            expect(toolEvent?.type).toBe('tool_call');
+            if (toolEvent?.type !== 'tool_call') {
+                throw new Error('Expected a tool_call stream event');
+            }
+            expect(toolEvent.calls[0]!.function.arguments).toBe('{}');
+            expect(finalResult?.message.tool_calls![0]!.function.arguments).toBe('{}');
         });
 
         test('prefers live deployment context from /api/ps over trained maximum', async () => {

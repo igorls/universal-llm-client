@@ -17,6 +17,7 @@ import {
     type StructuredOutputOptions,
     parseStructured,
 } from '../../structured-output.js';
+import type { DecodedEvent } from '../../stream-decoder.js';
 
 // ============================================================================
 // Helpers
@@ -67,7 +68,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
     });
 
     /** Capture the body sent to OpenAI's /v1/chat/completions */
-    function mockFetchAndCapture(response = OPENAI_RESPONSE) {
+    function mockFetchAndCapture(response: unknown = OPENAI_RESPONSE, status = 200) {
         let capturedBody: Record<string, unknown> | null = null;
 
         globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
@@ -75,7 +76,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 capturedBody = JSON.parse(init.body as string);
             }
             return new Response(JSON.stringify(response), {
-                status: 200,
+                status,
                 headers: { 'Content-Type': 'application/json' },
             });
         }) as typeof fetch;
@@ -1117,6 +1118,170 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(statusSchema['enum']).toEqual(['active', 'inactive', 'pending']);
             // Verify response validated successfully
             expect(response.message.content).toContain('active');
+        });
+    });
+
+    // ========================================================================
+    // Edge cases
+    // ========================================================================
+
+    describe('edge cases', () => {
+        test('returns malformed structured output without provider-side validation', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"name": "Alice", "age": 30',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Generate' }], {
+                schema: fromZod(z.object({ name: z.string(), age: z.number() })),
+            });
+
+            expect(response.message.content).toBe('{"name": "Alice", "age": 30');
+        });
+
+        test('generates missing tool call IDs and normalizes empty arguments', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: null,
+                        tool_calls: [{
+                            type: 'function',
+                            function: {
+                                name: 'get_weather',
+                                arguments: '',
+                            },
+                        }, {
+                            id: '',
+                            type: 'function',
+                            function: {
+                                name: 'get_time',
+                            },
+                        }, {
+                            id: '',
+                            type: 'function',
+                            function: {
+                                name: 'get_location',
+                                arguments: " \n\t",
+                            },
+                        }],
+                    },
+                    finish_reason: 'tool_calls',
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Use a tool' }]);
+
+            expect(response.message.tool_calls).toHaveLength(3);
+            expect(response.message.tool_calls![0]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![0]!.function.arguments).toBe('{}');
+            expect(response.message.tool_calls![1]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![1]!.function.arguments).toBe('{}');
+            expect(response.message.tool_calls![2]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![2]!.function.arguments).toBe('{}');
+        });
+
+        test('normalizes blank streamed tool call arguments', async () => {
+            const chunks = [{
+                choices: [{
+                    delta: {
+                        tool_calls: [{
+                            index: 0,
+                            id: 'call_blank',
+                            type: 'function',
+                            function: {
+                                name: 'get_weather',
+                                arguments: " \n",
+                            },
+                        }],
+                    },
+                }],
+            }, {
+                choices: [{
+                    delta: {},
+                    finish_reason: 'tool_calls',
+                }],
+            }];
+
+            globalThis.fetch = mock(async () => new Response(
+                chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join(''),
+                {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                },
+            )) as typeof fetch;
+            const client = createClient();
+
+            const events: DecodedEvent[] = [];
+            const stream = client.chatStream([{ role: 'user', content: 'Use a tool' }]);
+            let finalResult: Awaited<ReturnType<typeof client.chat>> | undefined;
+            while (true) {
+                const next = await stream.next();
+                if (next.done) {
+                    finalResult = next.value || undefined;
+                    break;
+                }
+                events.push(next.value);
+            }
+
+            const toolEvent = events.find(event => event.type === 'tool_call');
+            expect(toolEvent?.type).toBe('tool_call');
+            if (toolEvent?.type !== 'tool_call') {
+                throw new Error('Expected a tool_call stream event');
+            }
+            expect(toolEvent.calls[0]!.function.arguments).toBe('{}');
+            expect(finalResult?.message.tool_calls![0]!.function.arguments).toBe('{}');
+        });
+
+        test('passes through non-empty malformed tool call arguments', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: null,
+                        tool_calls: [{
+                            id: 'call_123',
+                            type: 'function',
+                            function: {
+                                name: 'get_weather',
+                                arguments: '{"location": "Boston"',
+                            },
+                        }],
+                    },
+                    finish_reason: 'tool_calls',
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Use a tool' }]);
+
+            expect(response.message.tool_calls![0]!.function.arguments).toBe('{"location": "Boston"');
+        });
+
+        test('surfaces HTTP rate limit errors', async () => {
+            mockFetchAndCapture({
+                error: {
+                    message: 'Rate limit exceeded',
+                    type: 'rate_limit_error',
+                },
+            }, 429);
+            const client = createClient();
+
+            await expect(client.chat([{ role: 'user', content: 'Hello' }]))
+                .rejects.toThrow('Rate limit exceeded');
         });
     });
 });

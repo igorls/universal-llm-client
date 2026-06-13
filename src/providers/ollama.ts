@@ -28,6 +28,7 @@ import type {
     OllamaResponse,
     OllamaModelInfo,
     LLMToolDefinition,
+    LLMToolCall,
     TokenUsageInfo,
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
@@ -102,17 +103,8 @@ export class OllamaClient extends BaseLLMClient {
             }
             : undefined;
 
-        // Normalize tool call IDs (Ollama sometimes omits them)
-        const toolCalls = data.message.tool_calls?.map(tc => ({
-            ...tc,
-            id: tc.id || this.generateToolCallId(),
-            function: {
-                ...tc.function,
-                arguments: typeof tc.function.arguments === 'string'
-                    ? tc.function.arguments
-                    : JSON.stringify(tc.function.arguments),
-            },
-        }));
+        // Normalize tool calls (Ollama sometimes omits IDs and empty args).
+        const toolCalls = data.message.tool_calls?.map(tc => this.normalizeToolCall(tc));
 
         const gemmaContent = extractGemmaThoughtChannels(data.message.content || '');
         const reasoning = [data.message.thinking, gemmaContent.reasoning].filter(Boolean).join('\n\n') || undefined;
@@ -209,16 +201,7 @@ export class OllamaClient extends BaseLLMClient {
             }
 
             if (chunk.message?.tool_calls?.length) {
-                const normalized = chunk.message.tool_calls.map(tc => ({
-                    ...tc,
-                    id: tc.id || this.generateToolCallId(),
-                    function: {
-                        ...tc.function,
-                        arguments: typeof tc.function.arguments === 'string'
-                            ? tc.function.arguments
-                            : JSON.stringify(tc.function.arguments),
-                    },
-                }));
+                const normalized = chunk.message.tool_calls.map(tc => this.normalizeToolCall(tc));
                 streamedToolCalls.push(...normalized);
                 yield { type: 'tool_call', calls: normalized };
             }
@@ -258,6 +241,31 @@ export class OllamaClient extends BaseLLMClient {
             usage,
             provider: 'ollama',
         };
+    }
+
+    private normalizeToolCall(
+        toolCall: Partial<LLMToolCall> & { function?: Partial<LLMToolCall['function']> },
+    ): LLMToolCall {
+        return {
+            ...toolCall,
+            id: toolCall.id || this.generateToolCallId(),
+            type: 'function',
+            function: {
+                ...toolCall.function,
+                name: toolCall.function?.name || '',
+                arguments: this.normalizeToolArguments(toolCall.function?.arguments),
+            },
+        };
+    }
+
+    private normalizeToolArguments(args: unknown): string {
+        if (typeof args === 'string') {
+            return args.trim().length > 0 ? args : '{}';
+        }
+        if (args == null) {
+            return '{}';
+        }
+        return JSON.stringify(args) ?? '{}';
     }
 
     // ========================================================================
