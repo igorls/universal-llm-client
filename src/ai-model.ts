@@ -322,6 +322,11 @@ export class AIModel {
             thinking: this.config.thinking ?? false,
             region: providerConfig.region,
             apiVersion: providerConfig.apiVersion,
+            extraHeaders: providerConfig.headers,
+            queryParams: providerConfig.queryParams,
+            authHeader: providerConfig.authHeader,
+            authPrefix: providerConfig.authPrefix,
+            apiBasePath: providerConfig.apiBasePath,
         };
 
         switch (type) {

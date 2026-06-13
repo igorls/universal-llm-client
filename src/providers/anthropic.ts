@@ -100,7 +100,11 @@ interface AnthropicRequest {
     readonly model: string;
     readonly messages: AnthropicMessage[];
     readonly max_tokens: number;
-    readonly system?: string;
+    readonly system?: string | Array<{
+        type: 'text';
+        text: string;
+        cache_control?: { type: 'ephemeral' };
+    }>;
     readonly tools?: AnthropicToolDef[];
     readonly tool_choice?: { readonly type: 'auto' | 'any' | 'tool'; readonly name?: string };
     readonly stream?: boolean;
@@ -492,6 +496,18 @@ export class AnthropicClient extends BaseLLMClient {
                 .join('\n\n')
             : undefined;
 
+        // Prompt caching support (Anthropic-specific, high impact for long system prompts / RAG)
+        let system: AnthropicRequest['system'] = systemPrompt;
+        if (options?.enablePromptCaching && systemPrompt) {
+            system = [
+                {
+                    type: 'text',
+                    text: systemPrompt,
+                    cache_control: { type: 'ephemeral' },
+                },
+            ];
+        }
+
         // Convert tools from OpenAI format to Anthropic format
         const tools = options?.tools ?? (
             Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined
@@ -512,7 +528,7 @@ export class AnthropicClient extends BaseLLMClient {
             model: this.options.model,
             messages: this.convertMessages(nonSystemMessages),
             max_tokens: options?.maxTokens ?? 4096,
-            ...(systemPrompt && { system: systemPrompt }),
+            ...(system && { system }),
             ...(anthropicTools?.length && { tools: anthropicTools }),
             ...(toolChoice && { tool_choice: toolChoice }),
             ...(stream && { stream: true }),

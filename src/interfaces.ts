@@ -59,6 +59,39 @@ export interface ProviderConfig {
     region?: string;
     /** Google API version (default: "v1beta") */
     apiVersion?: 'v1' | 'v1beta';
+    /**
+     * Extra headers to merge into every request for this provider.
+     * Useful for Azure (api-key), custom gateways, or non-standard auth.
+     * These are merged after the provider's default auth header (later entries win).
+     */
+    headers?: Record<string, string>;
+
+    /**
+     * Extra query parameters to append to every request URL made by this provider.
+     * Extremely useful for Azure OpenAI (e.g. { 'api-version': '2024-10-21' }).
+     */
+    queryParams?: Record<string, string>;
+
+    /**
+     * Override the name of the header that carries the API key (default: "Authorization").
+     * Common alternative for Azure and some gateways: "api-key".
+     */
+    authHeader?: string;
+
+    /**
+     * Prefix placed before the apiKey value in the auth header.
+     * Default: "Bearer " when authHeader is Authorization (or unset), otherwise "".
+     * Set to "" explicitly for "api-key: <yourkey>" style auth.
+     */
+    authPrefix?: string;
+
+    /**
+     * For OpenAI-compatible providers only: the URL path segment to append after the base URL.
+     * Default: "/v1".
+     * Set to "" (or "/") to disable the automatic append. This is required when supplying
+     * a full Azure deployment URL such as ".../deployments/my-deploy".
+     */
+    apiBasePath?: string;
 }
 
 // ============================================================================
@@ -120,6 +153,27 @@ export interface LLMClientOptions {
      * omitted. See gemma-diffusion.ts.
      */
     gemmaNativeProtocol?: boolean;
+    /**
+     * Extra headers merged for every request from this provider instance.
+     * Populated from ProviderConfig.headers for advanced auth / gateway scenarios
+     * (Azure api-key style, custom x- headers, etc.).
+     */
+    extraHeaders?: Record<string, string>;
+
+    /** Extra query parameters appended to request URLs (from ProviderConfig.queryParams). */
+    queryParams?: Record<string, string>;
+
+    /** Auth header name override (from ProviderConfig.authHeader). */
+    authHeader?: string;
+
+    /** Auth value prefix (from ProviderConfig.authPrefix). */
+    authPrefix?: string;
+
+    /**
+     * For openai-compatible clients: the sub-path to append (from ProviderConfig.apiBasePath).
+     * Default behavior in OpenAICompatibleClient is "/v1" unless set to a falsy value.
+     */
+    apiBasePath?: string;
 }
 
 // ============================================================================
@@ -313,7 +367,11 @@ export interface ChatOptions {
     signal?: AbortSignal;
     /** Enable/disable tool execution for chatWithTools */
     executeTools?: boolean;
-    /** Enable prompt caching (Provider specific feature, opt-in for Anthropic) */
+    /**
+     * Enable provider-side prompt caching when supported.
+     * - Anthropic: Adds cache_control: { type: 'ephemeral' } to the system prompt block (most common high-impact pattern).
+     * - Other providers: May be passed through via parameters/headers or ignored; consult provider docs.
+     */
     enablePromptCaching?: boolean;
     /** Maximum tool execution rounds (default: 10) */
     maxIterations?: number;
