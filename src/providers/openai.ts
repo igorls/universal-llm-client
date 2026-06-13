@@ -21,6 +21,7 @@ import type {
     ChatOptions,
     OpenAIResponse,
     OpenAIModelInfo,
+    LLMToolCall,
     TokenUsageInfo,
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
@@ -118,11 +119,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             }
             : undefined;
 
-        // Normalize tool calls (ensure IDs exist)
-        let toolCalls = choice.message.tool_calls?.map(tc => ({
-            ...tc,
-            id: tc.id || this.generateToolCallId(),
-        }));
+        // Normalize tool calls (ensure IDs and JSON-parseable empty args exist).
+        let toolCalls = choice.message.tool_calls?.map(tc => this.normalizeToolCall(tc));
 
         // Get content, handling null case
         let content = choice.message.content || '';
@@ -298,7 +296,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 // Emit tool calls when stream finishes
                 if (parsed.choices?.[0]?.finish_reason === 'tool_calls' || parsed.choices?.[0]?.finish_reason === 'stop') {
                     if (toolCallAccum.size > 0) {
-                        const calls = Array.from(toolCallAccum.values());
+                        const calls = Array.from(toolCallAccum.values())
+                            .map(tc => this.normalizeToolCall(tc));
                         yield { type: 'tool_call', calls };
                     }
                 }
@@ -322,7 +321,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         });
 
         let finalToolCalls = toolCallAccum.size > 0
-            ? Array.from(toolCallAccum.values())
+            ? Array.from(toolCallAccum.values()).map(tc => this.normalizeToolCall(tc))
             : undefined;
         let cleanContent = decoder.getCleanContent();
         let reasoning = decoder.getReasoning();
@@ -354,6 +353,31 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             usage,
             provider: 'openai',
         };
+    }
+
+    private normalizeToolCall(
+        toolCall: Partial<LLMToolCall> & { function?: Partial<LLMToolCall['function']> },
+    ): LLMToolCall {
+        return {
+            ...toolCall,
+            id: toolCall.id || this.generateToolCallId(),
+            type: 'function',
+            function: {
+                ...toolCall.function,
+                name: toolCall.function?.name || '',
+                arguments: this.normalizeToolArguments(toolCall.function?.arguments),
+            },
+        };
+    }
+
+    private normalizeToolArguments(args: unknown): string {
+        if (typeof args === 'string') {
+            return args.length > 0 ? args : '{}';
+        }
+        if (args == null) {
+            return '{}';
+        }
+        return JSON.stringify(args) ?? '{}';
     }
 
     // ========================================================================

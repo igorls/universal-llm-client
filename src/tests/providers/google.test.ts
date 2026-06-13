@@ -62,7 +62,7 @@ describe('GoogleClient Structured Output', () => {
     });
 
     /** Capture the body sent to Google's generateContent API */
-    function mockFetchAndCapture(response = GOOGLE_RESPONSE) {
+    function mockFetchAndCapture(response: unknown = GOOGLE_RESPONSE, status = 200) {
         let capturedBody: Record<string, unknown> | null = null;
 
         globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
@@ -70,7 +70,7 @@ describe('GoogleClient Structured Output', () => {
                 capturedBody = JSON.parse(init.body as string);
             }
             return new Response(JSON.stringify(response), {
-                status: 200,
+                status,
                 headers: { 'Content-Type': 'application/json' },
             });
         }) as typeof fetch;
@@ -655,6 +655,102 @@ describe('GoogleClient Structured Output', () => {
             expect(capturedHeaders['Authorization']).toBe('Bearer vertex-token');
             // URL should NOT have ?key= in it
             expect(capturedHeaders['Content-Type']).toBe('application/json');
+        });
+    });
+
+    // ========================================================================
+    // Edge cases
+    // ========================================================================
+
+    describe('edge cases', () => {
+        test('handles missing or empty response content gracefully', async () => {
+            mockFetchAndCapture({
+                ...GOOGLE_RESPONSE,
+                candidates: [{
+                    content: {
+                        parts: [],
+                        role: 'model',
+                    },
+                    finishReason: 'STOP',
+                    index: 0,
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Test' }]);
+
+            expect(response.message.content).toBe('');
+            expect(response.message.tool_calls).toBeUndefined();
+        });
+
+        test('normalizes missing function call names and arguments in responses', async () => {
+            mockFetchAndCapture({
+                ...GOOGLE_RESPONSE,
+                candidates: [{
+                    content: {
+                        parts: [{
+                            functionCall: {
+                                name: 'get_weather',
+                            },
+                        }, {
+                            functionCall: {},
+                        }],
+                        role: 'model',
+                    },
+                    finishReason: 'STOP',
+                    index: 0,
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Use tools' }]);
+
+            expect(response.message.tool_calls).toHaveLength(2);
+            expect(response.message.tool_calls![0]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![0]!.function.name).toBe('get_weather');
+            expect(response.message.tool_calls![0]!.function.arguments).toBe('{}');
+            expect(response.message.tool_calls![1]!.function.name).toBe('');
+            expect(response.message.tool_calls![1]!.function.arguments).toBe('{}');
+        });
+
+        test('converts empty historical tool call arguments to Google args objects', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+
+            await client.chat([
+                { role: 'user', content: 'Test' },
+                {
+                    role: 'assistant',
+                    content: '',
+                    tool_calls: [{
+                        id: 'call-123',
+                        type: 'function',
+                        function: { name: 'get_weather', arguments: '' },
+                    }],
+                },
+            ]);
+
+            const body = getBody()!;
+            const contents = body['contents'] as Array<Record<string, unknown>>;
+            const modelContent = contents.find(c => c['role'] === 'model');
+            const parts = modelContent!['parts'] as Array<Record<string, unknown>>;
+            const functionCall = parts[0]!['functionCall'] as Record<string, unknown>;
+
+            expect(functionCall['name']).toBe('get_weather');
+            expect(functionCall['args']).toEqual({});
+        });
+
+        test('surfaces HTTP server errors', async () => {
+            mockFetchAndCapture({
+                error: {
+                    message: 'Internal server error',
+                    code: 500,
+                },
+            }, 500);
+            const client = createClient();
+
+            await expect(client.chat([{ role: 'user', content: 'Hello' }]))
+                .rejects.toThrow('Internal server error');
         });
     });
 });

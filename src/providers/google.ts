@@ -439,9 +439,7 @@ export class GoogleClient extends BaseLLMClient {
                         const part: GooglePart = {
                             functionCall: {
                                 name: tc.function.name,
-                                args: typeof tc.function.arguments === 'string'
-                                    ? JSON.parse(tc.function.arguments)
-                                    : tc.function.arguments as Record<string, unknown>,
+                                args: this.parseToolArguments(tc.function.arguments),
                             },
                         };
                         // Echo thought signature back (required by Gemini 3.x)
@@ -527,21 +525,38 @@ export class GoogleClient extends BaseLLMClient {
     }
 
     private convertFunctionCallToToolCall(
-        fc: { name: string; args: Record<string, unknown> },
+        fc: { name?: string; args?: Record<string, unknown> },
         thoughtSignature?: string,
     ): LLMToolCall {
         const toolCall: LLMToolCall = {
             id: this.generateToolCallId(),
             type: 'function',
             function: {
-                name: fc.name,
-                arguments: JSON.stringify(fc.args),
+                name: fc.name || '',
+                arguments: JSON.stringify(fc.args ?? {}),
             },
         };
         if (thoughtSignature) {
             toolCall.thoughtSignature = thoughtSignature;
         }
         return toolCall;
+    }
+
+    private parseToolArguments(args: string | Record<string, unknown> | undefined): Record<string, unknown> {
+        if (typeof args !== 'string') {
+            return args ?? {};
+        }
+        if (args.length === 0) {
+            return {};
+        }
+        try {
+            const parsed = JSON.parse(args) as unknown;
+            return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                ? parsed as Record<string, unknown>
+                : {};
+        } catch {
+            return {};
+        }
     }
 
     // ========================================================================

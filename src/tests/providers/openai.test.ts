@@ -67,7 +67,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
     });
 
     /** Capture the body sent to OpenAI's /v1/chat/completions */
-    function mockFetchAndCapture(response = OPENAI_RESPONSE) {
+    function mockFetchAndCapture(response: unknown = OPENAI_RESPONSE, status = 200) {
         let capturedBody: Record<string, unknown> | null = null;
 
         globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
@@ -75,7 +75,7 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 capturedBody = JSON.parse(init.body as string);
             }
             return new Response(JSON.stringify(response), {
-                status: 200,
+                status,
                 headers: { 'Content-Type': 'application/json' },
             });
         }) as typeof fetch;
@@ -1117,6 +1117,109 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(statusSchema['enum']).toEqual(['active', 'inactive', 'pending']);
             // Verify response validated successfully
             expect(response.message.content).toContain('active');
+        });
+    });
+
+    // ========================================================================
+    // Edge cases
+    // ========================================================================
+
+    describe('edge cases', () => {
+        test('returns malformed structured output without provider-side validation', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: '{"name": "Alice", "age": 30',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Generate' }], {
+                schema: fromZod(z.object({ name: z.string(), age: z.number() })),
+            });
+
+            expect(response.message.content).toBe('{"name": "Alice", "age": 30');
+        });
+
+        test('generates missing tool call IDs and normalizes empty arguments', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: null,
+                        tool_calls: [{
+                            type: 'function',
+                            function: {
+                                name: 'get_weather',
+                                arguments: '',
+                            },
+                        }, {
+                            id: '',
+                            type: 'function',
+                            function: {
+                                name: 'get_time',
+                            },
+                        }],
+                    },
+                    finish_reason: 'tool_calls',
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Use a tool' }]);
+
+            expect(response.message.tool_calls).toHaveLength(2);
+            expect(response.message.tool_calls![0]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![0]!.function.arguments).toBe('{}');
+            expect(response.message.tool_calls![1]!.id).toStartWith('call_');
+            expect(response.message.tool_calls![1]!.function.arguments).toBe('{}');
+        });
+
+        test('passes through non-empty malformed tool call arguments', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: null,
+                        tool_calls: [{
+                            id: 'call_123',
+                            type: 'function',
+                            function: {
+                                name: 'get_weather',
+                                arguments: '{"location": "Boston"',
+                            },
+                        }],
+                    },
+                    finish_reason: 'tool_calls',
+                }],
+            });
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'Use a tool' }]);
+
+            expect(response.message.tool_calls![0]!.function.arguments).toBe('{"location": "Boston"');
+        });
+
+        test('surfaces HTTP rate limit errors', async () => {
+            mockFetchAndCapture({
+                error: {
+                    message: 'Rate limit exceeded',
+                    type: 'rate_limit_error',
+                },
+            }, 429);
+            const client = createClient();
+
+            await expect(client.chat([{ role: 'user', content: 'Hello' }]))
+                .rejects.toThrow('Rate limit exceeded');
         });
     });
 });
