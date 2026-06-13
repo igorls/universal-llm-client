@@ -39,11 +39,14 @@ const response = await model.chat([
 
 | Provider | Type | Notes |
 |---|---|---|
-| **Ollama** | `ollama` | Local or cloud models, NDJSON streaming, model pulling, vision/multimodal |
-| **OpenAI** | `openai` | GPT-4o, o3, etc. Also works with OpenRouter, Groq, LM Studio, vLLM |
-| **Google AI Studio** | `google` | Gemini models, system instructions, multimodal |
-| **Vertex AI** | `vertex` | Same as Google AI but with regional endpoints and Bearer tokens |
-| **LlamaCpp** | `llamacpp` | Local llama.cpp / llama-server instances |
+| **Ollama** | `ollama` | Local or cloud models, NDJSON streaming, model pulling, vision/multimodal, native thinking |
+| **OpenAI + Compat** | `openai` | GPT series, o-series + **any OpenAI-compatible endpoint**: xAI/Grok, Mistral, DeepSeek, Cohere Compatibility, Groq, Together, Fireworks, OpenRouter, Perplexity Sonar, vLLM, LM Studio, TGI, most self-hosted servers |
+| **Google AI Studio** | `google` | Gemini models, system instructions, multimodal, native thinking + grounding |
+| **Vertex AI** | `vertex` | Same as Google AI but with regional endpoints, Bearer tokens, service tiers (flex/priority) |
+| **Anthropic (Claude)** | `anthropic` | Claude 3.5/4 models via native Messages API. Excellent tool use, extended thinking with signatures, strong prompt caching |
+| **LlamaCpp** | `llamacpp` | Local llama.cpp / llama-server instances (OpenAI-compatible under the hood) |
+
+**Most of the world** is reachable via `type: 'openai'` + a `url` override. We only maintain dedicated clients for fundamentally different protocols (Anthropic Messages, Google Gemini) that offer unique high-value capabilities, plus Ollama for local developer experience. See `docs/guide/providers.md` and the research survey in `docs/research/provider-api-landscape-2026.md`.
 
 ---
 
@@ -459,13 +462,18 @@ new AIModel(config: AIModelConfig)
 
 | Property | Type | Description |
 |---|---|---|
-| `type` | `string` | `'ollama'`, `'openai'`, `'google'`, `'vertex'`, `'llamacpp'` |
+| `type` | `string` | `'ollama'`, `'openai'`, `'google'`, `'vertex'`, `'llamacpp'`, `'anthropic'` |
 | `url` | `string` | Provider URL (has sensible defaults) |
 | `apiKey` | `string` | API key or Bearer token |
 | `priority` | `number` | Lower = tried first (defaults to array index) |
 | `model` | `string` | Override model name for this provider |
 | `region` | `string` | Vertex AI region (e.g., `'us-central1'`) |
 | `apiVersion` | `string` | API version (e.g., `'v1beta'`) |
+| `headers` | `Record<string,string>` | Extra headers merged into requests (for Azure `api-key`, custom gateways, etc.) |
+| `queryParams` | `Record<string,string>` | Query params appended to every URL (e.g. Azure `api-version`) |
+| `authHeader` | `string` | Header name for the key (e.g. `'api-key'`) |
+| `authPrefix` | `string` | Prefix before the key value (e.g. `''` for api-key style) |
+| `apiBasePath` | `string` | For openai compat: override or disable the `/v1` suffix (use `''` for full Azure deployment URLs) |
 
 **Methods:**
 
