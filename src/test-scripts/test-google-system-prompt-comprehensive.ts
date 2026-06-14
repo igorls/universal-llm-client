@@ -33,7 +33,7 @@ async function testGoogleSystemPromptHandling() {
 
         const googleModel = AIModelFactory.createGoogleChatModel(
             modelInfo.model,
-            'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+            (process.env.GOOGLE_API_KEY ?? '')
         );
 
         const testResult = await testModelSystemPrompt(googleModel, modelInfo);

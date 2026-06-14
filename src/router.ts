@@ -115,6 +115,11 @@ export class Router {
         this.auditor = auditor;
     }
 
+    /** All registered provider clients, in priority order. */
+    getClients(): BaseLLMClient[] {
+        return this.providers.map(p => p.client);
+    }
+
     getStatus(): ProviderStatus[] {
         return this.providers.map(p => ({
             id: p.id,

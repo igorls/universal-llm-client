@@ -15,6 +15,7 @@
  */
 
 import { BaseLLMClient } from '../client.js';
+import { resolveThinking, anthropicThinkingBudget } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import type {
@@ -105,6 +106,9 @@ interface AnthropicRequest {
     readonly tool_choice?: { readonly type: 'auto' | 'any' | 'tool'; readonly name?: string };
     readonly stream?: boolean;
     readonly temperature?: number;
+    readonly thinking?:
+        | { readonly type: 'enabled'; readonly budget_tokens: number }
+        | { readonly type: 'disabled' };
 }
 
 /** Anthropic non-streaming response */
@@ -508,15 +512,29 @@ export class AnthropicClient extends BaseLLMClient {
             toolChoice = { type: 'auto' };
         }
 
+        // Unified thinking flag → Anthropic extended thinking. Per-call overrides
+        // model config; the level sets `budget_tokens` (kept < max_tokens). The
+        // API forbids a custom temperature while thinking is enabled, so it is
+        // omitted in that case (the required default of 1 applies).
+        const thinking = resolveThinking(options?.thinking, this.options.thinking);
+        const thinkingOn = thinking?.enabled === true;
+        const requestedMax = options?.maxTokens ?? 4096;
+        // Extended thinking requires budget_tokens >= 1024 AND < max_tokens, so when
+        // thinking is on we bump max_tokens to guarantee headroom for the answer.
+        const budget = thinkingOn ? anthropicThinkingBudget(thinking?.level, requestedMax) : 0;
+        const maxTokens = thinkingOn ? Math.max(requestedMax, budget + 1024) : requestedMax;
+
         const body: AnthropicRequest = {
             model: this.options.model,
             messages: this.convertMessages(nonSystemMessages),
-            max_tokens: options?.maxTokens ?? 4096,
+            max_tokens: maxTokens,
             ...(systemPrompt && { system: systemPrompt }),
             ...(anthropicTools?.length && { tools: anthropicTools }),
             ...(toolChoice && { tool_choice: toolChoice }),
             ...(stream && { stream: true }),
-            ...(options?.temperature !== undefined && { temperature: options.temperature }),
+            ...(thinkingOn
+                ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
+                : (options?.temperature !== undefined && { temperature: options.temperature })),
         };
 
         return body;

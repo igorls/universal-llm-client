@@ -12,6 +12,7 @@
  */
 
 import { BaseLLMClient } from '../client.js';
+import { resolveThinking } from '../thinking.js';
 import { httpRequest, httpStream, parseNDJSON, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
@@ -68,7 +69,8 @@ export class OllamaClient extends BaseLLMClient {
 
         // Enable native thinking by default — thinking models produce better
         // tool selections and reasoning when allowed to think before acting.
-        body['think'] = this.options.thinking ?? true;
+        // Ollama `think` is on/off (no levels); default on for thinking models.
+        body['think'] = resolveThinking(options?.thinking, this.options.thinking)?.enabled ?? true;
 
         // Handle structured output via format parameter
         const schemaOptions = this.extractSchemaOptions(options);
@@ -100,6 +102,11 @@ export class OllamaClient extends BaseLLMClient {
                 inputTokens: data.prompt_eval_count ?? 0,
                 outputTokens: data.eval_count ?? 0,
                 totalTokens: (data.prompt_eval_count ?? 0) + (data.eval_count ?? 0),
+                // Ollama reports server-precise timing in nanoseconds.
+                durationMs: data.total_duration ? data.total_duration / 1e6 : undefined,
+                tokensPerSecond: data.eval_duration && data.eval_count
+                    ? data.eval_count / (data.eval_duration / 1e9)
+                    : undefined,
             }
             : undefined;
 
@@ -155,7 +162,8 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        body['think'] = this.options.thinking ?? true;
+        // Ollama `think` is on/off (no levels); default on for thinking models.
+        body['think'] = resolveThinking(options?.thinking, this.options.thinking)?.enabled ?? true;
 
         const start = Date.now();
         this.auditor.record({
@@ -218,6 +226,10 @@ export class OllamaClient extends BaseLLMClient {
                 inputTokens: lastResponse.prompt_eval_count ?? 0,
                 outputTokens: lastResponse.eval_count ?? 0,
                 totalTokens: (lastResponse.prompt_eval_count ?? 0) + (lastResponse.eval_count ?? 0),
+                durationMs: lastResponse.total_duration ? lastResponse.total_duration / 1e6 : undefined,
+                tokensPerSecond: lastResponse.eval_duration && lastResponse.eval_count
+                    ? lastResponse.eval_count / (lastResponse.eval_duration / 1e9)
+                    : undefined,
             }
             : undefined;
 

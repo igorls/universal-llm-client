@@ -8,7 +8,7 @@ async function testGoogleStreaming() {
 
     const googleModel = AIModelFactory.createGoogleChatModel(
         'gemma-3-4b-it',
-        'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+        (process.env.GOOGLE_API_KEY ?? '')
     );
 
     try {

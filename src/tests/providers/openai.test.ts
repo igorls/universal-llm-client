@@ -346,6 +346,167 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(response.message.content).toBe('{"name": "Bob", "age": 25}');
         });
 
+        // ===================================================================
+        // Reasoning models (vLLM --reasoning-parser, DeepSeek-R1, etc.)
+        // ===================================================================
+
+        test('exposes vLLM `reasoning_content` as result.reasoning, keeping content clean', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: 'The answer is 14.',
+                        reasoning_content: 'All but 9 run away => 9 remain; 9 + 5 = 14.',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+
+            const client = createClient();
+            const response = await client.chat([{ role: 'user', content: 'sheep riddle' }]);
+
+            expect(response.reasoning).toBe('All but 9 run away => 9 remain; 9 + 5 = 14.');
+            expect(response.message.content).toBe('The answer is 14.');
+        });
+
+        test('exposes gateway `reasoning` field as result.reasoning', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: 'Done.',
+                        reasoning: 'Some chain of thought.',
+                    },
+                    finish_reason: 'stop',
+                }],
+            });
+
+            const client = createClient();
+            const response = await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(response.reasoning).toBe('Some chain of thought.');
+            expect(response.message.content).toBe('Done.');
+        });
+
+        test('leaves reasoning undefined when no reasoning field is present', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: { role: 'assistant', content: 'Plain answer.' },
+                    finish_reason: 'stop',
+                }],
+            });
+
+            const client = createClient();
+            const response = await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(response.reasoning).toBeUndefined();
+            expect(response.message.content).toBe('Plain answer.');
+        });
+
+        // ===================================================================
+        // Unified thinking flag -> chat_template_kwargs.enable_thinking (vLLM)
+        // ===================================================================
+
+        const VLLM_URL = 'http://localhost:8000/v1'; // non-official endpoint
+
+        test('translates per-call thinking:false to chat_template_kwargs.enable_thinking (vLLM)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: VLLM_URL });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
+
+            const ctk = getBody()!['chat_template_kwargs'] as Record<string, unknown> | undefined;
+            expect(ctk).toBeDefined();
+            expect(ctk!['enable_thinking']).toBe(false);
+        });
+
+        test('translates client-level thinking:true to chat_template_kwargs.enable_thinking (vLLM)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ thinking: true, url: VLLM_URL });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            const ctk = getBody()!['chat_template_kwargs'] as Record<string, unknown> | undefined;
+            expect(ctk!['enable_thinking']).toBe(true);
+        });
+
+        test('does NOT send chat_template_kwargs to official OpenAI for non-reasoning models', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ thinking: true }); // default url = api.openai.com, model = test-model
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(getBody()!['chat_template_kwargs']).toBeUndefined();
+        });
+
+        test('omits chat_template_kwargs when thinking is not set', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(getBody()!['chat_template_kwargs']).toBeUndefined();
+        });
+
+        test('per-call thinking overrides client-level thinking (vLLM)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ thinking: true, url: VLLM_URL });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
+
+            const ctk = getBody()!['chat_template_kwargs'] as Record<string, unknown>;
+            expect(ctk['enable_thinking']).toBe(false);
+        });
+
+        test('OpenAI reasoning model maps a level to reasoning_effort (not chat_template_kwargs)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5', thinking: 'high' });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            const body = getBody()!;
+            expect(body['reasoning_effort']).toBe('high');
+            expect(body['chat_template_kwargs']).toBeUndefined();
+        });
+
+        test('OpenAI reasoning model maps thinking:true to reasoning_effort medium', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'o3', thinking: true });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(getBody()!['reasoning_effort']).toBe('medium');
+        });
+
+        test('OpenAI reasoning model maps thinking:false to reasoning_effort minimal', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5-mini', thinking: false });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(getBody()!['reasoning_effort']).toBe('minimal');
+        });
+
+        // ===================================================================
+        // Usage stats (timing / throughput)
+        // ===================================================================
+
+        test('populates durationMs in usage (client-measured wall-clock)', async () => {
+            mockFetchAndCapture();
+            const client = createClient();
+
+            const response = await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(typeof response.usage?.durationMs).toBe('number');
+            expect(response.usage!.durationMs!).toBeGreaterThanOrEqual(0);
+        });
+
         test('provider does NOT validate response (validation is centralized in Router)', async () => {
             mockFetchAndCapture({
                 ...OPENAI_RESPONSE,
