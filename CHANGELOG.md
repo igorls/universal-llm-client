@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Minimal published package** — the npm tarball now ships only `dist/` (compiled JS + type declarations) plus `README` / `CHANGELOG` / `LICENSE`. `src/` (tests, demos, test-scripts) is no longer published, and the build no longer emits `.js.map` / `.d.ts.map` (they referenced sources that aren't shipped and triggered "missing source" warnings in consumer bundlers). Package size dropped ~78% (357 kB → 80 kB, 175 → 44 files). Because `src/` is no longer whitelisted, a local demo model cache under `src/` can never bloat the published package again.
+
 ## [4.5.0] - 2026-06-14
 
 ### Added
