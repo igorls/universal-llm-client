@@ -469,11 +469,11 @@ new AIModel(config: AIModelConfig)
 | `model` | `string` | Override model name for this provider |
 | `region` | `string` | Vertex AI region (e.g., `'us-central1'`) |
 | `apiVersion` | `string` | API version (e.g., `'v1beta'`) |
-| `headers` | `Record<string,string>` | Extra headers merged into requests (for Azure `api-key`, custom gateways, etc.) |
-| `queryParams` | `Record<string,string>` | Query params appended to every URL (e.g. Azure `api-version`) |
-| `authHeader` | `string` | Header name for the key (e.g. `'api-key'`) |
-| `authPrefix` | `string` | Prefix before the key value (e.g. `''` for api-key style) |
-| `apiBasePath` | `string` | For openai compat: override or disable the `/v1` suffix (use `''` for full Azure deployment URLs) |
+| `headers` | `Record<string,string>` | Extra headers merged into requests — OpenAI-compatible & Ollama (Azure `api-key`, gateways) |
+| `queryParams` | `Record<string,string>` | Query params appended to URLs — OpenAI-compatible only (e.g. Azure `api-version`) |
+| `authHeader` | `string` | Header name for the key — OpenAI-compatible & Ollama (e.g. `'api-key'`) |
+| `authPrefix` | `string` | Prefix before the key value — OpenAI-compatible & Ollama (e.g. `''` for api-key style) |
+| `apiBasePath` | `string` | OpenAI-compatible only: override or disable the `/v1` suffix (use `''` for full Azure deployment URLs) |
 
 **Methods:**
 

@@ -12,7 +12,7 @@ Universal LLM Client supports multiple providers through a single API. Each prov
 | Tool Calling         | ✅              | ✅            | ✅       | ✅        | ✅       |
 | Vision/Images        | ✅              | ✅            | ✅       | ✅        | ❌       |
 | Embeddings           | ✅              | ✅            | ✅       | ❌        | ✅       |
-| Strict JSON Mode     | ✅ (native)     | ❌ (stripped) | ❌       | ✅ (recent) | ❌     |
+| Strict JSON Mode     | ✅ (native)     | ❌ (stripped) | ❌       | ⚠️ (prompted) | ❌     |
 | Prompt Caching       | Provider-dependent | Limited    | N/A      | ✅ (strong) | N/A     |
 | Native Thinking      | Via decoder / fields | ✅ (thinkingConfig) | ✅ (`think`) | ✅ (extended + signatures) | Via decoder |
 
@@ -84,11 +84,15 @@ You can now control auth, query parameters, and base path without custom code:
 {
   type: 'openai',
   url: '...',
-  headers: { 'x-custom': 'value', 'anthropic-beta': '...' }, // works for any provider
+  headers: { 'x-custom': 'value', 'api-key': '...' }, // OpenAI-compatible & Ollama (via buildHeaders)
 }
 ```
 
-These options (`headers`, `queryParams`, `authHeader`, `authPrefix`, `apiBasePath`) are available on every `ProviderConfig`.
+These options are typed on every `ProviderConfig`, but are honored by the
+**OpenAI-compatible** provider — with `headers`, `authHeader`, and `authPrefix`
+also applied by **Ollama** (both use `buildHeaders`). `queryParams` and
+`apiBasePath` are OpenAI-compatible only. Google/Vertex and Anthropic build their
+own auth headers and URLs and ignore these knobs.
 
 For Anthropic-specific prompt caching:
 
@@ -96,7 +100,7 @@ For Anthropic-specific prompt caching:
 await model.chat(messages, { enablePromptCaching: true, maxTokens: 8192 });
 ```
 
-This causes the client to mark the system prompt with Anthropic's `cache_control: { type: "ephemeral" }`. See the Anthropic section above for details.
+This causes the client to mark the system prompt with Anthropic's `cache_control: { type: "ephemeral" }`. See the Anthropic section for details.
 
 ## Google / Vertex AI
 

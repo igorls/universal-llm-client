@@ -60,28 +60,31 @@ export interface ProviderConfig {
     /** Google API version (default: "v1beta") */
     apiVersion?: 'v1' | 'v1beta';
     /**
-     * Extra headers to merge into every request for this provider.
-     * Useful for Azure (api-key), custom gateways, or non-standard auth.
-     * These are merged after the provider's default auth header (later entries win).
+     * Extra headers merged into requests, applied by providers that use
+     * `buildHeaders` — **OpenAI-compatible and Ollama**. Google/Vertex and
+     * Anthropic build their own auth headers and ignore this. Useful for Azure
+     * (api-key), custom gateways, or non-standard auth. Merged after the default
+     * auth header (later entries win).
      */
     headers?: Record<string, string>;
 
     /**
-     * Extra query parameters to append to every request URL made by this provider.
-     * Extremely useful for Azure OpenAI (e.g. { 'api-version': '2024-10-21' }).
+     * Extra query parameters appended to request URLs — **OpenAI-compatible
+     * provider only**. Useful for Azure OpenAI (e.g. { 'api-version': '2024-10-21' }).
      */
     queryParams?: Record<string, string>;
 
     /**
-     * Override the name of the header that carries the API key (default: "Authorization").
+     * Override the name of the header that carries the API key (default:
+     * "Authorization") — **OpenAI-compatible and Ollama only** (via `buildHeaders`).
      * Common alternative for Azure and some gateways: "api-key".
      */
     authHeader?: string;
 
     /**
-     * Prefix placed before the apiKey value in the auth header.
-     * Default: "Bearer " when authHeader is Authorization (or unset), otherwise "".
-     * Set to "" explicitly for "api-key: <yourkey>" style auth.
+     * Prefix placed before the apiKey value in the auth header (OpenAI-compatible
+     * and Ollama only). Default: "Bearer " when authHeader is Authorization (or
+     * unset), otherwise "". Set to "" explicitly for "api-key: <yourkey>" style auth.
      */
     authPrefix?: string;
 
@@ -182,7 +185,8 @@ export interface LLMClientOptions {
 
     /**
      * For openai-compatible clients: the sub-path to append (from ProviderConfig.apiBasePath).
-     * Default behavior in OpenAICompatibleClient is "/v1" unless set to a falsy value.
+     * Defaults to "/v1"; `undefined` keeps that default. Set to "" or "/" to disable
+     * the append (when the base URL already contains the full path).
      */
     apiBasePath?: string;
 }

@@ -45,22 +45,23 @@ export class OpenAICompatibleClient extends BaseLLMClient {
      * and any queryParams provided at the provider config level.
      */
     private buildUrl(suffix: string): string {
-        const base = this.options.url.replace(/\/+$/, '');
+        const raw = this.options.url.replace(/\/+$/, '');
+        // Split off any query string already on the configured base URL so the
+        // path is inserted before it (avoids `host/v1?k=v/chat/completions`).
+        const qIdx = raw.indexOf('?');
+        const basePath = (qIdx === -1 ? raw : raw.slice(0, qIdx)).replace(/\/+$/, '');
+        const existingQuery = qIdx === -1 ? '' : raw.slice(qIdx + 1);
         const path = suffix.startsWith('/') ? suffix : '/' + suffix;
-        let full = base + path;
 
+        const search = new URLSearchParams(existingQuery);
         const qp = this.options.queryParams;
-        if (qp && Object.keys(qp).length > 0) {
-            const search = new URLSearchParams();
+        if (qp) {
             for (const [k, v] of Object.entries(qp)) {
-                if (v != null) search.append(k, String(v));
-            }
-            const qs = search.toString();
-            if (qs) {
-                full += (full.includes('?') ? '&' : '?') + qs;
+                if (v != null) search.set(k, String(v));
             }
         }
-        return full;
+        const qs = search.toString();
+        return basePath + path + (qs ? `?${qs}` : '');
     }
 
     constructor(options: LLMClientOptions, auditor?: Auditor) {
@@ -73,9 +74,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const shouldAppend = desired !== '' && desired !== '/';
 
         if (shouldAppend) {
-            const basePath = (desired || '/v1')
-                .replace(/^\/?/, '/')
-                .replace(/\/+$/, '');
+            // Normalize to exactly one leading slash and no trailing slash
+            // (so 'v1', '/v1', '//v1' and '/v1/' all become '/v1').
+            const basePath = ('/' + (desired || '/v1').replace(/^\/+/, '')).replace(/\/+$/, '');
             if (!base.endsWith(basePath)) {
                 base += basePath;
             }
