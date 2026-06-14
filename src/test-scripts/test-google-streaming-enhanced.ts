@@ -19,7 +19,7 @@ async function testGoogleStreamingEnhanced() {
 
         const googleModel = AIModelFactory.createGoogleChatModel(
             modelInfo.model,
-            'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+            (process.env.GOOGLE_API_KEY ?? '')
         );
 
         await testModelWithSystemPrompt(googleModel, modelInfo.name, modelInfo.supportsSystem);

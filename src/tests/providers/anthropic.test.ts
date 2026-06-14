@@ -103,4 +103,16 @@ describe('AnthropicClient thinking flag', () => {
         expect(thinking['type']).toBe('enabled');
         expect(thinking['budget_tokens']).toBe(16384);
     });
+
+    test('bumps max_tokens so budget_tokens stays below it when maxTokens is small', async () => {
+        const getBody = mockFetchAndCapture();
+        const client = createClient();
+
+        await client.chat([{ role: 'user', content: 'hi' }], { thinking: 'low', maxTokens: 1024 });
+
+        const body = getBody()!;
+        const budget = (body['thinking'] as Record<string, unknown>)['budget_tokens'] as number;
+        expect(budget).toBeGreaterThanOrEqual(1024);
+        expect(budget).toBeLessThan(body['max_tokens'] as number);
+    });
 });

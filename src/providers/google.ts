@@ -274,6 +274,11 @@ export class GoogleClient extends BaseLLMClient {
     // Deep Research (Gemini interactions API)
     // ========================================================================
 
+    /** Deep Research is available via Google AI Studio only (not Vertex AI). */
+    supportsDeepResearch(): boolean {
+        return !this.isVertex;
+    }
+
     private interactionsBase(): string {
         if (this.isVertex) {
             throw new Error('Deep Research is only available via Google AI Studio, not Vertex AI.');

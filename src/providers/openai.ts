@@ -492,11 +492,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // A user-supplied value (via parameters) always wins.
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
         if (thinking) {
+            const isOfficialOpenAI = (this.options.url ?? '').includes('api.openai.com');
             if (isOpenAIReasoningModel(this.options.model)) {
                 if (params['reasoning_effort'] === undefined) {
                     params['reasoning_effort'] = thinking.enabled ? (thinking.level ?? 'medium') : 'minimal';
                 }
-            } else {
+            } else if (!isOfficialOpenAI) {
+                // `chat_template_kwargs` is a vLLM/Qwen extension. Official OpenAI
+                // rejects unknown body fields (and gpt-4o has no thinking toggle),
+                // so only send it to self-hosted / compatible gateways.
                 const existing = (params['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
                 params['chat_template_kwargs'] = { enable_thinking: thinking.enabled, ...existing };
             }

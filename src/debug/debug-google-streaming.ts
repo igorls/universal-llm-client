@@ -6,7 +6,7 @@ import {request} from 'undici';
 async function debugGoogleStreaming() {
     console.log('🔍 Debugging Google Generative AI Streaming...\n');
 
-    const apiKey = 'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0';
+    const apiKey = (process.env.GOOGLE_API_KEY ?? '');
     const model = 'gemma-3-4b-it';
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent`;
 

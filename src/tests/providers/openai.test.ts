@@ -413,9 +413,11 @@ describe('OpenAICompatibleClient Structured Output', () => {
         // Unified thinking flag -> chat_template_kwargs.enable_thinking (vLLM)
         // ===================================================================
 
-        test('translates per-call thinking:false to chat_template_kwargs.enable_thinking', async () => {
+        const VLLM_URL = 'http://localhost:8000/v1'; // non-official endpoint
+
+        test('translates per-call thinking:false to chat_template_kwargs.enable_thinking (vLLM)', async () => {
             const getBody = mockFetchAndCapture();
-            const client = createClient();
+            const client = createClient({ url: VLLM_URL });
 
             await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
 
@@ -424,14 +426,23 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(ctk!['enable_thinking']).toBe(false);
         });
 
-        test('translates client-level thinking:true to chat_template_kwargs.enable_thinking', async () => {
+        test('translates client-level thinking:true to chat_template_kwargs.enable_thinking (vLLM)', async () => {
             const getBody = mockFetchAndCapture();
-            const client = createClient({ thinking: true });
+            const client = createClient({ thinking: true, url: VLLM_URL });
 
             await client.chat([{ role: 'user', content: 'hi' }]);
 
             const ctk = getBody()!['chat_template_kwargs'] as Record<string, unknown> | undefined;
             expect(ctk!['enable_thinking']).toBe(true);
+        });
+
+        test('does NOT send chat_template_kwargs to official OpenAI for non-reasoning models', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ thinking: true }); // default url = api.openai.com, model = test-model
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(getBody()!['chat_template_kwargs']).toBeUndefined();
         });
 
         test('omits chat_template_kwargs when thinking is not set', async () => {
@@ -443,9 +454,9 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(getBody()!['chat_template_kwargs']).toBeUndefined();
         });
 
-        test('per-call thinking overrides client-level thinking', async () => {
+        test('per-call thinking overrides client-level thinking (vLLM)', async () => {
             const getBody = mockFetchAndCapture();
-            const client = createClient({ thinking: true });
+            const client = createClient({ thinking: true, url: VLLM_URL });
 
             await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
 

@@ -517,8 +517,12 @@ export class AnthropicClient extends BaseLLMClient {
         // API forbids a custom temperature while thinking is enabled, so it is
         // omitted in that case (the required default of 1 applies).
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
-        const maxTokens = options?.maxTokens ?? 4096;
         const thinkingOn = thinking?.enabled === true;
+        const requestedMax = options?.maxTokens ?? 4096;
+        // Extended thinking requires budget_tokens >= 1024 AND < max_tokens, so when
+        // thinking is on we bump max_tokens to guarantee headroom for the answer.
+        const budget = thinkingOn ? anthropicThinkingBudget(thinking?.level, requestedMax) : 0;
+        const maxTokens = thinkingOn ? Math.max(requestedMax, budget + 1024) : requestedMax;
 
         const body: AnthropicRequest = {
             model: this.options.model,
@@ -529,7 +533,7 @@ export class AnthropicClient extends BaseLLMClient {
             ...(toolChoice && { tool_choice: toolChoice }),
             ...(stream && { stream: true }),
             ...(thinkingOn
-                ? { thinking: { type: 'enabled' as const, budget_tokens: anthropicThinkingBudget(thinking?.level, maxTokens) } }
+                ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
                 : (options?.temperature !== undefined && { temperature: options.temperature })),
         };
 

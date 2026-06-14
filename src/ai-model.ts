@@ -240,15 +240,20 @@ export class AIModel {
     // ========================================================================
 
     private getGoogleClient(method: string): GoogleClient {
-        const google = this.router.getClients().find(
+        const googleClients = this.router.getClients().filter(
             (c): c is GoogleClient => c instanceof GoogleClient,
         );
-        if (!google) {
+        // Prefer an AI Studio client — Vertex AI doesn't support Deep Research.
+        const aiStudio = googleClients.find(c => c.supportsDeepResearch());
+        if (aiStudio) return aiStudio;
+        if (googleClients.length > 0) {
             throw new Error(
-                `${method} requires a Google provider (type: "google"). None is configured.`,
+                `${method} requires an AI Studio Google provider (type: "google"); Vertex AI is not supported for Deep Research.`,
             );
         }
-        return google;
+        throw new Error(
+            `${method} requires a Google provider (type: "google"). None is configured.`,
+        );
     }
 
     /**

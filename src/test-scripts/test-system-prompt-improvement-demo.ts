@@ -23,7 +23,7 @@ async function demonstrateSystemPromptImprovement() {
 
     const geminiModel = AIModelFactory.createGoogleChatModel(
         'gemini-2.5-flash-lite',
-        'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+        (process.env.GOOGLE_API_KEY ?? '')
     );
 
     try {
@@ -48,7 +48,7 @@ async function demonstrateSystemPromptImprovement() {
 
     const gemmaModel = AIModelFactory.createGoogleChatModel(
         'gemma-3-27b-it',
-        'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+        (process.env.GOOGLE_API_KEY ?? '')
     );
 
     try {

@@ -25,7 +25,7 @@ export async function createAIApplicationExample() {
         },
         google: {
             chatModel: 'gemma-3-4b-it',
-            apiKey: 'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+            apiKey: (process.env.GOOGLE_API_KEY ?? '')
         }
     });
 
@@ -36,7 +36,7 @@ export async function createAIApplicationExample() {
     // Method 3: Google-specific setup
     const googleChatModel = AIModelFactory.createGoogleChatModel(
         'gemma-3-4b-it',
-        'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+        (process.env.GOOGLE_API_KEY ?? '')
     );
 
     // Example usage patterns:
@@ -113,7 +113,7 @@ export async function testGoogleAPI() {
 
     const googleModel = AIModelFactory.createGoogleChatModel(
         'gemma-3-4b-it',
-        'AIzaSyBDbo7iVNEuCcRNTgDIgRrkGpFKisXXnm0'
+        (process.env.GOOGLE_API_KEY ?? '')
     );
 
     try {
