@@ -469,6 +469,29 @@ describe('GoogleClient Structured Output', () => {
     });
 
     // ========================================================================
+    // Deep Research (interactions API)
+    // ========================================================================
+
+    describe('deep research', () => {
+        test('serializes tools as {type}, posts background:true, extracts report from steps', async () => {
+            const getBody = mockFetchAndCapture({
+                id: 'interaction-1',
+                status: 'completed',
+                steps: [{ type: 'answer', content: [{ text: 'final report text' }] }],
+            });
+            const client = createClient();
+
+            const r = await client.deepResearch('research X', { tools: ['google_search', 'url_context'] });
+
+            const body = getBody()!;
+            expect(body['background']).toBe(true);
+            expect(body['tools']).toEqual([{ type: 'google_search' }, { type: 'url_context' }]);
+            expect(r.status).toBe('completed');
+            expect(r.report).toBe('final report text'); // assembled from steps[].content[].text
+        });
+    });
+
+    // ========================================================================
     // VAL-PROVIDER-GOOGLE-004: Gemini 3.x thoughtSignature Preservation
     // ========================================================================
 

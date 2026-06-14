@@ -303,7 +303,7 @@ export class GoogleClient extends BaseLLMClient {
                 type: 'deep-research',
                 thinking_summaries: opts.thinkingSummaries ?? 'auto',
             },
-            ...(opts.tools?.length ? { tools: opts.tools.map(t => ({ [t]: {} })) } : {}),
+            ...(opts.tools?.length ? { tools: opts.tools.map(t => ({ type: t })) } : {}),
             ...(opts.previousInteractionId ? { previous_interaction_id: opts.previousInteractionId } : {}),
         };
     }
@@ -400,11 +400,12 @@ export class GoogleClient extends BaseLLMClient {
     ): AsyncGenerator<DeepResearchEvent, DeepResearchResult, unknown> {
         const base = this.interactionsBase();
         const headers = this.deepResearchHeaders();
-        // Streaming is a foreground SSE response — background must be false.
-        const stream = httpStream(`${base}?stream=true`, {
+        // Streaming long-running research requires background:true AND stream:true
+        // in the create body (per the Deep Research Interactions API docs).
+        const stream = httpStream(base, {
             method: 'POST',
             headers,
-            body: this.buildInteractionBody(input, opts, false),
+            body: { ...this.buildInteractionBody(input, opts, true), stream: true },
             timeout: opts.timeoutMs ?? 600_000,
             signal: opts.signal,
         });
