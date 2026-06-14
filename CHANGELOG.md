@@ -5,10 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.5.1] - 2026-06-14
+
+### Added
+
+- **Automatic vLLM tool-calling fallback (OpenAI-compatible provider)** — when a vLLM / OpenAI-compatible server rejects native tool calling (started without `--enable-auto-tool-choice` / `--tool-call-parser`, surfaced as a `"auto" tool choice requires …` 400), the client now transparently retries with a text-level tool protocol: it drops `tools` / `tool_choice`, injects a `<tool_call>name({…})</tool_call>` instruction, and recovers the emitted calls back into `message.tool_calls` (parsing `<tool_call>`, `<function=…>`, and `name(args)` forms). Works for both `chat()` and `chatStream()`, and emits a one-time warning pointing to the flags needed for native parsing. Tool calling now works against vLLM servers not started with tool-parser flags.
 
 ### Changed
 
+- **Non-leading system messages normalized for OpenAI-compatible servers** — leading system messages are preserved, but a system message appearing *after* the conversation has started is rewritten to a `user` turn prefixed with `[SYSTEM MESSAGE]` (many OpenAI-compatible servers and chat templates reject mid-conversation system roles). Multimodal content is flattened to text for the prefix.
+- **`chat()` / `chatStream()` no longer auto-attach registered tools** — tools are sent only when explicitly passed via `options.tools` (the `chatWithTools` path already does this). Previously every tool added with `registerTool` was attached to plain `chat()` calls. Pass `{ tools }` explicitly (or use `chatWithTools`) if you relied on the old behavior.
 - **Minimal published package** — the npm tarball now ships only `dist/` (compiled JS + type declarations) plus `README` / `CHANGELOG` / `LICENSE`. `src/` (tests, demos, test-scripts) is no longer published, and the build no longer emits `.js.map` / `.d.ts.map` (they referenced sources that aren't shipped and triggered "missing source" warnings in consumer bundlers). Package size dropped ~78% (357 kB → 80 kB, 175 → 44 files). Because `src/` is no longer whitelisted, a local demo model cache under `src/` can never bloat the published package again.
 
 ## [4.5.0] - 2026-06-14
