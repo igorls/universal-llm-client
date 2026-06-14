@@ -7,7 +7,8 @@
  */
 
 import { BaseLLMClient } from '../client.js';
-import { httpRequest, httpStream } from '../http.js';
+import { resolveThinking, geminiThinkingBudget } from '../thinking.js';
+import { httpRequest, httpStream, parseSSE, type HttpRequestOptions } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
     normalizeJsonSchema,
@@ -31,6 +32,10 @@ import type {
     GoogleFunctionDeclaration,
     TokenUsageInfo,
     AIModelApiType,
+    DeepResearchOptions,
+    DeepResearchResult,
+    DeepResearchStep,
+    DeepResearchEvent,
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
@@ -188,6 +193,7 @@ export class GoogleClient extends BaseLLMClient {
 
         // Google streams SSE with JSON payloads
         let buffer = '';
+        let reasoningBuffer = '';
         for await (const chunk of stream) {
             buffer += chunk;
 
@@ -218,8 +224,13 @@ export class GoogleClient extends BaseLLMClient {
 
                     for (const part of candidate.content.parts) {
                         if (part.text) {
-                            decoder.push(part.text);
-                            yield { type: 'text', content: part.text };
+                            if (part.thought) {
+                                reasoningBuffer += part.text;
+                                yield { type: 'thinking', content: part.text };
+                            } else {
+                                decoder.push(part.text);
+                                yield { type: 'text', content: part.text };
+                            }
                         }
                         if (part.functionCall) {
                             const toolCall = this.convertFunctionCallToToolCall(
@@ -253,10 +264,171 @@ export class GoogleClient extends BaseLLMClient {
                 content: decoder.getCleanContent(),
                 tool_calls: allToolCalls.length > 0 ? allToolCalls : undefined,
             },
-            reasoning: decoder.getReasoning(),
+            reasoning: reasoningBuffer || decoder.getReasoning(),
             usage,
             provider: this.isVertex ? 'vertex' : 'google',
         };
+    }
+
+    // ========================================================================
+    // Deep Research (Gemini interactions API)
+    // ========================================================================
+
+    private interactionsBase(): string {
+        if (this.isVertex) {
+            throw new Error('Deep Research is only available via Google AI Studio, not Vertex AI.');
+        }
+        return `https://generativelanguage.googleapis.com/${this.apiVersion}/interactions`;
+    }
+
+    private deepResearchHeaders(): Record<string, string> {
+        return {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': this.options.apiKey ?? '',
+            'Api-Revision': '2026-05-20',
+        };
+    }
+
+    private buildInteractionBody(input: string, opts: DeepResearchOptions, background: boolean): Record<string, unknown> {
+        return {
+            input,
+            agent: opts.agent ?? 'deep-research-preview-04-2026',
+            background,
+            agent_config: {
+                type: 'deep-research',
+                thinking_summaries: opts.thinkingSummaries ?? 'auto',
+            },
+            ...(opts.tools?.length ? { tools: opts.tools.map(t => ({ [t]: {} })) } : {}),
+            ...(opts.previousInteractionId ? { previous_interaction_id: opts.previousInteractionId } : {}),
+        };
+    }
+
+    private toDeepResearchResult(i: Record<string, unknown> | undefined): DeepResearchResult {
+        const obj = i ?? {};
+        const steps = obj['steps'] as DeepResearchStep[] | undefined;
+        let report = (obj['output_text'] ?? obj['outputText'] ?? obj['output']) as string | undefined;
+        // Some responses carry the final report only inside the steps' content
+        // blocks (the last step is typically the answer) — concatenate text there.
+        if (!report && Array.isArray(steps)) {
+            const text = steps
+                .flatMap(s => (Array.isArray(s.content) ? s.content : []))
+                .map(c => (c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string'
+                    ? (c as { text: string }).text
+                    : ''))
+                .filter(Boolean)
+                .join('\n\n');
+            report = text || undefined;
+        }
+        return {
+            id: (obj['id'] as string) ?? '',
+            status: (obj['status'] as string) ?? 'in_progress',
+            report,
+            steps,
+            error: obj['error'],
+            raw: obj,
+        };
+    }
+
+    /** httpRequest with small backoff retries — the preview interactions API is flaky (503s). */
+    private async drRequest(
+        url: string,
+        init: HttpRequestOptions,
+        retries = 3,
+    ): Promise<Record<string, unknown>> {
+        let lastErr: unknown;
+        for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+                const res = await httpRequest<Record<string, unknown>>(url, init);
+                return res.data;
+            } catch (e) {
+                lastErr = e;
+                if (attempt < retries) await this.delay(1500 * (attempt + 1), init.signal);
+            }
+        }
+        throw lastErr;
+    }
+
+    /**
+     * Run an agentic Deep Research interaction: create it, then poll until it
+     * completes/fails or the timeout elapses. Returns the final report + steps.
+     */
+    async deepResearch(input: string, opts: DeepResearchOptions = {}): Promise<DeepResearchResult> {
+        const base = this.interactionsBase();
+        const headers = this.deepResearchHeaders();
+        const pollInterval = opts.pollIntervalMs ?? 5000;
+        const deadline = Date.now() + (opts.timeoutMs ?? 600_000);
+
+        let interaction = await this.drRequest(base, {
+            method: 'POST',
+            headers,
+            body: this.buildInteractionBody(input, opts, true),
+            timeout: this.options.timeout ?? 60_000,
+            signal: opts.signal,
+        });
+        const id = interaction?.['id'] as string;
+        if (!id) return this.toDeepResearchResult(interaction);
+
+        while ((interaction?.['status'] ?? 'in_progress') === 'in_progress') {
+            if (Date.now() > deadline) break;
+            await this.delay(pollInterval, opts.signal);
+            try {
+                interaction = await this.drRequest(
+                    `${base}/${id}`,
+                    { method: 'GET', headers, timeout: this.options.timeout ?? 60_000, signal: opts.signal },
+                    2,
+                );
+            } catch {
+                // Tolerate transient errors during a long poll; keep trying until the deadline.
+            }
+        }
+        return this.toDeepResearchResult(interaction);
+    }
+
+    /**
+     * Stream a Deep Research interaction's intermediate updates (`step.delta`
+     * thought/text/image events) and return the final result. Best-effort:
+     * falls back to the created interaction object if the stream ends early.
+     */
+    async *deepResearchStream(
+        input: string,
+        opts: DeepResearchOptions = {},
+    ): AsyncGenerator<DeepResearchEvent, DeepResearchResult, unknown> {
+        const base = this.interactionsBase();
+        const headers = this.deepResearchHeaders();
+        // Streaming is a foreground SSE response — background must be false.
+        const stream = httpStream(`${base}?stream=true`, {
+            method: 'POST',
+            headers,
+            body: this.buildInteractionBody(input, opts, false),
+            timeout: opts.timeoutMs ?? 600_000,
+            signal: opts.signal,
+        });
+
+        let last: Record<string, unknown> | undefined;
+        for await (const { data } of parseSSE(stream)) {
+            if (!data || data === '[DONE]') continue;
+            let parsed: Record<string, unknown>;
+            try { parsed = JSON.parse(data) as Record<string, unknown>; } catch { continue; }
+            last = parsed;
+            const delta = (parsed['delta'] ?? (parsed['step'] as Record<string, unknown> | undefined)?.['delta']) as
+                | Record<string, unknown> | undefined;
+            if (delta) {
+                const dtype = delta['type'] as string | undefined;
+                if (dtype === 'thought') yield { type: 'thought', content: String(delta['text'] ?? delta['content'] ?? '') };
+                else if (dtype === 'text') yield { type: 'text', content: String(delta['text'] ?? delta['content'] ?? '') };
+                else if (dtype === 'image') yield { type: 'image', content: delta['image'] ?? delta['content'] };
+            }
+            if (typeof parsed['status'] === 'string') yield { type: 'status', status: parsed['status'] as string };
+        }
+        return this.toDeepResearchResult(last);
+    }
+
+    private delay(ms: number, signal?: AbortSignal): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (signal?.aborted) return reject(new Error('aborted'));
+            const t = setTimeout(resolve, ms);
+            signal?.addEventListener('abort', () => { clearTimeout(t); reject(new Error('aborted')); }, { once: true });
+        });
     }
 
     // ========================================================================
@@ -352,8 +524,26 @@ export class GoogleClient extends BaseLLMClient {
         };
         if (options?.temperature !== undefined) config['temperature'] = options.temperature;
         if (options?.maxTokens !== undefined) config['maxOutputTokens'] = options.maxTokens;
-        if (this.options.thinking) {
-            config['thinkingConfig'] = { thinkingBudget: 8192 };
+        // Unified thinking flag → Gemini thinkingConfig. Per-call overrides model
+        // config. Gemini 3.x uses `thinkingLevel`; 2.5/2.0 use `thinkingBudget`
+        // (0 = off, -1 = dynamic). `includeThoughts` surfaces the reasoning text.
+        // A user-supplied thinkingConfig (via parameters) is left untouched.
+        const thinking = resolveThinking(options?.thinking, this.options.thinking);
+        if (thinking && config['thinkingConfig'] === undefined) {
+            if (/gemini-3/i.test(this.options.model)) {
+                const tc: Record<string, unknown> = {};
+                if (!thinking.enabled) {
+                    tc['thinkingLevel'] = 'MINIMAL';
+                } else {
+                    if (thinking.level) tc['thinkingLevel'] = thinking.level.toUpperCase();
+                    tc['includeThoughts'] = true;
+                }
+                config['thinkingConfig'] = tc;
+            } else {
+                config['thinkingConfig'] = thinking.enabled
+                    ? { thinkingBudget: geminiThinkingBudget(thinking.level), includeThoughts: true }
+                    : { thinkingBudget: 0 };
+            }
         }
 
         // Structured output: add responseMimeType and responseSchema
@@ -573,10 +763,16 @@ export class GoogleClient extends BaseLLMClient {
         }
 
         let textContent = '';
+        let reasoningText = '';
         const toolCalls: LLMToolCall[] = [];
 
         for (const part of candidate.content.parts) {
-            if (part.text) textContent += part.text;
+            if (part.text) {
+                // Thought summaries (includeThoughts) carry the reasoning trace;
+                // keep them out of `content` and surface them as `reasoning`.
+                if (part.thought) reasoningText += part.text;
+                else textContent += part.text;
+            }
             if (part.functionCall) {
                 toolCalls.push(this.convertFunctionCallToToolCall(
                     part.functionCall,
@@ -601,6 +797,7 @@ export class GoogleClient extends BaseLLMClient {
                 content: textContent,
                 tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
             },
+            reasoning: reasoningText || undefined,
             usage,
             provider: this.isVertex ? 'vertex' : 'google',
         };

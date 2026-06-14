@@ -18,6 +18,9 @@ import {
     type ModelMetadata,
     type LLMFunction,
     type ToolHandler,
+    type DeepResearchOptions,
+    type DeepResearchResult,
+    type DeepResearchEvent,
 } from './interfaces.js';
 import type { DecodedEvent } from './stream-decoder.js';
 import { Router, type RouterConfig, type ProviderStatus } from './router.js';
@@ -233,6 +236,41 @@ export class AIModel {
     }
 
     // ========================================================================
+    // Deep Research (Gemini-only)
+    // ========================================================================
+
+    private getGoogleClient(method: string): GoogleClient {
+        const google = this.router.getClients().find(
+            (c): c is GoogleClient => c instanceof GoogleClient,
+        );
+        if (!google) {
+            throw new Error(
+                `${method} requires a Google provider (type: "google"). None is configured.`,
+            );
+        }
+        return google;
+    }
+
+    /**
+     * Run an agentic Deep Research interaction (Gemini only): creates it and
+     * polls until completion. Throws if no Google provider is configured.
+     */
+    async deepResearch(input: string, options?: DeepResearchOptions): Promise<DeepResearchResult> {
+        return this.getGoogleClient('deepResearch').deepResearch(input, options);
+    }
+
+    /**
+     * Stream a Deep Research interaction's intermediate thought/text/step events
+     * (Gemini only), returning the final result. Throws if no Google provider.
+     */
+    async *deepResearchStream(
+        input: string,
+        options?: DeepResearchOptions,
+    ): AsyncGenerator<DeepResearchEvent, DeepResearchResult, unknown> {
+        return yield* this.getGoogleClient('deepResearchStream').deepResearchStream(input, options);
+    }
+
+    // ========================================================================
     // Tool Registration
     // ========================================================================
 
@@ -319,7 +357,9 @@ export class AIModel {
             retries: this.config.retries ?? 2,
             debug: this.config.debug ?? false,
             defaultParameters: this.config.defaultParameters,
-            thinking: this.config.thinking ?? false,
+            // Preserve `undefined` (not set) vs explicit false so providers can
+            // decide whether to send a thinking toggle at all.
+            thinking: this.config.thinking,
             region: providerConfig.region,
             apiVersion: providerConfig.apiVersion,
         };

@@ -407,6 +407,68 @@ describe('GoogleClient Structured Output', () => {
     });
 
     // ========================================================================
+    // Unified thinking flag -> thinkingConfig
+    // ========================================================================
+
+    describe('thinking flag', () => {
+        test('maps thinking:true (gemini-2.5) to thinkingBudget -1 (dynamic) + includeThoughts', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ thinking: true }); // default model gemini-1.5-flash -> budget path
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toEqual({ thinkingBudget: -1, includeThoughts: true });
+        });
+
+        test('maps a level (gemini-2.5) to the budget map + includeThoughts', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gemini-2.5-flash', thinking: 'high' });
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toEqual({ thinkingBudget: 24576, includeThoughts: true });
+        });
+
+        test('maps a level (gemini-3) to thinkingLevel + includeThoughts', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gemini-3.5-flash', thinking: 'high' });
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toEqual({ thinkingLevel: 'HIGH', includeThoughts: true });
+        });
+
+        test('maps thinking:false (gemini-3) to thinkingLevel MINIMAL', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gemini-3.5-flash' });
+            await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toEqual({ thinkingLevel: 'MINIMAL' });
+        });
+
+        test('maps thinking:false to thinkingConfig.thinkingBudget 0 (disabled)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+            await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toEqual({ thinkingBudget: 0 });
+        });
+
+        test('omits thinkingConfig when thinking is not set', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toBeUndefined();
+        });
+
+        test('per-call thinking overrides client config', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ thinking: true });
+            await client.chat([{ role: 'user', content: 'hi' }], { thinking: false });
+            const genConfig = getBody()!['generationConfig'] as Record<string, unknown>;
+            expect(genConfig['thinkingConfig']).toEqual({ thinkingBudget: 0 });
+        });
+    });
+
+    // ========================================================================
     // VAL-PROVIDER-GOOGLE-004: Gemini 3.x thoughtSignature Preservation
     // ========================================================================
 

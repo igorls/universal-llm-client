@@ -18,6 +18,7 @@
       },
       "optionalPeers": [
         "@modelcontextprotocol/sdk",
+        "zod",
       ],
     },
   },

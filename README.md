@@ -98,6 +98,44 @@ for await (const event of model.chatStream([
 }
 ```
 
+### Thinking & Reasoning
+
+Set one `thinking` value — `true`/`false` or a level (`'minimal' | 'low' | 'medium' | 'high'`) —
+and it maps to each provider's native control (Gemini `thinkingLevel`/`thinkingBudget`, OpenAI
+`reasoning_effort`, vLLM `enable_thinking`, Anthropic `budget_tokens`, Ollama `think`):
+
+```typescript
+const model = new AIModel({
+    model: 'gemini-3.5-flash',
+    thinking: 'high', // true | false | 'minimal' | 'low' | 'medium' | 'high'
+    providers: [{ type: 'google', apiKey: process.env.GOOGLE_API_KEY }],
+});
+
+const res = await model.chat([{ role: 'user', content: 'Solve this step by step: ...' }]);
+console.log(res.message.content); // final answer (clean)
+console.log(res.reasoning);       // chain-of-thought, when the model exposes it
+
+// Per-call override (e.g. turn thinking off for structured output)
+await model.chat(messages, { thinking: false });
+```
+
+### Deep Research (Gemini)
+
+Run Google's agentic Deep Research — creates a background interaction and polls to completion:
+
+```typescript
+const result = await model.deepResearch('Research the history of Google TPUs.', {
+    tools: ['google_search', 'url_context'],
+});
+console.log(result.status, result.report);
+
+// Or stream intermediate thoughts and steps as they arrive:
+for await (const ev of model.deepResearchStream('Compare RISC-V vs ARM in 2026.')) {
+    if (ev.type === 'thought') console.log('[thinking]', ev.content);
+    else if (ev.type === 'text') process.stdout.write(ev.content);
+}
+```
+
 ### Tool Calling
 
 ```typescript
@@ -124,8 +162,8 @@ const response = await model.chatWithTools([
 
 console.log(response.message.content);
 // "The weather in Tokyo is 22°C and sunny."
-console.log(response.toolTrace);
-// [{ name: 'get_weather', args: { city: 'Tokyo' }, result: {...}, duration: 5 }]
+console.log(response.toolExecutions);
+// [{ tool_call_id: 'call_abc', output: { temperature: 22, condition: 'sunny', city: 'Tokyo' }, duration: 5 }]
 ```
 
 ### Provider Failover

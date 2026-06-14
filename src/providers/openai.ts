@@ -6,6 +6,7 @@
  */
 
 import { BaseLLMClient } from '../client.js';
+import { resolveThinking, isOpenAIReasoningModel } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
@@ -110,12 +111,19 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             throw new Error('No choices returned from OpenAI API');
         }
 
+        // vLLM / OpenAI-compatible `usage` carries no timing, so derive decode
+        // throughput from the client-measured wall-clock duration.
+        const durationMs = Date.now() - start;
         const usage: TokenUsageInfo | undefined = data.usage
             ? {
                 inputTokens: data.usage.prompt_tokens,
                 outputTokens: data.usage.completion_tokens,
                 totalTokens: data.usage.total_tokens,
                 cachedTokens: data.usage.prompt_tokens_details?.cached_tokens,
+                durationMs,
+                tokensPerSecond: durationMs > 0
+                    ? data.usage.completion_tokens / (durationMs / 1000)
+                    : undefined,
             }
             : undefined;
 
@@ -125,6 +133,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // Get content, handling null case
         let content = choice.message.content || '';
         let reasoning: string | undefined;
+
+        // Reasoning models served over the OpenAI-compatible API (vLLM
+        // `--reasoning-parser`, DeepSeek-R1, etc.) return the chain-of-thought
+        // in a dedicated field instead of inline <think> tags. vLLM uses
+        // `reasoning_content`; some gateways use `reasoning`.
+        const serverReasoning = choice.message.reasoning ?? choice.message.reasoning_content;
+        if (typeof serverReasoning === 'string' && serverReasoning.length > 0) {
+            reasoning = serverReasoning;
+        }
 
         if (this.gemmaNative && content) {
             const parsed = parseGemmaDiffusionOutput(content);
@@ -222,6 +239,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         });
 
         let usage: TokenUsageInfo | undefined;
+        // Accumulates reasoning deltas from servers that stream a dedicated
+        // `reasoning` / `reasoning_content` field (vLLM, DeepSeek-R1, etc.).
+        let reasoningBuffer = '';
 
         for await (const { data } of parseSSE(stream)) {
             try {
@@ -229,6 +249,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                     choices?: Array<{
                         delta?: {
                             content?: string;
+                            // Reasoning-model chain-of-thought deltas (vLLM
+                            // `--reasoning-parser`, DeepSeek-R1, etc.).
+                            reasoning?: string;
+                            reasoning_content?: string;
                             tool_calls?: Array<{
                                 index: number;
                                 id?: string;
@@ -259,6 +283,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
                 const delta = parsed.choices?.[0]?.delta;
                 if (!delta) continue;
+
+                // Surface server-side reasoning deltas as thinking events.
+                const reasoningDelta = delta.reasoning ?? delta.reasoning_content;
+                if (reasoningDelta) {
+                    reasoningBuffer += reasoningDelta;
+                    yield { type: 'thinking', content: reasoningDelta };
+                }
 
                 if (delta.content) {
                     decoder.push(delta.content);
@@ -311,6 +342,18 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             while (decoderEvents.length) yield decoderEvents.shift()!;
         }
 
+        // Augment usage with client-measured timing (vLLM streams no timing).
+        if (usage) {
+            const durationMs = Date.now() - start;
+            usage = {
+                ...usage,
+                durationMs,
+                tokensPerSecond: durationMs > 0
+                    ? usage.outputTokens / (durationMs / 1000)
+                    : undefined,
+            };
+        }
+
         this.auditor.record({
             timestamp: Date.now(),
             type: 'stream_end',
@@ -324,7 +367,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             ? Array.from(toolCallAccum.values()).map(tc => this.normalizeToolCall(tc))
             : undefined;
         let cleanContent = decoder.getCleanContent();
-        let reasoning = decoder.getReasoning();
+        // Prefer the server's dedicated reasoning field; fall back to <think>
+        // tags parsed from the content stream by the decoder.
+        let reasoning = reasoningBuffer || decoder.getReasoning();
 
         if (this.gemmaNative) {
             // Native tool-call blocks live in the text channel; extract them.
@@ -439,6 +484,23 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         };
         if (options?.temperature !== undefined) params['temperature'] = options.temperature;
         if (options?.maxTokens !== undefined) params['max_tokens'] = options.maxTokens;
+
+        // Unified thinking flag. Per-call overrides model config; only emitted
+        // when explicitly set, so servers that reject unknown fields are
+        // unaffected by default. OpenAI reasoning models (o-series / GPT-5) use
+        // `reasoning_effort`; vLLM / Qwen use `chat_template_kwargs.enable_thinking`.
+        // A user-supplied value (via parameters) always wins.
+        const thinking = resolveThinking(options?.thinking, this.options.thinking);
+        if (thinking) {
+            if (isOpenAIReasoningModel(this.options.model)) {
+                if (params['reasoning_effort'] === undefined) {
+                    params['reasoning_effort'] = thinking.enabled ? (thinking.level ?? 'medium') : 'minimal';
+                }
+            } else {
+                const existing = (params['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
+                params['chat_template_kwargs'] = { enable_thinking: thinking.enabled, ...existing };
+            }
+        }
         return params;
     }
 

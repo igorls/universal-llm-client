@@ -62,6 +62,17 @@ export interface ProviderConfig {
 }
 
 // ============================================================================
+// Thinking / Reasoning control
+// ============================================================================
+
+/**
+ * Unified reasoning-effort level. Mapped to each provider's native control:
+ * Gemini 3.x `thinkingConfig.thinkingLevel`, OpenAI `reasoning_effort`,
+ * Gemini 2.5 `thinkingBudget`, Anthropic `budget_tokens`, vLLM/Ollama on/off.
+ */
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
+
+// ============================================================================
 // AIModel Configuration (user-facing)
 // ============================================================================
 
@@ -72,8 +83,8 @@ export interface AIModelConfig {
     providers: ProviderConfig[];
     /** Default parameters for all requests (temperature, top_p, etc.) */
     defaultParameters?: Record<string, unknown>;
-    /** Enable thinking/reasoning mode */
-    thinking?: boolean;
+    /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high'). */
+    thinking?: boolean | ThinkingLevel;
     /** Request timeout in ms (default: 30000) */
     timeout?: number;
     /** Retries per provider before failover (default: 2) */
@@ -99,8 +110,8 @@ export interface LLMClientOptions {
     modelType?: AIModelType;
     /** Default parameters for requests */
     defaultParameters?: Record<string, unknown>;
-    /** Enable thinking/reasoning mode */
-    thinking?: boolean;
+    /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high'). */
+    thinking?: boolean | ThinkingLevel;
     /** Request timeout in ms */
     timeout?: number;
     /** Number of retries for failed requests */
@@ -303,6 +314,14 @@ export interface ChatOptions {
     temperature?: number;
     /** Max tokens to generate */
     maxTokens?: number;
+    /**
+     * Enable/disable/level model thinking for this request, overriding the
+     * model-level `thinking` config. `true`/`false` or a level
+     * ('minimal' | 'low' | 'medium' | 'high'). Mapped per provider: Gemini
+     * `thinkingLevel`/`thinkingBudget`, OpenAI `reasoning_effort`, vLLM
+     * `enable_thinking`, Anthropic `budget_tokens`, Ollama `think`.
+     */
+    thinking?: boolean | ThinkingLevel;
     /** Tool definitions (auto-populated from registry if not set) */
     tools?: LLMToolDefinition[];
     /** Tool choice mode */
@@ -420,6 +439,18 @@ export interface TokenUsageInfo {
      * via `DecodedEvent { type: 'thinking' }`); consult the provider.
      */
     reasoningTokens?: number;
+    /**
+     * Total request duration in milliseconds. Server-measured where the
+     * provider reports it (Ollama `total_duration`); otherwise client-measured
+     * wall-clock (OpenAI-compatible / vLLM return no timing in `usage`).
+     */
+    durationMs?: number;
+    /**
+     * Decode throughput in output tokens/second. Server-precise for Ollama
+     * (`eval_count / eval_duration`); derived from `outputTokens / durationMs`
+     * for providers without server-side timing (OpenAI-compatible / vLLM).
+     */
+    tokensPerSecond?: number;
 }
 
 // ============================================================================
@@ -476,9 +507,15 @@ export interface OllamaResponse {
     };
     done: boolean;
     done_reason?: string;
+    /** Total request time in nanoseconds. */
+    total_duration?: number;
+    /** Model load time in nanoseconds. */
+    load_duration?: number;
     prompt_eval_count?: number;
     eval_count?: number;
+    /** Prompt evaluation time in nanoseconds. */
     prompt_eval_duration?: number;
+    /** Generation time in nanoseconds. */
     eval_duration?: number;
 }
 
@@ -492,6 +529,13 @@ export interface OpenAIResponse {
         message: {
             role: string;
             content: string | null;
+            /**
+             * Chain-of-thought from reasoning models exposed via a dedicated
+             * field (vLLM `--reasoning-parser`, DeepSeek-R1, etc.). vLLM uses
+             * `reasoning_content`; some gateways use `reasoning`.
+             */
+            reasoning?: string;
+            reasoning_content?: string;
             tool_calls?: LLMToolCall[];
         };
         finish_reason: string;
@@ -546,6 +590,8 @@ export interface GooglePart {
         mimeType: string;
         data: string;
     };
+    /** True when this part is a reasoning summary (requires `includeThoughts`). */
+    thought?: boolean;
     /** Gemini 3.x thought signature — must be echoed back on functionCall parts */
     thoughtSignature?: string;
 }
@@ -619,6 +665,54 @@ export interface GoogleResponse {
         thoughtsTokenCount?: number;
     };
 }
+
+// ============================================================================
+// Deep Research (Gemini interactions API)
+// ============================================================================
+
+/** Options for an agentic Deep Research interaction (Gemini-only). */
+export interface DeepResearchOptions {
+    /** Research agent id (default 'deep-research-preview-04-2026'). */
+    agent?: string;
+    /** Tools the agent may use, e.g. 'google_search', 'url_context', 'code_execution'. */
+    tools?: string[];
+    /** Emit intermediate reasoning ('auto') or not ('none'). Default 'auto'. */
+    thinkingSummaries?: 'auto' | 'none';
+    /** Continue a prior interaction (follow-up question). */
+    previousInteractionId?: string;
+    /** Poll interval in ms while awaiting completion (default 5000). */
+    pollIntervalMs?: number;
+    /** Overall timeout in ms before giving up the poll loop (default 600000). */
+    timeoutMs?: number;
+    /** Abort signal forwarded to every request. */
+    signal?: AbortSignal;
+}
+
+/** One intermediate step in a Deep Research interaction. */
+export interface DeepResearchStep {
+    type?: string;
+    content?: Array<{ text?: string;[k: string]: unknown }>;
+    [k: string]: unknown;
+}
+
+/** Terminal (or last-polled) state of a Deep Research interaction. */
+export interface DeepResearchResult {
+    id: string;
+    status: 'in_progress' | 'completed' | 'failed' | string;
+    /** Final research report (`output_text`) when completed. */
+    report?: string;
+    steps?: DeepResearchStep[];
+    error?: unknown;
+    /** The raw last interaction object from the API. */
+    raw?: unknown;
+}
+
+/** Streaming Deep Research event (from `step.delta` updates). */
+export type DeepResearchEvent =
+    | { type: 'thought'; content: string }
+    | { type: 'text'; content: string }
+    | { type: 'image'; content: unknown }
+    | { type: 'status'; status: string };
 
 // ============================================================================
 // Helper Functions

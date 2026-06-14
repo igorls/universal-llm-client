@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-06-14
+
+### Added
+
+- **Server-side reasoning field support (OpenAI-compatible provider)** — Reasoning models served over the OpenAI-compatible API (vLLM `--reasoning-parser`, DeepSeek-R1, etc.) return their chain-of-thought in a dedicated `reasoning_content` (vLLM) / `reasoning` (some gateways) field instead of inline `<think>` tags. The OpenAI provider now surfaces it:
+  - `chat()` populates `LLMChatResponse.reasoning` from `message.reasoning_content` / `message.reasoning`, keeping `message.content` clean
+  - `chatStream()` emits `delta.reasoning_content` / `delta.reasoning` chunks as `thinking` stream events and accumulates them into the final `reasoning`
+  - Inline `<think>` parsing (via `StandardChatDecoder`) is preserved as a fallback for servers run without a reasoning parser
+  - `OpenAIResponse` message type extended with optional `reasoning` / `reasoning_content`
+  - Verified end-to-end against vLLM serving `nvidia/Qwen3.6-35B-A3B-NVFP4` (NVFP4) on Blackwell — reasoning, streaming `thinking` events, tool calling (`qwen3_xml`), and structured output all pass
+- **Unified `thinking` flag with levels across all providers** — `thinking` (model config) and per-call `ChatOptions.thinking` accept `true`/`false` **or a level `'minimal' | 'low' | 'medium' | 'high'`** (new `ThinkingLevel` type), mapped to each backend's native control so apps switch providers without reasoning-specific code. A shared `resolveThinking` helper (`src/thinking.ts`) normalizes the value; each provider maps it:
+  - **OpenAI-compatible** → OpenAI reasoning models (o-series / GPT-5, by name) get `reasoning_effort:<level>`; vLLM / Qwen get `chat_template_kwargs.enable_thinking`. Emitted only when explicitly set.
+  - **Google / Gemini** → Gemini 3.x `thinkingConfig.thinkingLevel`; Gemini 2.5/2.0 `thinkingBudget` (level→budget map, `0` off, `-1` dynamic). `includeThoughts` enabled when thinking is on.
+  - **Anthropic** → extended thinking `budget_tokens` from the level (kept `< max_tokens`; temperature omitted, per API).
+  - **Ollama** → `think` on/off (no native levels).
+  - Per-call overrides model config everywhere. Verified live against vLLM (Qwen3.6-NVFP4) and **Gemini 3.5 Flash** (levels produce distinct reasoning-token counts); unit-tested per provider + `resolveThinking`.
+- **Gemini reasoning text surfaced** — with thinking on, the Google provider sets `includeThoughts:true` and routes `thought:true` parts into `response.reasoning` (non-streaming) and live `thinking` stream events, matching how Qwen/Anthropic expose chain-of-thought (previously only `reasoningTokens` was reported). Verified live on `gemini-3.5-flash` (654–976 chars of reasoning across levels).
+- **Gemini Deep Research API** — new Google-only `AIModel.deepResearch(input, opts)` (creates a `/v1beta/interactions` background interaction and polls to completion → `{ id, status, report, steps }`) and `AIModel.deepResearchStream(input, opts)` (live `thought`/`text`/`status` events). New `DeepResearchOptions`/`DeepResearchResult`/`DeepResearchStep`/`DeepResearchEvent` types. Throws a clear error if no Google provider is configured. Create + poll plumbing verified live.
+- **Generation stats — `usage.durationMs` and `usage.tokensPerSecond`** — decode throughput is now reported on `LLMChatResponse.usage`: server-precise for Ollama (from `eval_count` / `eval_duration`, which were previously discarded), and client-measured wall-clock for OpenAI-compatible / vLLM (which return no timing in `usage`). `OllamaResponse` gained `total_duration` / `load_duration` typings.
+
+### Fixed
+
+- **README** — the tool-execution trace field is `response.toolExecutions` (array of `{ tool_call_id, output, error?, duration? }`), not `toolTrace`; corrected the `chatWithTools` example.
+
 ## [4.4.0] - 2026-06-11
 
 ### Added

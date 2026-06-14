@@ -47,6 +47,13 @@ export {
     type ChatOptions,
     type ResponseFormat,
     type OutputOptions,
+    // Thinking / reasoning
+    type ThinkingLevel,
+    // Deep Research (Gemini)
+    type DeepResearchOptions,
+    type DeepResearchResult,
+    type DeepResearchStep,
+    type DeepResearchEvent,
     // Model info
     type ModelMetadata,
     // Helpers
