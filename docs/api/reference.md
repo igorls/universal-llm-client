@@ -280,13 +280,18 @@ Configuration for individual providers.
 
 ```typescript
 interface ProviderConfig {
-  type: 'openai' | 'google' | 'vertex' | 'ollama' | 'llamacpp';
+  type: 'openai' | 'google' | 'vertex' | 'ollama' | 'llamacpp' | 'anthropic';
   apiKey?: string;
   url?: string;
-  model?: string;      // Override the global model for this provider
-  priority?: number;   // Lower = higher priority (default: array index)
-  region?: string;     // Vertex AI region
-  apiVersion?: string; // API version override
+  model?: string;        // Override the global model for this provider
+  priority?: number;     // Lower = higher priority (default: array index)
+  region?: string;       // Vertex AI region
+  apiVersion?: string;   // API version override (Google/Vertex)
+  headers?: Record<string, string>;     // OpenAI-compatible & Ollama (Azure api-key, etc.)
+  queryParams?: Record<string, string>; // OpenAI-compatible only (Azure api-version, etc.)
+  authHeader?: string;   // OpenAI-compatible & Ollama, e.g. 'api-key'
+  authPrefix?: string;   // OpenAI-compatible & Ollama, e.g. '' for api-key style
+  apiBasePath?: string;  // OpenAI-compatible only: '' to disable auto /v1 (Azure full deployment URLs)
 }
 ```
 

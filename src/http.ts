@@ -233,6 +233,10 @@ export async function* parseSSE(
 
 /**
  * Build standard headers for LLM API requests.
+ * Merges any provider-specific extraHeaders (from ProviderConfig) on top.
+ * Provider clients can still fully override (e.g. Anthropic uses x-api-key).
+ *
+ * Respects authHeader / authPrefix from config for Azure-style or gateway auth.
  */
 export function buildHeaders(options: LLMClientOptions): Record<string, string> {
     const headers: Record<string, string> = {
@@ -240,7 +244,17 @@ export function buildHeaders(options: LLMClientOptions): Record<string, string> 
     };
 
     if (options.apiKey) {
-        headers['Authorization'] = `Bearer ${options.apiKey}`;
+        const headerName = options.authHeader || 'Authorization';
+        // Sensible default prefix: Bearer for Authorization, nothing for api-key / x-api-key etc.
+        const defaultPrefix = headerName.toLowerCase() === 'authorization' ? 'Bearer ' : '';
+        const prefix = options.authPrefix !== undefined ? options.authPrefix : defaultPrefix;
+        headers[headerName] = `${prefix}${options.apiKey}`.trim();
+    }
+
+    // Merge provider-specific extras (e.g. Azure 'api-key', custom gateway headers).
+    // Later entries win on conflicts, allowing complete override of auth.
+    if (options.extraHeaders) {
+        Object.assign(headers, options.extraHeaders);
     }
 
     return headers;

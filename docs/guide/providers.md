@@ -4,15 +4,17 @@ Universal LLM Client supports multiple providers through a single API. Each prov
 
 ## Provider Support Matrix
 
-| Feature | OpenAI | Google/Vertex | Ollama | LlamaCpp |
-|---------|:------:|:-------------:|:------:|:--------:|
-| Chat | ✅ | ✅ | ✅ | ✅ |
-| Streaming | ✅ | ✅ | ✅ | ✅ |
-| Structured Output | ✅ | ✅ | ✅ | ✅ |
-| Tool Calling | ✅ | ✅ | ✅ | ✅ |
-| Vision/Images | ✅ | ✅ | ✅ | ❌ |
-| Embeddings | ✅ | ✅ | ✅ | ✅ |
-| Strict JSON Mode | ✅ | ❌ | ❌ | ❌ |
+| Feature              | OpenAI (compat) | Google/Vertex | Ollama   | Anthropic | LlamaCpp |
+|----------------------|:---------------:|:-------------:|:--------:|:---------:|:--------:|
+| Chat                 | ✅              | ✅            | ✅       | ✅        | ✅       |
+| Streaming            | ✅              | ✅            | ✅       | ✅        | ✅       |
+| Structured Output    | ✅              | ✅            | ✅       | ✅        | ✅       |
+| Tool Calling         | ✅              | ✅            | ✅       | ✅        | ✅       |
+| Vision/Images        | ✅              | ✅            | ✅       | ✅        | ❌       |
+| Embeddings           | ✅              | ✅            | ✅       | ❌        | ✅       |
+| Strict JSON Mode     | ✅ (native)     | ❌ (stripped) | ❌       | ⚠️ (prompted) | ❌     |
+| Prompt Caching       | Provider-dependent | Limited    | N/A      | ✅ (strong) | N/A     |
+| Native Thinking      | Via decoder / fields | ✅ (thinkingConfig) | ✅ (`think`) | ✅ (extended + signatures) | Via decoder |
 
 ## OpenAI
 
@@ -52,6 +54,53 @@ For OpenAI-compatible endpoints, just set the `url`:
 { type: 'openai', url: 'http://localhost:1234/v1', apiKey: 'lm-studio' }
 { type: 'openai', url: 'http://localhost:8000/v1', apiKey: '...' } // vLLM
 ```
+
+**Advanced transport flexibility** (new in this release):
+
+You can now control auth, query parameters, and base path without custom code:
+
+```typescript
+// Azure OpenAI (recommended pattern)
+{
+  type: 'openai',
+  url: 'https://YOUR-RESOURCE.openai.azure.com/openai/deployments/YOUR-DEPLOYMENT',
+  apiBasePath: '',                    // do not append /v1
+  queryParams: { 'api-version': '2024-10-21' },
+  headers: { 'api-key': process.env.AZURE_OPENAI_KEY },
+  // No need to put the query in the url string anymore
+}
+
+// Custom gateway with api-key style auth (no "Bearer")
+{
+  type: 'openai',
+  url: 'https://my-gateway.example.com',
+  authHeader: 'api-key',
+  authPrefix: '',
+  apiKey: process.env.GATEWAY_KEY,
+  queryParams: { 'region': 'us-east' },
+}
+
+// Extra arbitrary headers (merged after auth)
+{
+  type: 'openai',
+  url: '...',
+  headers: { 'x-custom': 'value', 'api-key': '...' }, // OpenAI-compatible & Ollama (via buildHeaders)
+}
+```
+
+These options are typed on every `ProviderConfig`, but are honored by the
+**OpenAI-compatible** provider — with `headers`, `authHeader`, and `authPrefix`
+also applied by **Ollama** (both use `buildHeaders`). `queryParams` and
+`apiBasePath` are OpenAI-compatible only. Google/Vertex and Anthropic build their
+own auth headers and URLs and ignore these knobs.
+
+For Anthropic-specific prompt caching:
+
+```typescript
+await model.chat(messages, { enablePromptCaching: true, maxTokens: 8192 });
+```
+
+This causes the client to mark the system prompt with Anthropic's `cache_control: { type: "ephemeral" }`. See the Anthropic section for details.
 
 ## Google / Vertex AI
 
@@ -133,6 +182,87 @@ const model = new AIModel({
 ```
 
 Uses the OpenAI-compatible API format internally.
+
+## Anthropic (Claude)
+
+Native support for Anthropic's Messages API (distinct from OpenAI wire format).
+
+```typescript
+const model = new AIModel({
+  model: 'claude-sonnet-4-20250514',
+  providers: [
+    { type: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY },
+  ],
+});
+```
+
+### Key Differences Handled by the Library
+- Content blocks (`text`, `tool_use`, `tool_result`, `thinking`, `image`) instead of flat messages.
+- `system` is a top-level field (extracted from `role: 'system'` messages).
+- Tool results are placed inside user messages as `tool_result` blocks.
+- Streaming uses typed `content_block_*` events (including `thinking_delta` and `signature_delta`).
+- Strong prompt caching and extended thinking support.
+
+### Prompt Caching
+```typescript
+const response = await model.chat(messages, {
+  enablePromptCaching: true,
+  // ... other options
+});
+```
+When enabled, the client emits appropriate `cache_control` markers for supported Claude models.
+
+### Structured Output & Thinking
+Recent Claude 4.x models have improving native schema enforcement. The library always performs final validation. Thinking / reasoning is surfaced via the standard `reasoning` field and `DecodedEvent` stream events.
+
+### Embeddings
+Anthropic does not offer embeddings — use a different provider in your failover chain if you need them.
+
+## Most Other Providers: Use the OpenAI-Compatible Path
+
+The vast majority of inference providers (hosted and self-hosted) speak the OpenAI Chat Completions format (or a close superset). **You do not need a dedicated adapter**.
+
+Just use `{ type: 'openai', url: '...' }`:
+
+```typescript
+// xAI Grok
+{ type: 'openai', url: 'https://api.x.ai/v1', apiKey: process.env.XAI_API_KEY }
+
+// Mistral
+{ type: 'openai', url: 'https://api.mistral.ai/v1', apiKey: process.env.MISTRAL_API_KEY }
+
+// DeepSeek (very low cost)
+{ type: 'openai', url: 'https://api.deepseek.com', apiKey: process.env.DEEPSEEK_API_KEY }
+
+// Cohere Compatibility API
+{ type: 'openai', url: 'https://api.cohere.ai/compatibility/v1', apiKey: process.env.COHERE_API_KEY } // verify exact path in Cohere docs
+
+// Groq (fast)
+{ type: 'openai', url: 'https://api.groq.com/openai/v1', apiKey: process.env.GROQ_API_KEY }
+
+// Together AI
+{ type: 'openai', url: 'https://api.together.xyz/v1', apiKey: process.env.TOGETHER_API_KEY }
+
+// Fireworks
+{ type: 'openai', url: 'https://api.fireworks.ai/inference/v1', apiKey: process.env.FIREWORKS_API_KEY }
+
+// OpenRouter (aggregator)
+{ type: 'openai', url: 'https://openrouter.ai/api/v1', apiKey: process.env.OPENROUTER_API_KEY }
+
+// Perplexity Sonar (grounded)
+{ type: 'openai', url: 'https://api.perplexity.ai', apiKey: process.env.PERPLEXITY_API_KEY }
+
+// Self-hosted vLLM / TGI / LM Studio / etc.
+{ type: 'openai', url: 'http://localhost:8000/v1', apiKey: 'not-needed-for-local' }
+```
+
+### Notes for Compatible Endpoints
+- Many do not implement OpenAI's full `strict` JSON schema mode → pass `output: { strict: false }` when using `generateStructured` / `chat({ output })`.
+- Tool streaming and parallel calls are widely supported but accumulation logic can be quirky; the library normalizes IDs and empty args.
+- Usage / cost headers vary; the auditor still receives normalized `TokenUsageInfo`.
+- For Azure OpenAI: the URL structure (`/deployments/{deployment}/chat/completions?api-version=...`) and `api-key` header are different. You can often construct the full URL + pass custom headers (see advanced config) or request an `azure` provider type for first-class ergonomics.
+
+See the research document `docs/research/provider-api-landscape-2026.md` for a detailed 2026 survey of wire formats, why only Anthropic + Google warrant native clients, Bedrock guidance, Responses API notes, and more.
 
 ## Provider Failover
 

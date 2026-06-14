@@ -11,7 +11,7 @@ import { fromZod } from '../../zod-adapter.js';
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { z } from 'zod';
 import { OpenAICompatibleClient } from '../../providers/openai.js';
-import type { LLMClientOptions, ChatOptions } from '../../interfaces.js';
+import type { LLMClientOptions, ChatOptions, LLMChatMessage } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 import {
     type StructuredOutputOptions,
@@ -597,6 +597,69 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 { role: 'user', content: 'Generate' },
             ], options);
             expect(response.message.content).toBe(rawOutput);
+        });
+    });
+
+    // ========================================================================
+    // Transport flexibility: apiBasePath / queryParams / auth headers
+    // ========================================================================
+
+    describe('transport flexibility', () => {
+        function captureRequest(response: unknown = OPENAI_RESPONSE) {
+            const cap = { url: '', headers: {} as Record<string, string> };
+            globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+                cap.url = String(input);
+                cap.headers = (init?.headers as Record<string, string>) ?? {};
+                return new Response(JSON.stringify(response), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+            return cap;
+        }
+        const hi: LLMChatMessage[] = [{ role: 'user', content: 'hi' }];
+
+        test('appends /v1 by default', async () => {
+            const cap = captureRequest();
+            await createClient({ url: 'https://host.example' }).chat(hi);
+            expect(cap.url).toBe('https://host.example/v1/chat/completions');
+        });
+
+        test('apiBasePath "" disables the /v1 append', async () => {
+            const cap = captureRequest();
+            await createClient({ url: 'https://h/openai/deployments/d', apiBasePath: '' }).chat(hi);
+            expect(cap.url).toBe('https://h/openai/deployments/d/chat/completions');
+        });
+
+        test('apiBasePath normalizes extra leading slashes (//v1 -> /v1)', async () => {
+            const cap = captureRequest();
+            await createClient({ url: 'https://host.example', apiBasePath: '//v1' }).chat(hi);
+            expect(cap.url).toBe('https://host.example/v1/chat/completions');
+        });
+
+        test('queryParams are appended to the URL', async () => {
+            const cap = captureRequest();
+            await createClient({ url: 'https://host.example', queryParams: { 'api-version': '2024-10-21' } }).chat(hi);
+            expect(cap.url).toContain('?api-version=2024-10-21');
+        });
+
+        test('preserves a query string already on the base URL (path before query)', async () => {
+            const cap = captureRequest();
+            await createClient({ url: 'https://h/v1?foo=1', apiBasePath: '' }).chat(hi);
+            expect(cap.url).toBe('https://h/v1/chat/completions?foo=1');
+        });
+
+        test('authHeader + authPrefix produce a custom auth header (no Bearer)', async () => {
+            const cap = captureRequest();
+            await createClient({ apiKey: 'secret', authHeader: 'api-key', authPrefix: '' }).chat(hi);
+            expect(cap.headers['api-key']).toBe('secret');
+            expect(cap.headers['Authorization']).toBeUndefined();
+        });
+
+        test('extraHeaders are merged into the request', async () => {
+            const cap = captureRequest();
+            await createClient({ apiKey: 'k', extraHeaders: { 'x-custom': 'v' } }).chat(hi);
+            expect(cap.headers['x-custom']).toBe('v');
         });
     });
 
