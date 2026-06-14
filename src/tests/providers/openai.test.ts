@@ -11,7 +11,7 @@ import { fromZod } from '../../zod-adapter.js';
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { z } from 'zod';
 import { OpenAICompatibleClient } from '../../providers/openai.js';
-import type { LLMClientOptions, ChatOptions, LLMChatMessage } from '../../interfaces.js';
+import type { LLMClientOptions, ChatOptions, LLMChatMessage, LLMToolDefinition } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 import {
     type StructuredOutputOptions,
@@ -863,6 +863,148 @@ describe('OpenAICompatibleClient Structured Output', () => {
 
             expect(response.message.content).toBe('{"name": "Alice", "age": 30}');
             expect(response.message.role).toBe('assistant');
+        });
+    });
+
+    // ========================================================================
+    // Message normalization
+    // ========================================================================
+
+    describe('message normalization', () => {
+        test('keeps leading system messages and converts later system messages for chat', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+
+            const messages: LLMChatMessage[] = [
+                { role: 'system', content: 'base prompt' },
+                { role: 'user', content: 'hello' },
+                { role: 'system', content: 'late update' },
+                { role: 'assistant', content: 'working' },
+            ];
+
+            await client.chat(messages);
+
+            const body = getBody()!;
+            const sentMessages = body['messages'] as Array<Record<string, unknown>>;
+            expect(sentMessages.map(message => message['role'])).toEqual(['system', 'user', 'user', 'assistant']);
+            expect(sentMessages[2]?.['content']).toBe('[SYSTEM MESSAGE]\nlate update');
+        });
+
+        test('keeps late system messages out of the streaming payload', async () => {
+            let capturedBody: Record<string, unknown> | null = null;
+
+            globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+                capturedBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+                return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                });
+            }) as unknown as typeof fetch;
+
+            const client = createClient();
+            const stream = client.chatStream([
+                { role: 'user', content: 'hello' },
+                { role: 'system', content: 'late update' },
+            ]);
+
+            for await (const _event of stream) {
+                // Drain the stream so the request is sent.
+            }
+
+            expect(capturedBody).not.toBeNull();
+            const sentMessages = capturedBody!['messages'] as Array<Record<string, unknown>>;
+            expect(sentMessages.map(message => message['role'])).toEqual(['user', 'user']);
+            expect(sentMessages[1]?.['content']).toBe('[SYSTEM MESSAGE]\nlate update');
+        });
+    });
+
+    // ========================================================================
+    // vLLM Tool Fallback
+    // ========================================================================
+
+    describe('vLLM tool fallback', () => {
+        const multiplyTool: LLMToolDefinition = {
+            type: 'function',
+            function: {
+                name: 'multiply',
+                description: 'Multiply two numbers',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        a: { type: 'number' },
+                        b: { type: 'number' },
+                    },
+                    required: ['a', 'b'],
+                },
+            },
+        };
+
+        test('retries with text-level tool protocol when vLLM rejects native tool choice', async () => {
+            const requestBodies: Record<string, unknown>[] = [];
+            const originalWarn = console.warn;
+            console.warn = mock(() => undefined) as unknown as typeof console.warn;
+
+            globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+                requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+                if (requestBodies.length === 1) {
+                    return new Response(JSON.stringify({
+                        error: {
+                            message: '"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set',
+                            type: 'BadRequestError',
+                            code: 400,
+                        },
+                    }), {
+                        status: 400,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
+
+                return new Response(JSON.stringify({
+                    ...OPENAI_RESPONSE,
+                    choices: [{
+                        index: 0,
+                        message: {
+                            role: 'assistant',
+                            content: '<tool_call>multiply({"a":17,"b":23})</tool_call>',
+                        },
+                        finish_reason: 'stop',
+                    }],
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+
+            try {
+                const client = createClient({ url: 'http://localhost:8000' });
+                const response = await client.chat([{ role: 'user', content: 'Multiply 17 by 23' }], {
+                    tools: [multiplyTool],
+                });
+
+                expect(requestBodies).toHaveLength(2);
+                expect(requestBodies[0]?.['tools']).toBeDefined();
+                expect(requestBodies[1]?.['tools']).toBeUndefined();
+                const fallbackMessages = requestBodies[1]?.['messages'] as LLMChatMessage[];
+                expect(fallbackMessages[0]?.role).toBe('system');
+                expect(String(fallbackMessages[0]?.content)).toContain('<tool_call>tool_name');
+                expect(response.message.content).toBe('');
+                expect(response.message.tool_calls?.[0]?.function).toEqual({
+                    name: 'multiply',
+                    arguments: '{"a":17,"b":23}',
+                });
+            } finally {
+                console.warn = originalWarn;
+            }
+        });
+
+        test('does not auto-send registered tools for plain chat', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+            client.registerTool('multiply', 'Multiply two numbers', multiplyTool.function.parameters, async () => 391);
+
+            await client.chat([{ role: 'user', content: 'Say hi' }]);
+
+            expect(getBody()?.['tools']).toBeUndefined();
         });
     });
 

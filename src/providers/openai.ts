@@ -23,13 +23,237 @@ import type {
     OpenAIResponse,
     OpenAIModelInfo,
     LLMToolCall,
+    LLMToolDefinition,
     TokenUsageInfo,
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 import { isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
 
+const VLLM_AUTO_TOOL_CHOICE_HINT =
+    'vLLM rejected automatic tool choice. Retrying with text-level tool calling. To use native tool_calls, start vLLM with --enable-auto-tool-choice and --tool-call-parser <parser>.';
+
+function normalizeMessagesForOpenAICompat(messages: LLMChatMessage[]): LLMChatMessage[] {
+    let sawNonSystem = false;
+
+    return messages.map(message => {
+        if (message.role !== 'system') {
+            sawNonSystem = true;
+            return {
+                ...message,
+                content: message.content ?? '',
+            };
+        }
+
+        if (!sawNonSystem) {
+            return {
+                ...message,
+                content: message.content ?? '',
+            };
+        }
+
+        return {
+            ...message,
+            role: 'user' as const,
+            content: `[SYSTEM MESSAGE]\n${stringifyMessageContent(message.content)}`,
+        };
+    });
+}
+
+function stringifyMessageContent(content: LLMChatMessage['content']): string {
+    if (typeof content === 'string') return content;
+    return content
+        .map(part => {
+            if (part.type === 'text') return part.text;
+            if (part.type === 'image_url') return `[Image: ${part.image_url.url}]`;
+            if (part.type === 'audio') return `[Audio: ${part.audio.mimeType}]`;
+            return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+}
+
+function hasToolDefinitions(body: Record<string, unknown>): boolean {
+    const tools = body['tools'];
+    return Array.isArray(tools) && tools.length > 0;
+}
+
+function isVllmAutoToolChoiceError(value: unknown): boolean {
+    const text = value instanceof Error
+        ? value.message
+        : typeof value === 'string'
+            ? value
+            : JSON.stringify(value ?? '');
+    const normalized = text.toLowerCase();
+    return (
+        normalized.includes('auto')
+        && normalized.includes('tool choice requires --enable-auto-tool-choice')
+        && normalized.includes('--tool-call-parser')
+    );
+}
+
+async function requestWithVllmToolFallback<T>(
+    url: string,
+    request: {
+        readonly headers: Record<string, string>;
+        readonly body: Record<string, unknown>;
+        readonly timeout: number;
+    },
+    tools: LLMToolDefinition[] | undefined,
+    onFallback: () => void,
+): Promise<import('../http.js').HttpResponse<T>> {
+    try {
+        return await httpRequest<T>(url, {
+            method: 'POST',
+            headers: request.headers,
+            body: request.body,
+            timeout: request.timeout,
+        });
+    } catch (error) {
+        if (
+            tools?.length
+            && hasToolDefinitions(request.body)
+            && isVllmAutoToolChoiceError(error)
+        ) {
+            onFallback();
+            return httpRequest<T>(url, {
+                method: 'POST',
+                headers: request.headers,
+                body: withoutNativeTools(request.body, tools),
+                timeout: request.timeout,
+            });
+        }
+        throw error;
+    }
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+    try {
+        const parsed = JSON.parse(text) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+        }
+    } catch {
+        /* not JSON */
+    }
+    return null;
+}
+
+function parseTextToolCallBody(content: string): Array<{ name: string; arguments: string }> {
+    const body = content.trim();
+    if (!body) return [];
+
+    try {
+        const parsed = JSON.parse(body) as unknown;
+        const rawCalls = Array.isArray(parsed) ? parsed : [parsed];
+        const calls: Array<{ name: string; arguments: string }> = [];
+        for (const rawCall of rawCalls) {
+            if (!rawCall || typeof rawCall !== 'object') continue;
+            const record = rawCall as Record<string, unknown>;
+            const name = record['name'];
+            if (typeof name !== 'string' || !name) continue;
+            const args = record['arguments'] ?? record['parameters'] ?? record['args'] ?? {};
+            calls.push({
+                name,
+                arguments: typeof args === 'string' ? JSON.stringify(parseJsonObject(args) ?? {}) : JSON.stringify(args ?? {}),
+            });
+        }
+        if (calls.length > 0) return calls;
+    } catch {
+        /* not structured JSON */
+    }
+
+    const functionCallMatch = /^([@A-Za-z_][@A-Za-z0-9_.:-]*)\s*\(([\s\S]*)\)\s*$/u.exec(body);
+    if (functionCallMatch) {
+        const rawArgs = functionCallMatch[2]!.trim();
+        const args = rawArgs ? parseJsonObject(rawArgs) : {};
+        if (args) {
+            return [{ name: functionCallMatch[1]!, arguments: JSON.stringify(args) }];
+        }
+    }
+
+    const calls: Array<{ name: string; arguments: string }> = [];
+    const funcPattern = /<function=([@A-Za-z_][@A-Za-z0-9_.:-]*)>([\s\S]*?)<\/function>/g;
+    let fMatch: RegExpExecArray | null;
+    while ((fMatch = funcPattern.exec(body)) !== null) {
+        const args: Record<string, string> = {};
+        const paramPattern = /<parameter=([A-Za-z_][A-Za-z0-9_-]*)>([\s\S]*?)<\/parameter>/g;
+        let pMatch: RegExpExecArray | null;
+        while ((pMatch = paramPattern.exec(fMatch[2] ?? '')) !== null) {
+            args[pMatch[1]!] = pMatch[2]!.trim();
+        }
+        calls.push({ name: fMatch[1]!, arguments: JSON.stringify(args) });
+    }
+    return calls;
+}
+
+function recoverToolCallsFromText(
+    content: string,
+    knownToolNames: Set<string>,
+    generateId: () => string,
+): { calls: LLMToolCall[]; cleanContent: string } | null {
+    if (!content || content.length < 10) return null;
+
+    const calls: LLMToolCall[] = [];
+    let cleanContent = content;
+    const isKnownTool = (name: string) => knownToolNames.has(name);
+
+    const toolCallPattern = /<tool_call>([\s\S]*?)<\/tool_call>/g;
+    let tcMatch: RegExpExecArray | null;
+    while ((tcMatch = toolCallPattern.exec(content)) !== null) {
+        const parsedCalls = parseTextToolCallBody(tcMatch[1]!);
+        let matched = false;
+        for (const parsed of parsedCalls) {
+            if (!isKnownTool(parsed.name)) continue;
+            matched = true;
+            calls.push({
+                id: generateId(),
+                type: 'function',
+                function: { name: parsed.name, arguments: parsed.arguments },
+            });
+        }
+        if (matched) cleanContent = cleanContent.replace(tcMatch[0], '');
+    }
+
+    if (calls.length === 0) return null;
+    return { calls, cleanContent: cleanContent.trim() };
+}
+
+function toolFallbackInstruction(tools: LLMToolDefinition[]): LLMChatMessage {
+    const toolLines = tools.map(tool => {
+        const fn = tool.function;
+        return `- ${fn.name}: ${fn.description}\n  parameters JSON schema: ${JSON.stringify(fn.parameters)}`;
+    });
+    return {
+        role: 'system',
+        content:
+            'The server does not support native OpenAI tool parsing for this request. '
+            + 'Use this text tool protocol instead.\n\n'
+            + 'When you need a tool, respond with exactly one or more tool calls and no prose:\n'
+            + '<tool_call>tool_name({"argument":"value"})</tool_call>\n\n'
+            + 'After tool results are provided, answer the user normally. Available tools:\n'
+            + toolLines.join('\n'),
+    };
+}
+
+function withTextToolFallbackMessages(messages: LLMChatMessage[], tools: LLMToolDefinition[]): LLMChatMessage[] {
+    return [toolFallbackInstruction(tools), ...messages];
+}
+
+function withoutNativeTools(body: Record<string, unknown>, tools: LLMToolDefinition[]): Record<string, unknown> {
+    const fallbackBody = { ...body };
+    delete fallbackBody['tools'];
+    delete fallbackBody['tool_choice'];
+    fallbackBody['messages'] = withTextToolFallbackMessages(
+        (body['messages'] as LLMChatMessage[]) ?? [],
+        tools,
+    );
+    return fallbackBody;
+}
+
 export class OpenAICompatibleClient extends BaseLLMClient {
+    private warnedVllmToolFallback = false;
+
     /**
      * DiffusionGemma on trimmed vLLM builds has no server-side reasoning or
      * tool-call parser — the native channel protocol is handled client-side
@@ -85,6 +309,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         super({ ...options, url: base }, auditor);
     }
 
+    private warnVllmToolFallback(): void {
+        if (this.warnedVllmToolFallback) return;
+        this.warnedVllmToolFallback = true;
+        console.warn(`[OpenAI] ${VLLM_AUTO_TOOL_CHOICE_HINT}`);
+    }
+
     // ========================================================================
     // Chat
     // ========================================================================
@@ -96,7 +326,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // Structured output and tools can now be used together.\n        // The provider sends both response_format and tools in the request.\n        // The Router handles skipping validation when the response contains tool calls.
 
         const url = this.buildUrl('/chat/completions');
-        const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
+        const tools = options?.tools;
 
         const body: Record<string, unknown> = {
             model: this.options.model,
@@ -134,12 +364,16 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        const response = await httpRequest<OpenAIResponse>(url, {
-            method: 'POST',
-            headers: buildHeaders(this.options),
-            body,
-            timeout: this.options.timeout ?? 30000,
-        });
+        const response = await requestWithVllmToolFallback<OpenAIResponse>(
+            url,
+            {
+                headers: buildHeaders(this.options),
+                body,
+                timeout: this.options.timeout ?? 30000,
+            },
+            tools,
+            () => this.warnVllmToolFallback(),
+        );
 
         const data = response.data;
         const choice = data.choices[0];
@@ -193,6 +427,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             }
         }
 
+        if (!toolCalls?.length && tools?.length && content) {
+            const knownToolNames = new Set(tools.map(tool => tool.function.name));
+            const recovered = recoverToolCallsFromText(content, knownToolNames, () => this.generateToolCallId());
+            if (recovered) {
+                toolCalls = recovered.calls;
+                content = recovered.cleanContent;
+            }
+        }
+
         const result: LLMChatResponse = {
             message: {
                 role: 'assistant',
@@ -225,7 +468,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         const url = this.buildUrl('/chat/completions');
-        const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
+        const tools = options?.tools;
 
         const body: Record<string, unknown> = {
             model: this.options.model,
@@ -268,109 +511,130 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             function: { name: string; arguments: string };
         }> = new Map();
 
-        const stream = httpStream(url, {
-            method: 'POST',
-            headers: buildHeaders(this.options),
-            body,
-            timeout: this.options.timeout ?? 120000,
-        });
+        let activeBody = body;
+        let retriedWithTextTools = false;
 
         let usage: TokenUsageInfo | undefined;
         // Accumulates reasoning deltas from servers that stream a dedicated
         // `reasoning` / `reasoning_content` field (vLLM, DeepSeek-R1, etc.).
         let reasoningBuffer = '';
 
-        for await (const { data } of parseSSE(stream)) {
+        while (true) {
+            const stream = httpStream(url, {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: activeBody,
+                timeout: this.options.timeout ?? 120000,
+            });
+
             try {
-                const parsed = JSON.parse(data) as {
-                    choices?: Array<{
-                        delta?: {
-                            content?: string;
-                            // Reasoning-model chain-of-thought deltas (vLLM
-                            // `--reasoning-parser`, DeepSeek-R1, etc.).
-                            reasoning?: string;
-                            reasoning_content?: string;
-                            tool_calls?: Array<{
-                                index: number;
-                                id?: string;
-                                type?: string;
-                                function?: { name?: string; arguments?: string };
+                for await (const { data } of parseSSE(stream)) {
+                    try {
+                        const parsed = JSON.parse(data) as {
+                            choices?: Array<{
+                                delta?: {
+                                    content?: string;
+                                    // Reasoning-model chain-of-thought deltas (vLLM
+                                    // `--reasoning-parser`, DeepSeek-R1, etc.).
+                                    reasoning?: string;
+                                    reasoning_content?: string;
+                                    tool_calls?: Array<{
+                                        index: number;
+                                        id?: string;
+                                        type?: string;
+                                        function?: { name?: string; arguments?: string };
+                                    }>;
+                                };
+                                finish_reason?: string;
                             }>;
+                            usage?: {
+                                prompt_tokens: number;
+                                completion_tokens: number;
+                                total_tokens: number;
+                                prompt_tokens_details?: {
+                                    cached_tokens?: number;
+                                };
+                            };
                         };
-                        finish_reason?: string;
-                    }>;
-                    usage?: {
-                        prompt_tokens: number;
-                        completion_tokens: number;
-                        total_tokens: number;
-                        prompt_tokens_details?: {
-                            cached_tokens?: number;
-                        };
-                    };
-                };
 
-                if (parsed.usage) {
-                    usage = {
-                        inputTokens: parsed.usage.prompt_tokens,
-                        outputTokens: parsed.usage.completion_tokens,
-                        totalTokens: parsed.usage.total_tokens,
-                        cachedTokens: parsed.usage.prompt_tokens_details?.cached_tokens,
-                    };
-                }
+                        if (parsed.usage) {
+                            usage = {
+                                inputTokens: parsed.usage.prompt_tokens,
+                                outputTokens: parsed.usage.completion_tokens,
+                                totalTokens: parsed.usage.total_tokens,
+                                cachedTokens: parsed.usage.prompt_tokens_details?.cached_tokens,
+                            };
+                        }
 
-                const delta = parsed.choices?.[0]?.delta;
-                if (!delta) continue;
+                        const delta = parsed.choices?.[0]?.delta;
+                        if (!delta) continue;
 
-                // Surface server-side reasoning deltas as thinking events.
-                const reasoningDelta = delta.reasoning ?? delta.reasoning_content;
-                if (reasoningDelta) {
-                    reasoningBuffer += reasoningDelta;
-                    yield { type: 'thinking', content: reasoningDelta };
-                }
+                        // Surface server-side reasoning deltas as thinking events.
+                        const reasoningDelta = delta.reasoning ?? delta.reasoning_content;
+                        if (reasoningDelta) {
+                            reasoningBuffer += reasoningDelta;
+                            yield { type: 'thinking', content: reasoningDelta };
+                        }
 
-                if (delta.content) {
-                    decoder.push(delta.content);
-                    if (this.gemmaNative) {
-                        while (decoderEvents.length) yield decoderEvents.shift()!;
-                    } else {
-                        yield { type: 'text', content: delta.content };
-                    }
-                }
-
-                // Accumulate streamed tool calls
-                if (delta.tool_calls) {
-                    for (const tc of delta.tool_calls) {
-                        const existing = toolCallAccum.get(tc.index);
-                        if (!existing) {
-                            toolCallAccum.set(tc.index, {
-                                id: tc.id || this.generateToolCallId(),
-                                type: 'function',
-                                function: {
-                                    name: tc.function?.name || '',
-                                    arguments: tc.function?.arguments || '',
-                                },
-                            });
-                        } else {
-                            if (tc.function?.arguments) {
-                                existing.function.arguments += tc.function.arguments;
-                            }
-                            if (tc.function?.name) {
-                                existing.function.name += tc.function.name;
+                        if (delta.content) {
+                            decoder.push(delta.content);
+                            if (this.gemmaNative) {
+                                while (decoderEvents.length) yield decoderEvents.shift()!;
+                            } else {
+                                yield { type: 'text', content: delta.content };
                             }
                         }
-                    }
-                }
 
-                // Emit tool calls when stream finishes
-                if (parsed.choices?.[0]?.finish_reason === 'tool_calls' || parsed.choices?.[0]?.finish_reason === 'stop') {
-                    if (toolCallAccum.size > 0) {
-                        const calls = Array.from(toolCallAccum.values())
-                            .map(tc => this.normalizeToolCall(tc));
-                        yield { type: 'tool_call', calls };
+                        // Accumulate streamed tool calls
+                        if (delta.tool_calls) {
+                            for (const tc of delta.tool_calls) {
+                                const existing = toolCallAccum.get(tc.index);
+                                if (!existing) {
+                                    toolCallAccum.set(tc.index, {
+                                        id: tc.id || this.generateToolCallId(),
+                                        type: 'function',
+                                        function: {
+                                            name: tc.function?.name || '',
+                                            arguments: tc.function?.arguments || '',
+                                        },
+                                    });
+                                } else {
+                                    if (tc.function?.arguments) {
+                                        existing.function.arguments += tc.function.arguments;
+                                    }
+                                    if (tc.function?.name) {
+                                        existing.function.name += tc.function.name;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Emit tool calls when stream finishes
+                        if (parsed.choices?.[0]?.finish_reason === 'tool_calls' || parsed.choices?.[0]?.finish_reason === 'stop') {
+                            if (toolCallAccum.size > 0) {
+                                const calls = Array.from(toolCallAccum.values())
+                                    .map(tc => this.normalizeToolCall(tc));
+                                yield { type: 'tool_call', calls };
+                            }
+                        }
+                    } catch {
+                        // Skip unparseable SSE data
                     }
                 }
-            } catch {
-                // Skip unparseable SSE data
+                break;
+            } catch (error) {
+                if (
+                    !retriedWithTextTools
+                    && tools?.length
+                    && hasToolDefinitions(activeBody)
+                    && isVllmAutoToolChoiceError(error)
+                ) {
+                    this.warnVllmToolFallback();
+                    activeBody = withoutNativeTools(activeBody, tools);
+                    retriedWithTextTools = true;
+                    continue;
+                }
+                throw error;
             }
         }
 
@@ -421,6 +685,16 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                     type: 'function' as const,
                     function: { name: tc.name, arguments: tc.argumentsJson },
                 }));
+                yield { type: 'tool_call', calls: finalToolCalls };
+            }
+        }
+
+        if (!finalToolCalls?.length && tools?.length && cleanContent) {
+            const knownToolNames = new Set(tools.map(tool => tool.function.name));
+            const recovered = recoverToolCallsFromText(cleanContent, knownToolNames, () => this.generateToolCallId());
+            if (recovered) {
+                finalToolCalls = recovered.calls;
+                cleanContent = recovered.cleanContent;
                 yield { type: 'tool_call', calls: finalToolCalls };
             }
         }
@@ -506,12 +780,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // ========================================================================
 
     private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {
-        // OpenAI format is our canonical format, minimal conversion needed
-        return messages.map(msg => ({
-            ...msg,
-            // Ensure content is never null/undefined
-            content: msg.content ?? '',
-        }));
+        return normalizeMessagesForOpenAICompat(messages);
     }
 
     private buildRequestParams(options?: ChatOptions): Record<string, unknown> {
