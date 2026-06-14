@@ -1,5 +1,7 @@
 # universal-llm-client
 
+[![npm version](https://img.shields.io/npm/v/universal-llm-client.svg)](https://www.npmjs.com/package/universal-llm-client) [![CI](https://github.com/igorls/universal-llm-client/actions/workflows/ci.yml/badge.svg)](https://github.com/igorls/universal-llm-client/actions/workflows/ci.yml) [![npm downloads](https://img.shields.io/npm/dm/universal-llm-client.svg)](https://www.npmjs.com/package/universal-llm-client) [![License: MIT](https://img.shields.io/npm/l/universal-llm-client.svg)](https://github.com/igorls/universal-llm-client/blob/main/LICENSE)
+
 A universal LLM client for JavaScript/TypeScript with **transparent provider failover** and a **provider-agnostic reasoning API** — one set of code across OpenAI, Anthropic, Google Gemini, Ollama, vLLM, and any OpenAI-compatible endpoint. Streaming tool execution, structured output, generation stats, and native observability included.
 
 ```typescript
