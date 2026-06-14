@@ -1,12 +1,12 @@
 # universal-llm-client
 
-A universal LLM client for JavaScript/TypeScript with **transparent provider failover**, streaming tool execution, pluggable reasoning strategies, and native observability.
+A universal LLM client for JavaScript/TypeScript with **transparent provider failover** and a **provider-agnostic reasoning API** — one set of code across OpenAI, Anthropic, Google Gemini, Ollama, vLLM, and any OpenAI-compatible endpoint. Streaming tool execution, structured output, generation stats, and native observability included.
 
 ```typescript
 import { AIModel } from 'universal-llm-client';
 
 const model = new AIModel({
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash',
     providers: [
         { type: 'google', apiKey: process.env.GOOGLE_API_KEY },
         { type: 'openai', url: 'https://openrouter.ai/api', apiKey: process.env.OPENROUTER_KEY },
@@ -26,10 +26,13 @@ const response = await model.chat([
 ## Features
 
 - 🔄 **Transparent Failover** — Priority-ordered provider chain with retries, health tracking, and cooldowns
+- 🧠 **Unified Reasoning** — One `thinking` flag (`true`/`false` or a level: `'minimal' | 'low' | 'medium' | 'high'`) mapped to each backend's native control; chain-of-thought surfaced as `response.reasoning` + streaming `thinking` events (with `<think>`-tag parsing as a fallback)
 - 🛠️ **Tool Calling** — Register tools once, works across all providers. Autonomous multi-turn execution loop
 - 📋 **Structured Output** — Zod schema validation, JSON Schema support, streaming, and type-safe responses
 - 🌊 **Streaming** — First-class async generator streaming with pluggable decoder strategies
-- 🧠 **Reasoning** — Native `<think>` tag parsing, interleaved reasoning, and model thinking support
+- 🔬 **Deep Research** — Drive Google Gemini's agentic Deep Research (background interactions with polling + streaming)
+- 📈 **Generation Stats** — `usage.tokensPerSecond` and `durationMs` reported across providers
+- 🔌 **Flexible Transport** — Custom headers, query params, auth header/prefix, and base path for Azure OpenAI and gateways
 - 🔍 **Observability** — Built-in auditor interface for logging, cost tracking, and behavioral analysis
 - 🌐 **Universal Runtime** — Node.js 22+, Bun, Deno, and modern browsers
 - 🤖 **MCP Native** — Bridge MCP servers to LLM tools with zero glue code
