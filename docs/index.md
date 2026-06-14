@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Universal LLM Client"
   text: "One API. Every Provider."
-  tagline: Transparent failover, structured output, streaming, tool execution, and observability — across OpenAI, Google Gemini, Ollama, and any OpenAI-compatible service.
+  tagline: A provider-agnostic reasoning API with transparent failover — across OpenAI, Anthropic, Google Gemini, Ollama, vLLM, and any OpenAI-compatible service. Structured output, tool execution, Deep Research, and observability included.
   actions:
     - theme: brand
       text: Get Started

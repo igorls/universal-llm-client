@@ -22,6 +22,9 @@ const icons = {
     wrench:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
     activity:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
     plug:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a6 6 0 0 1-6 6 6 6 0 0 1-6-6V8z"/></svg>',
+    bulb:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5.76.76 1.23 1.52 1.41 2.5"/></svg>',
+    search:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+    anthropic:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.6 5.6l12.8 12.8M18.4 5.6 5.6 18.4"/></svg>',
     // UI
     copy:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
     check:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
@@ -32,12 +35,13 @@ const icons = {
 
 /* ── Provider data ───────────────────────────────────── */
 const providers = [
-    { icon: icons.ollama,  name: 'Ollama',      desc: 'Local models' },
-    { icon: icons.openai,  name: 'OpenAI',      desc: 'GPT-5.4' },
-    { icon: icons.google,  name: 'Google AI',   desc: 'Gemini' },
-    { icon: icons.cloud,   name: 'Vertex AI',   desc: 'Enterprise' },
-    { icon: icons.zap,     name: 'LlamaCpp',    desc: 'Native' },
-    { icon: icons.shuffle, name: 'OpenRouter',  desc: 'Gateway' },
+    { icon: icons.ollama,    name: 'Ollama',      desc: 'Local models' },
+    { icon: icons.openai,    name: 'OpenAI',      desc: 'GPT + o-series' },
+    { icon: icons.anthropic, name: 'Anthropic',   desc: 'Claude' },
+    { icon: icons.google,    name: 'Google AI',   desc: 'Gemini' },
+    { icon: icons.cloud,     name: 'Vertex AI',   desc: 'Enterprise' },
+    { icon: icons.zap,       name: 'LlamaCpp',    desc: 'Native' },
+    { icon: icons.shuffle,   name: 'OpenRouter',  desc: 'Gateway' },
 ]
 
 /* ── Feature cards data ──────────────────────────────── */
@@ -49,6 +53,16 @@ const features = [
         visual: `Google  →  OpenRouter  →  Ollama
   ✗ 500     ✗ timeout     ✓ 200 ok
   ╰── retry 2x ──╯  ╰── seamless ──╯`,
+    },
+    {
+        icon: icons.bulb,
+        name: 'Unified Reasoning',
+        desc: 'One thinking flag — boolean or level (minimal/low/medium/high) — mapped to each backend. Chain-of-thought surfaced as response.reasoning and live thinking events.',
+        visual: `thinking: 'high'   →  one flag
+  OpenAI     reasoning_effort
+  Gemini     thinkingLevel
+  Anthropic  budget_tokens
+res.reasoning  // chain-of-thought`,
     },
     {
         icon: icons.braces,
@@ -77,6 +91,15 @@ const features = [
   ↑               │
   ╰── { temp: 22, ──╯
        sunny: true }`,
+    },
+    {
+        icon: icons.search,
+        name: 'Gemini Deep Research',
+        desc: "Drive Gemini's agentic Deep Research — background interactions with polling and streaming — returning a cited report.",
+        visual: `deepResearch('history of TPUs')
+  ▸ plan → search → synthesize
+  status:  completed
+  report + steps + sources`,
     },
     {
         icon: icons.activity,
@@ -156,7 +179,7 @@ const codeTabs = [
             ``,
             `${S(c,'// Autonomous loop — model calls tools until done')}`,
             `${S(k,'const')} response = ${S(k,'await')} model.${S(f,'chatWithTools')}(messages)`,
-            `console.${S(f,'log')}(response.toolTrace)  ${S(c,'// Full execution trace')}`,
+            `console.${S(f,'log')}(response.toolExecutions)  ${S(c,'// Full execution trace')}`,
         ].join('\n'),
     },
     {

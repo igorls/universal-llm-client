@@ -83,10 +83,43 @@ Choose how to decode the stream:
 
 ```typescript
 // Standard chat (default)
-const stream = model.chatStream(messages, { decoder: 'standard' });
+const stream = model.chatStream(messages, { decoder: 'standard-chat' });
 
-// Interleaved reasoning (for thinking models)
+// Interleaved reasoning (parses <think>/<progress> tags from text streams)
 const stream = model.chatStream(messages, { decoder: 'interleaved-reasoning' });
+```
+
+## Reasoning & Thinking
+
+Enable model thinking with one provider-agnostic flag — a boolean or a level
+(`'minimal' | 'low' | 'medium' | 'high'`). The chain-of-thought is surfaced on
+`response.reasoning` (and as `thinking` stream events). See the
+[Reasoning & Thinking guide](/guide/reasoning) for the full per-provider mapping.
+
+```typescript
+const res = await model.chat(messages, { thinking: 'high' });
+console.log(res.message.content); // clean final answer
+console.log(res.reasoning);       // chain-of-thought
+```
+
+## Deep Research
+
+Drive Google Gemini's agentic, long-running research mode (background interactions
+with polling and streaming). See the [Deep Research guide](/guide/deep-research).
+
+```typescript
+const result = await model.deepResearch('Research the history of Google TPUs.');
+console.log(result.status, result.report);
+```
+
+## Generation Stats
+
+Decode throughput is reported on every response's `usage` — server-precise for Ollama,
+client-measured wall-clock for the others:
+
+```typescript
+const res = await model.chat(messages);
+console.log(res.usage?.tokensPerSecond, res.usage?.durationMs);
 ```
 
 ## Tool Calling
