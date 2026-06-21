@@ -165,6 +165,17 @@ export class OllamaClient extends BaseLLMClient {
         // Ollama `think` is on/off (no levels); default on for thinking models.
         body['think'] = resolveThinking(options?.thinking, this.options.thinking)?.enabled ?? true;
 
+        // Handle structured output via format parameter — same as chat(). Without
+        // this, streaming structured output is unconstrained and the model can emit
+        // malformed JSON that only fails at the final parse.
+        const schemaOptions = this.extractSchemaOptions(options);
+        if (schemaOptions) {
+            body['format'] = this.buildFormatParameter(schemaOptions);
+        } else if (options?.responseFormat) {
+            // Legacy json_object mode - map to Ollama's "json" format
+            body['format'] = 'json';
+        }
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
