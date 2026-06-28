@@ -6,9 +6,9 @@
  */
 
 import { BaseLLMClient } from '../client.js';
-import { resolveThinking, isOpenAIReasoningModel } from '../thinking.js';
+import { resolveThinking, isOpenAIReasoningModel, supportsChatTemplateKwargs } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
-import { StandardChatDecoder } from '../stream-decoder.js';
+import { createDecoder, StandardChatDecoder } from '../stream-decoder.js';
 import {
     normalizeJsonSchema,
     getJsonSchemaFromConfig,
@@ -26,7 +26,7 @@ import type {
     LLMToolDefinition,
     TokenUsageInfo,
 } from '../interfaces.js';
-import type { DecodedEvent } from '../stream-decoder.js';
+import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 import { isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
 
@@ -497,12 +497,18 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        // In gemma-native mode the decoder classifies thought-channel content,
-        // so we yield ITS events (thinking vs text) instead of the raw deltas.
+        // In gemma-native mode, or when a caller selects an explicit decoder,
+        // the decoder classifies content into typed events instead of exposing
+        // raw deltas with protocol tags still attached.
         const decoderEvents: DecodedEvent[] = [];
-        const decoder = new StandardChatDecoder(
-            this.gemmaNative ? e => decoderEvents.push(e) : () => {},
-        );
+        const decoderOption = options?.decoder;
+        const decoderInstanceProvided = Boolean(decoderOption && typeof decoderOption === 'object');
+        const yieldDecoderEvents = !decoderInstanceProvided && (this.gemmaNative || typeof decoderOption === 'string');
+        const decoder: StreamDecoder = typeof decoderOption === 'string'
+            ? createDecoder(decoderOption, e => decoderEvents.push(e))
+            : decoderInstanceProvided
+                ? decoderOption as StreamDecoder
+                : new StandardChatDecoder(this.gemmaNative ? e => decoderEvents.push(e) : () => {});
 
         // Track accumulated tool calls across chunks
         const toolCallAccum: Map<number, {
@@ -578,7 +584,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
                         if (delta.content) {
                             decoder.push(delta.content);
-                            if (this.gemmaNative) {
+                            if (yieldDecoderEvents) {
                                 while (decoderEvents.length) yield decoderEvents.shift()!;
                             } else {
                                 yield { type: 'text', content: delta.content };
@@ -639,7 +645,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         }
 
         decoder.flush();
-        if (this.gemmaNative) {
+        if (yieldDecoderEvents) {
             while (decoderEvents.length) yield decoderEvents.shift()!;
         }
 
@@ -798,15 +804,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // A user-supplied value (via parameters) always wins.
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
         if (thinking) {
-            const isOfficialOpenAI = (this.options.url ?? '').includes('api.openai.com');
             if (isOpenAIReasoningModel(this.options.model)) {
                 if (params['reasoning_effort'] === undefined) {
                     params['reasoning_effort'] = thinking.enabled ? (thinking.level ?? 'medium') : 'minimal';
                 }
-            } else if (!isOfficialOpenAI) {
-                // `chat_template_kwargs` is a vLLM/Qwen extension. Official OpenAI
-                // rejects unknown body fields (and gpt-4o has no thinking toggle),
-                // so only send it to self-hosted / compatible gateways.
+            } else if (supportsChatTemplateKwargs(this.options.url)) {
+                // `chat_template_kwargs` is a self-hosted vLLM/Qwen extension.
+                // Official OpenAI and hosted OpenAI-compatible gateways (Cerebras,
+                // Groq, Fireworks, …) reject unknown body fields with HTTP 400,
+                // so only send it to endpoints not on the strict-host list.
                 const existing = (params['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
                 params['chat_template_kwargs'] = { enable_thinking: thinking.enabled, ...existing };
             }

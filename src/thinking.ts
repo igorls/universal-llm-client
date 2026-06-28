@@ -46,6 +46,42 @@ export function isOpenAIReasoningModel(model: string): boolean {
 }
 
 /**
+ * Hosted, OpenAI-*compatible* gateways that validate the request body strictly
+ * and reject unknown fields with HTTP 400 — just like official OpenAI. The
+ * `chat_template_kwargs` knob (below) is a self-hosted vLLM/SGLang extension and
+ * must NOT be sent to these. Matched as case-insensitive host substrings.
+ */
+const STRICT_OPENAI_COMPAT_HOSTS: readonly string[] = [
+    'api.openai.com',
+    'api.cerebras.ai',
+    'api.groq.com',
+    'api.fireworks.ai',
+    'api.together.xyz',
+    'api.together.ai',
+    'api.mistral.ai',
+    'api.deepseek.com',
+    'api.perplexity.ai',
+    'openrouter.ai',
+    'api.x.ai',
+];
+
+/**
+ * Whether an OpenAI-compatible endpoint accepts the vLLM/SGLang
+ * `chat_template_kwargs` extension (used to toggle `enable_thinking`).
+ *
+ * This is a self-hosted-server feature. Commercial hosted gateways that expose
+ * an OpenAI-compatible surface (OpenAI, Cerebras, Groq, Fireworks, Together,
+ * Mistral, DeepSeek, OpenRouter, …) reject unknown body fields, so we only send
+ * it to endpoints not on the strict list (assumed self-hosted vLLM/Qwen). When
+ * the URL is unknown/empty we default to permissive (self-hosted) behavior to
+ * preserve the prior contract for local servers.
+ */
+export function supportsChatTemplateKwargs(url: string | undefined): boolean {
+    const u = (url ?? '').toLowerCase();
+    return !STRICT_OPENAI_COMPAT_HOSTS.some((host) => u.includes(host));
+}
+
+/**
  * Gemini 2.5 `thinkingBudget` for a level. 0 disables, -1 is dynamic, and the
  * Flash range is 0–24576. A bare `true` (no level) maps to dynamic (-1).
  */

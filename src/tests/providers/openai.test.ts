@@ -454,6 +454,25 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(getBody()!['chat_template_kwargs']).toBeUndefined();
         });
 
+        test('does NOT send chat_template_kwargs to hosted gateways that reject it (Cerebras)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: 'https://api.cerebras.ai', thinking: false });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            // Cerebras is OpenAI-compatible but rejects unknown body fields (HTTP 400).
+            expect(getBody()!['chat_template_kwargs']).toBeUndefined();
+        });
+
+        test('still sends chat_template_kwargs to self-hosted vLLM (localhost)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: VLLM_URL, thinking: false });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect((getBody()!['chat_template_kwargs'] as Record<string, unknown>)['enable_thinking']).toBe(false);
+        });
+
         test('per-call thinking overrides client-level thinking (vLLM)', async () => {
             const getBody = mockFetchAndCapture();
             const client = createClient({ thinking: true, url: VLLM_URL });
