@@ -13,10 +13,6 @@ import { z } from 'zod';
 import { OpenAICompatibleClient } from '../../providers/openai.js';
 import type { LLMClientOptions, ChatOptions, LLMChatMessage, LLMToolDefinition } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
-import {
-    type StructuredOutputOptions,
-    parseStructured,
-} from '../../structured-output.js';
 import type { DecodedEvent } from '../../stream-decoder.js';
 
 // ============================================================================
@@ -83,6 +79,30 @@ describe('OpenAICompatibleClient Structured Output', () => {
 
         return () => capturedBody;
     }
+
+    test('strips runtime-only message metadata before sending OpenAI-compatible payloads', async () => {
+        const getBody = mockFetchAndCapture();
+        const client = createClient({ url: 'https://api.cerebras.ai' });
+
+        const messages = [
+            { role: 'system', content: 'base', timestamp: new Date('2026-06-29T00:00:00.000Z') },
+            {
+                role: 'user',
+                content: 'hello',
+                user: { timestamp: '2026-06-29T00:00:01.000Z' },
+                metadata: { sessionId: 'session-1' },
+            },
+            { role: 'system', content: 'late', timestamp: 123 },
+        ] as unknown as LLMChatMessage[];
+
+        await client.chat(messages);
+
+        expect(getBody()!['messages']).toEqual([
+            { role: 'system', content: 'base' },
+            { role: 'user', content: 'hello' },
+            { role: 'user', content: '[SYSTEM MESSAGE]\nlate' },
+        ]);
+    });
 
     // ========================================================================
     // VAL-PROVIDER-OPENAI-001: response_format json_schema Request
@@ -464,6 +484,37 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(getBody()!['chat_template_kwargs']).toBeUndefined();
         });
 
+        test('maps thinking:false to Cerebras reasoning_effort none', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b', thinking: false });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            const body = getBody()!;
+            expect(body['reasoning_effort']).toBe('none');
+            expect(body['chat_template_kwargs']).toBeUndefined();
+        });
+
+        test('maps thinking levels to Cerebras-supported reasoning_effort values', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { thinking: 'minimal' });
+
+            expect(getBody()!['reasoning_effort']).toBe('low');
+        });
+
+        test('uses max_completion_tokens for Cerebras instead of deprecated max_tokens', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { maxTokens: 32 });
+
+            const body = getBody()!;
+            expect(body['max_completion_tokens']).toBe(32);
+            expect(body['max_tokens']).toBeUndefined();
+        });
+
         test('still sends chat_template_kwargs to self-hosted vLLM (localhost)', async () => {
             const getBody = mockFetchAndCapture();
             const client = createClient({ url: VLLM_URL, thinking: false });
@@ -679,6 +730,15 @@ describe('OpenAICompatibleClient Structured Output', () => {
             const cap = captureRequest();
             await createClient({ apiKey: 'k', extraHeaders: { 'x-custom': 'v' } }).chat(hi);
             expect(cap.headers['x-custom']).toBe('v');
+        });
+
+        test('uses known Cerebras context metadata when /models omits max_model_len', async () => {
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
+
+            await expect(client.getModelInfo()).resolves.toMatchObject({
+                model: 'gemma-4-31b',
+                contextLength: 131_072,
+            });
         });
     });
 
@@ -1014,6 +1074,97 @@ describe('OpenAICompatibleClient Structured Output', () => {
             } finally {
                 console.warn = originalWarn;
             }
+        });
+
+        test('surfaces finish reason and reasoning token usage from OpenAI-compatible responses', async () => {
+            mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: 'OK',
+                    },
+                    finish_reason: 'stop',
+                }],
+                usage: {
+                    prompt_tokens: 10,
+                    completion_tokens: 6,
+                    total_tokens: 16,
+                    completion_tokens_details: { reasoning_tokens: 4 },
+                },
+            });
+
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
+            const response = await client.chat([{ role: 'user', content: 'hi' }]);
+
+            expect(response.finishReason).toBe('stop');
+            expect(response.usage?.reasoningTokens).toBe(4);
+        });
+
+        test('recovers bare Gemma call syntax from text-level tool fallback responses', async () => {
+            globalThis.fetch = mock(async (_input: string | URL | Request, _init?: RequestInit) => {
+                return new Response(JSON.stringify({
+                    ...OPENAI_RESPONSE,
+                    choices: [{
+                        index: 0,
+                        message: {
+                            role: 'assistant',
+                            content: 'call:multiply({ "a": 17, "b": 23 })',
+                        },
+                        finish_reason: 'stop',
+                    }],
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+
+            const client = createClient({ url: 'https://api.cerebras.ai' });
+            const response = await client.chat([{ role: 'user', content: 'Multiply 17 by 23' }], {
+                tools: [multiplyTool],
+            });
+
+            expect(response.message.content).toBe('');
+            expect(response.message.tool_calls?.[0]?.function).toEqual({
+                name: 'multiply',
+                arguments: '{"a":17,"b":23}',
+            });
+        });
+
+        test('recovers a bare Gemma call line after stray prose', async () => {
+            globalThis.fetch = mock(async (_input: string | URL | Request, _init?: RequestInit) => {
+                return new Response(JSON.stringify({
+                    ...OPENAI_RESPONSE,
+                    choices: [{
+                        index: 0,
+                        message: {
+                            role: 'assistant',
+                            content: [
+                                'I should use the calculator.',
+                                'thought',
+                                'call:multiply({ "a": 17, "b": 23 })',
+                            ].join('\n'),
+                        },
+                        finish_reason: 'stop',
+                    }],
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+
+            const client = createClient({ url: 'https://api.cerebras.ai' });
+            const response = await client.chat([{ role: 'user', content: 'Multiply 17 by 23' }], {
+                tools: [multiplyTool],
+            });
+
+            expect(response.message.content).toContain('I should use the calculator.');
+            expect(response.message.content).not.toContain('call:multiply');
+            expect(response.message.tool_calls?.[0]?.function).toEqual({
+                name: 'multiply',
+                arguments: '{"a":17,"b":23}',
+            });
         });
 
         test('does not auto-send registered tools for plain chat', async () => {

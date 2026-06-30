@@ -20,11 +20,13 @@ import type {
     LLMChatMessage,
     LLMChatResponse,
     ChatOptions,
+    ModelMetadata,
     OpenAIResponse,
     OpenAIModelInfo,
     LLMToolCall,
     LLMToolDefinition,
     TokenUsageInfo,
+    ThinkingLevel,
 } from '../interfaces.js';
 import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
@@ -33,31 +35,85 @@ import { isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffu
 const VLLM_AUTO_TOOL_CHOICE_HINT =
     'vLLM rejected automatic tool choice. Retrying with text-level tool calling. To use native tool_calls, start vLLM with --enable-auto-tool-choice and --tool-call-parser <parser>.';
 
+const CEREBRAS_MODEL_CONTEXT_LENGTHS: Readonly<Record<string, number>> = {
+    // Cerebras currently omits max context metadata from /v1/models for this
+    // served model. Live requests with ~90K prompt tokens succeed, so 128K is
+    // a conservative fallback that avoids treating it like an 8K local server.
+    'gemma-4-31b': 131_072,
+};
+
+function isCerebrasEndpoint(url: string | undefined): boolean {
+    return (url ?? '').toLowerCase().includes('api.cerebras.ai');
+}
+
+function normalizeModelId(model: string): string {
+    return model.toLowerCase();
+}
+
+function knownOpenAICompatModelInfo(url: string | undefined, model: string): ModelMetadata | undefined {
+    if (!isCerebrasEndpoint(url)) return undefined;
+    const contextLength = CEREBRAS_MODEL_CONTEXT_LENGTHS[normalizeModelId(model)];
+    return contextLength ? { model, contextLength } : undefined;
+}
+
+function applyMaxTokensParam(
+    params: Record<string, unknown>,
+    maxTokens: number | undefined,
+    url: string | undefined,
+): void {
+    if (maxTokens === undefined) return;
+    if (isCerebrasEndpoint(url)) {
+        if (params['max_completion_tokens'] === undefined && params['max_tokens'] === undefined) {
+            params['max_completion_tokens'] = maxTokens;
+        }
+        return;
+    }
+    if (params['max_tokens'] === undefined) params['max_tokens'] = maxTokens;
+}
+
+function cerebrasReasoningEffort(level: ThinkingLevel | undefined): 'low' | 'medium' | 'high' {
+    if (level === 'high') return 'high';
+    if (level === 'low' || level === 'minimal') return 'low';
+    return 'medium';
+}
+
 function normalizeMessagesForOpenAICompat(messages: LLMChatMessage[]): LLMChatMessage[] {
     let sawNonSystem = false;
 
     return messages.map(message => {
         if (message.role !== 'system') {
             sawNonSystem = true;
-            return {
-                ...message,
-                content: message.content ?? '',
-            };
+            return toOpenAICompatMessage(message, message.content);
         }
 
         if (!sawNonSystem) {
-            return {
-                ...message,
-                content: message.content ?? '',
-            };
+            return toOpenAICompatMessage(message, message.content);
         }
 
-        return {
-            ...message,
-            role: 'user' as const,
+        return toOpenAICompatMessage({
+            role: 'user',
             content: `[SYSTEM MESSAGE]\n${stringifyMessageContent(message.content)}`,
-        };
+        });
     });
+}
+
+function toOpenAICompatMessage(
+    message: LLMChatMessage,
+    content: LLMChatMessage['content'] = message.content,
+): LLMChatMessage {
+    const normalized: LLMChatMessage = {
+        role: message.role,
+        content: content ?? '',
+    };
+
+    if (message.role === 'assistant' && message.tool_calls) {
+        normalized.tool_calls = message.tool_calls;
+    }
+    if (message.role === 'tool' && message.tool_call_id) {
+        normalized.tool_call_id = message.tool_call_id;
+    }
+
+    return normalized;
 }
 
 function stringifyMessageContent(content: LLMChatMessage['content']): string {
@@ -163,6 +219,15 @@ function parseTextToolCallBody(content: string): Array<{ name: string; arguments
         /* not structured JSON */
     }
 
+    const bareGemmaCallMatch = /^call:([@A-Za-z_][@A-Za-z0-9_.:-]*)\s*\(([\s\S]*)\)\s*$/u.exec(body);
+    if (bareGemmaCallMatch) {
+        const rawArgs = bareGemmaCallMatch[2]!.trim();
+        const args = rawArgs ? parseJsonObject(rawArgs) : {};
+        if (args) {
+            return [{ name: bareGemmaCallMatch[1]!, arguments: JSON.stringify(args) }];
+        }
+    }
+
     const functionCallMatch = /^([@A-Za-z_][@A-Za-z0-9_.:-]*)\s*\(([\s\S]*)\)\s*$/u.exec(body);
     if (functionCallMatch) {
         const rawArgs = functionCallMatch[2]!.trim();
@@ -213,6 +278,36 @@ function recoverToolCallsFromText(
             });
         }
         if (matched) cleanContent = cleanContent.replace(tcMatch[0], '');
+    }
+
+    for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!/^\s*call:[@A-Za-z_][@A-Za-z0-9_.:-]*\s*\(/u.test(trimmed)) continue;
+        const parsedCalls = parseTextToolCallBody(trimmed);
+        let matched = false;
+        for (const parsed of parsedCalls) {
+            if (!isKnownTool(parsed.name)) continue;
+            matched = true;
+            calls.push({
+                id: generateId(),
+                type: 'function',
+                function: { name: parsed.name, arguments: parsed.arguments },
+            });
+        }
+        if (matched) cleanContent = cleanContent.replace(line, '');
+    }
+
+    if (calls.length === 0 && /^\s*call:[@A-Za-z_][@A-Za-z0-9_.:-]*\s*\(/u.test(content)) {
+        const parsedCalls = parseTextToolCallBody(content);
+        for (const parsed of parsedCalls) {
+            if (!isKnownTool(parsed.name)) continue;
+            calls.push({
+                id: generateId(),
+                type: 'function',
+                function: { name: parsed.name, arguments: parsed.arguments },
+            });
+        }
+        if (calls.length > 0) cleanContent = '';
     }
 
     if (calls.length === 0) return null;
@@ -391,6 +486,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 outputTokens: data.usage.completion_tokens,
                 totalTokens: data.usage.total_tokens,
                 cachedTokens: data.usage.prompt_tokens_details?.cached_tokens,
+                reasoningTokens: data.usage.completion_tokens_details?.reasoning_tokens,
                 durationMs,
                 tokensPerSecond: durationMs > 0
                     ? data.usage.completion_tokens / (durationMs / 1000)
@@ -444,6 +540,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             },
             ...(reasoning !== undefined && { reasoning }),
             usage,
+            finishReason: choice.finish_reason,
             provider: 'openai',
         };
 
@@ -557,6 +654,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                                 prompt_tokens: number;
                                 completion_tokens: number;
                                 total_tokens: number;
+                                completion_tokens_details?: {
+                                    reasoning_tokens?: number;
+                                };
                                 prompt_tokens_details?: {
                                     cached_tokens?: number;
                                 };
@@ -569,6 +669,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                                 outputTokens: parsed.usage.completion_tokens,
                                 totalTokens: parsed.usage.total_tokens,
                                 cachedTokens: parsed.usage.prompt_tokens_details?.cached_tokens,
+                                reasoningTokens: parsed.usage.completion_tokens_details?.reasoning_tokens,
                             };
                         }
 
@@ -785,6 +886,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // Internals
     // ========================================================================
 
+    override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
+        const model = modelName ?? this.options.model;
+        return knownOpenAICompatModelInfo(this.options.url, model) ?? super.getModelInfo(model);
+    }
+
     private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {
         return normalizeMessagesForOpenAICompat(messages);
     }
@@ -795,7 +901,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             ...options?.parameters,
         };
         if (options?.temperature !== undefined) params['temperature'] = options.temperature;
-        if (options?.maxTokens !== undefined) params['max_tokens'] = options.maxTokens;
+        applyMaxTokensParam(params, options?.maxTokens, this.options.url);
 
         // Unified thinking flag. Per-call overrides model config; only emitted
         // when explicitly set, so servers that reject unknown fields are
@@ -804,7 +910,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // A user-supplied value (via parameters) always wins.
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
         if (thinking) {
-            if (isOpenAIReasoningModel(this.options.model)) {
+            if (isCerebrasEndpoint(this.options.url)) {
+                if (params['reasoning_effort'] === undefined && params['disable_reasoning'] === undefined) {
+                    params['reasoning_effort'] = thinking.enabled ? cerebrasReasoningEffort(thinking.level) : 'none';
+                }
+            } else if (isOpenAIReasoningModel(this.options.model)) {
                 if (params['reasoning_effort'] === undefined) {
                     params['reasoning_effort'] = thinking.enabled ? (thinking.level ?? 'medium') : 'minimal';
                 }
