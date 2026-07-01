@@ -495,6 +495,17 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(body['chat_template_kwargs']).toBeUndefined();
         });
 
+        test('enables Cerebras Gemma reasoning by model default', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            const body = getBody()!;
+            expect(body['reasoning_effort']).toBe('medium');
+            expect(body['chat_template_kwargs']).toBeUndefined();
+        });
+
         test('maps thinking levels to Cerebras-supported reasoning_effort values', async () => {
             const getBody = mockFetchAndCapture();
             const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
@@ -1130,6 +1141,156 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 name: 'multiply',
                 arguments: '{"a":17,"b":23}',
             });
+        });
+
+        test('recovers adjacent bare Gemma call syntax as multiple tool calls', async () => {
+            globalThis.fetch = mock(async (_input: string | URL | Request, _init?: RequestInit) => {
+                return new Response(JSON.stringify({
+                    ...OPENAI_RESPONSE,
+                    choices: [{
+                        index: 0,
+                        message: {
+                            role: 'assistant',
+                            content: 'call:multiply({ "a": 17, "b": 23 })call:multiply({ "a": 2, "b": 5 })',
+                        },
+                        finish_reason: 'stop',
+                    }],
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+
+            const client = createClient({ url: 'https://api.cerebras.ai' });
+            const response = await client.chat([{ role: 'user', content: 'Multiply two pairs' }], {
+                tools: [multiplyTool],
+            });
+
+            expect(response.message.content).toBe('');
+            expect(response.message.tool_calls?.map(call => call.function)).toEqual([
+                { name: 'multiply', arguments: '{"a":17,"b":23}' },
+                { name: 'multiply', arguments: '{"a":2,"b":5}' },
+            ]);
+        });
+
+        test('recovers loose bare Gemma call syntax from text-level tool fallback responses', async () => {
+            globalThis.fetch = mock(async (_input: string | URL | Request, _init?: RequestInit) => {
+                return new Response(JSON.stringify({
+                    ...OPENAI_RESPONSE,
+                    choices: [{
+                        index: 0,
+                        message: {
+                            role: 'assistant',
+                            content: 'call:multiply{a:2,b:3}',
+                        },
+                        finish_reason: 'stop',
+                    }],
+                }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }) as typeof fetch;
+
+            const client = createClient({ url: 'https://api.cerebras.ai' });
+            const response = await client.chat([{ role: 'user', content: 'Multiply 2 by 3' }], {
+                tools: [multiplyTool],
+            });
+
+            expect(response.message.content).toBe('');
+            expect(response.message.tool_calls?.[0]?.function).toEqual({
+                name: 'multiply',
+                arguments: '{"a":2,"b":3}',
+            });
+        });
+
+        test('recovers streamed bare Gemma call syntax from native reasoning deltas', async () => {
+            globalThis.fetch = mock(async (_input: string | URL | Request, _init?: RequestInit) => {
+                return new Response(
+                    'data: {"choices":[{"delta":{"reasoning":"call:multiply({\\"a\\":2,\\"b\\":3})"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                    {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    },
+                );
+            }) as typeof fetch;
+
+            const client = createClient({ url: 'https://api.cerebras.ai' });
+            const stream = client.chatStream([{ role: 'user', content: 'Multiply 2 by 3' }], {
+                tools: [multiplyTool],
+            });
+
+            const events: DecodedEvent[] = [];
+            let result: unknown;
+            while (true) {
+                const next = await stream.next();
+                if (next.done) {
+                    result = next.value;
+                    break;
+                }
+                events.push(next.value);
+            }
+
+            const toolCalls = events
+                .filter(event => event.type === 'tool_call')
+                .flatMap(event => (event as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+
+            expect(events.filter(event => event.type === 'thinking')).toEqual([]);
+            expect(toolCalls.map(call => call.function)).toEqual([
+                { name: 'multiply', arguments: '{"a":2,"b":3}' },
+            ]);
+            const final = result as {
+                message?: { tool_calls?: Array<{ function: { name: string; arguments: string } }> };
+                reasoning?: string;
+            };
+            expect(final.message?.tool_calls?.map(call => call.function)).toEqual([
+                { name: 'multiply', arguments: '{"a":2,"b":3}' },
+            ]);
+            expect(final.reasoning).toBeUndefined();
+        });
+
+        test('recovers streamed loose Gemma call syntax from native reasoning deltas', async () => {
+            globalThis.fetch = mock(async (_input: string | URL | Request, _init?: RequestInit) => {
+                return new Response(
+                    'data: {"choices":[{"delta":{"reasoning":"call:multiply{a:2,b:3}"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+                    {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    },
+                );
+            }) as typeof fetch;
+
+            const client = createClient({ url: 'https://api.cerebras.ai' });
+            const stream = client.chatStream([{ role: 'user', content: 'Multiply 2 by 3' }], {
+                tools: [multiplyTool],
+            });
+
+            const events: DecodedEvent[] = [];
+            let result: unknown;
+            while (true) {
+                const next = await stream.next();
+                if (next.done) {
+                    result = next.value;
+                    break;
+                }
+                events.push(next.value);
+            }
+
+            const toolCalls = events
+                .filter(event => event.type === 'tool_call')
+                .flatMap(event => (event as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+            const final = result as {
+                message?: { tool_calls?: Array<{ function: { name: string; arguments: string } }> };
+                reasoning?: string;
+            };
+
+            expect(events.filter(event => event.type === 'thinking')).toEqual([]);
+            expect(toolCalls.map(call => call.function)).toEqual([
+                { name: 'multiply', arguments: '{"a":2,"b":3}' },
+            ]);
+            expect(final.message?.tool_calls?.map(call => call.function)).toEqual([
+                { name: 'multiply', arguments: '{"a":2,"b":3}' },
+            ]);
+            expect(final.reasoning).toBeUndefined();
         });
 
         test('recovers a bare Gemma call line after stray prose', async () => {

@@ -73,6 +73,114 @@ describe('StandardChatDecoder', () => {
         expect(events[0]!.type).toBe('tool_call');
     });
 
+    it('recovers adjacent bare call syntax without leaking visible text', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e), {
+            knownToolNames: new Set(['list_directory', 'shell_execute']),
+        });
+
+        decoder.push('call:list_directory({"path":"."})call:shell_execute({"command":"set"})');
+        decoder.flush();
+
+        const calls = events
+            .filter(e => e.type === 'tool_call')
+            .flatMap(e => (e as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+        const text = events
+            .filter(e => e.type === 'text')
+            .map(e => (e as Extract<DecodedEvent, { type: 'text' }>).content)
+            .join('');
+
+        expect(text).toBe('');
+        expect(calls.map(call => call.function.name)).toEqual(['list_directory', 'shell_execute']);
+        expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ path: '.' });
+        expect(JSON.parse(calls[1]!.function.arguments)).toEqual({ command: 'set' });
+        expect(decoder.getCleanContent()).toBe('');
+    });
+
+    it('recovers bare call syntax split across chunks', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e), {
+            knownToolNames: new Set(['list_directory']),
+        });
+
+        decoder.push('call:list_dir');
+        decoder.push('ectory({"path":"."})');
+        decoder.flush();
+
+        const calls = events
+            .filter(e => e.type === 'tool_call')
+            .flatMap(e => (e as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+        const text = events
+            .filter(e => e.type === 'text')
+            .map(e => (e as Extract<DecodedEvent, { type: 'text' }>).content)
+            .join('');
+
+        expect(text).toBe('');
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.function.name).toBe('list_directory');
+        expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ path: '.' });
+    });
+
+    it('recovers bare call syntax from native reasoning without leaking thinking text', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e), {
+            knownToolNames: new Set(['shell_execute']),
+        });
+
+        decoder.pushReasoning('call:shell_execute({"command":"set"})');
+        decoder.flush();
+
+        const calls = events
+            .filter(e => e.type === 'tool_call')
+            .flatMap(e => (e as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+
+        expect(events.filter(e => e.type === 'thinking')).toEqual([]);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.function.name).toBe('shell_execute');
+        expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ command: 'set' });
+        expect(decoder.getReasoning()).toBeUndefined();
+    });
+
+    it('recovers loose brace call syntax from native reasoning', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e), {
+            knownToolNames: new Set(['memory_search']),
+        });
+
+        decoder.pushReasoning('call:memory_search{query:testes}');
+        decoder.flush();
+
+        const calls = events
+            .filter(e => e.type === 'tool_call')
+            .flatMap(e => (e as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+
+        expect(events.filter(e => e.type === 'thinking')).toEqual([]);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.function.name).toBe('memory_search');
+        expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ query: 'testes' });
+        expect(decoder.getReasoning()).toBeUndefined();
+    });
+
+    it('recovers malformed mixed-delimiter call syntax from native reasoning', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e), {
+            knownToolNames: new Set(['activate_tools']),
+        });
+
+        decoder.pushReasoning('call:activate_tools(module: "@core/memory"}');
+        decoder.flush();
+
+        const calls = events
+            .filter(e => e.type === 'tool_call')
+            .flatMap(e => (e as Extract<DecodedEvent, { type: 'tool_call' }>).calls);
+
+        expect(events.filter(e => e.type === 'thinking')).toEqual([]);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.function.name).toBe('activate_tools');
+        expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ module: '@core/memory' });
+        expect(decoder.getReasoning()).toBeUndefined();
+    });
+
     it('tracks both content and reasoning', () => {
         const decoder = new StandardChatDecoder(() => {});
         decoder.push('Text');
@@ -250,6 +358,19 @@ describe('createDecoder', () => {
     it('creates standard-chat decoder', () => {
         const decoder = createDecoder('standard-chat', () => {});
         expect(decoder).toBeInstanceOf(StandardChatDecoder);
+    });
+
+    it('passes known tool names to standard-chat decoder', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = createDecoder('standard-chat', e => events.push(e), {
+            knownToolNames: new Set(['list_directory']),
+        });
+
+        decoder.push('call:list_directory({"path":"."})');
+        decoder.flush();
+
+        expect(events.filter(e => e.type === 'text')).toEqual([]);
+        expect(events.filter(e => e.type === 'tool_call')).toHaveLength(1);
     });
 
     it('creates interleaved-reasoning decoder', () => {

@@ -51,6 +51,11 @@ describe('gemmaArgsToJson', () => {
         expect(JSON.parse(json)).toEqual({ unit: 'celsius', city: 'Paris' });
     });
 
+    it('accepts normal quoted strings (model deviation)', () => {
+        const json = gemmaArgsToJson('module: "@core/memory",query:"testes"');
+        expect(JSON.parse(json)).toEqual({ module: '@core/memory', query: 'testes' });
+    });
+
     it('handles empty arguments', () => {
         expect(JSON.parse(gemmaArgsToJson(''))).toEqual({});
     });

@@ -9,6 +9,7 @@
 
 import type { LLMToolCall } from './interfaces.js';
 import { GEMMA_THOUGHT_OPENERS, normalizeGemmaThought } from './gemma-channel.js';
+import { gemmaArgsToJson } from './gemma-diffusion.js';
 
 // ============================================================================
 // Decoded Event Types
@@ -46,6 +47,10 @@ export interface StreamDecoder {
     getCleanContent(): string;
     /** Get accumulated reasoning/thinking content (if any) */
     getReasoning(): string | undefined;
+    /** Feed native reasoning tokens from the provider, if supported */
+    pushReasoning?(content: string): void;
+    /** Feed structured tool calls from the provider API response, if supported */
+    pushToolCalls?(calls: LLMToolCall[]): void;
 }
 
 // ============================================================================
@@ -92,6 +97,107 @@ export class PassthroughDecoder implements StreamDecoder {
 // Standard Chat Decoder
 // ============================================================================
 
+interface BareCallParseResult {
+    readonly status: 'complete' | 'incomplete' | 'invalid';
+    readonly segment?: string;
+    readonly name?: string;
+    readonly argumentsJson?: string;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+    try {
+        const parsed = JSON.parse(text) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return parsed as Record<string, unknown>;
+        }
+    } catch {
+        // not JSON
+    }
+    return null;
+}
+
+function parseLooseArguments(rawArgs: string): string | null {
+    const trimmed = rawArgs.trim();
+    if (!trimmed) return '{}';
+
+    const jsonArgs = parseJsonObject(trimmed);
+    if (jsonArgs) return JSON.stringify(jsonArgs);
+
+    const unwrapped = trimmed.startsWith('{') && trimmed.endsWith('}') ? trimmed.slice(1, -1).trim() : trimmed;
+    try {
+        return gemmaArgsToJson(unwrapped);
+    } catch {
+        return null;
+    }
+}
+
+function suffixThatPrefixes(value: string, prefix: string): string {
+    const max = Math.min(value.length, prefix.length - 1);
+    for (let len = max; len > 0; len--) {
+        const suffix = value.slice(-len);
+        if (prefix.startsWith(suffix)) return suffix;
+    }
+    return '';
+}
+
+function parseBareCallAtStart(text: string): BareCallParseResult {
+    if (!text.startsWith('call:')) return { status: 'invalid' };
+    const nameStart = 'call:'.length;
+    if (text.length <= nameStart) return { status: 'incomplete' };
+    const first = text[nameStart]!;
+    if (!/[@A-Za-z_]/u.test(first)) return { status: 'invalid' };
+
+    let pos = nameStart + 1;
+    while (pos < text.length && /[@A-Za-z0-9_.:-]/u.test(text[pos]!)) pos++;
+    const name = text.slice(nameStart, pos);
+    while (pos < text.length && /\s/u.test(text[pos]!)) pos++;
+    if (pos >= text.length) return { status: 'incomplete' };
+    const opener = text[pos];
+    if (opener !== '(' && opener !== '{') return { status: 'invalid' };
+    const primaryClose = opener === '(' ? ')' : '}';
+    const toleratedClose = opener === '(' ? '}' : undefined;
+
+    let depth = 0;
+    let quote: string | null = null;
+    let escaped = false;
+    for (let i = pos; i < text.length; i++) {
+        const ch = text[i]!;
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === quote) {
+                quote = null;
+            }
+            continue;
+        }
+
+        if (ch === '"' || ch === "'") {
+            quote = ch;
+        } else if (ch === opener) {
+            depth++;
+        } else if (ch === primaryClose) {
+            depth--;
+            if (depth === 0) {
+                const segment = text.slice(0, i + 1);
+                const rawArgs = text.slice(pos + 1, i).trim();
+                const argumentsJson = parseLooseArguments(rawArgs);
+                if (!argumentsJson) return { status: 'invalid' };
+                return { status: 'complete', segment, name, argumentsJson };
+            }
+        } else if (depth === 1 && toleratedClose !== undefined && ch === toleratedClose) {
+            const rawArgs = text.slice(pos + 1, i).trim();
+            if (rawArgs.startsWith('{')) continue;
+            const argumentsJson = parseLooseArguments(rawArgs);
+            if (!argumentsJson) continue;
+            return { status: 'complete', segment: text.slice(0, i + 1), name, argumentsJson };
+        }
+    }
+
+    return { status: 'incomplete' };
+}
+
 /**
  * Decoder for standard LLM chat patterns — text streaming with native
  * reasoning and structured API tool calls. No text-level tag parsing.
@@ -104,7 +210,10 @@ export class StandardChatDecoder implements StreamDecoder {
     private content = '';
     private reasoning = '';
     private readonly callback: DecoderCallback;
+    private readonly knownToolNames?: Set<string>;
     private tagBuffer = '';
+    private pendingText = '';
+    private pendingReasoning = '';
     private inProgressTag = false;
     private progressBody = '';
     private inGemmaThought = false;
@@ -114,8 +223,9 @@ export class StandardChatDecoder implements StreamDecoder {
     private toolCallBody = '';
     private toolCallClose = '';
 
-    constructor(callback: DecoderCallback) {
+    constructor(callback: DecoderCallback, options: DecoderOptions = {}) {
         this.callback = callback;
+        this.knownToolNames = options.knownToolNames;
     }
 
     push(token: string): void {
@@ -128,7 +238,7 @@ export class StandardChatDecoder implements StreamDecoder {
                 if (closeIdx !== -1) {
                     const body = this.gemmaThoughtBody.slice(0, closeIdx);
                     const remainder = this.gemmaThoughtBody.slice(closeIdx + this.gemmaThoughtClose.length);
-                    this.emitReasoning(normalizeGemmaThought(body));
+                    this.pushDecodedReasoning(normalizeGemmaThought(body));
                     this.inGemmaThought = false;
                     this.gemmaThoughtBody = '';
                     this.gemmaThoughtClose = '';
@@ -228,7 +338,7 @@ export class StandardChatDecoder implements StreamDecoder {
                         this.tagBuffer = '';
                     }
                 } else {
-                    this.emitText(this.tagBuffer);
+                    this.pushDecodedText(this.tagBuffer);
                     this.tagBuffer = '';
                 }
                 continue;
@@ -236,28 +346,107 @@ export class StandardChatDecoder implements StreamDecoder {
 
             const ltIdx = token.indexOf('<', pos);
             if (ltIdx === -1) {
-                this.emitText(token.slice(pos));
+                this.pushDecodedText(token.slice(pos));
                 return;
             }
 
             if (ltIdx > pos) {
-                this.emitText(token.slice(pos, ltIdx));
+                this.pushDecodedText(token.slice(pos, ltIdx));
             }
             this.tagBuffer = '<';
             pos = ltIdx + 1;
         }
     }
 
-    private emitText(text: string): void {
+    private pushDecodedText(text: string): void {
+        this.pendingText += text;
+        this.drainBareCallBuffer('text', false);
+    }
+
+    private pushDecodedReasoning(text: string): void {
+        this.pendingReasoning += text;
+        this.drainBareCallBuffer('reasoning', false);
+    }
+
+    private emitVisibleText(text: string): void {
         if (!text) return;
         this.content += text;
         this.callback({ type: 'text', content: text });
     }
 
-    private emitReasoning(content: string): void {
+    private emitReasoningText(content: string): void {
         if (!content) return;
         this.reasoning += content;
         this.callback({ type: 'thinking', content });
+    }
+
+    private emitRecoveredBareCall(name: string, argumentsJson: string): void {
+        this.callback({
+            type: 'tool_call',
+            calls: [
+                {
+                    id: `recovered_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                    type: 'function',
+                    function: { name, arguments: argumentsJson },
+                },
+            ],
+        });
+    }
+
+    private drainBareCallBuffer(kind: 'text' | 'reasoning', final: boolean): void {
+        const emit = kind === 'text'
+            ? (text: string) => this.emitVisibleText(text)
+            : (text: string) => this.emitReasoningText(text);
+        const knownToolNames = this.knownToolNames;
+        if (!knownToolNames?.size) {
+            const buffered = kind === 'text' ? this.pendingText : this.pendingReasoning;
+            if (kind === 'text') this.pendingText = '';
+            else this.pendingReasoning = '';
+            emit(buffered);
+            return;
+        }
+
+        let buffer = kind === 'text' ? this.pendingText : this.pendingReasoning;
+        while (buffer.length > 0) {
+            const callIdx = buffer.indexOf('call:');
+            if (callIdx < 0) {
+                const keep = final ? '' : suffixThatPrefixes(buffer, 'call:');
+                const ready = keep ? buffer.slice(0, -keep.length) : buffer;
+                emit(ready);
+                buffer = keep;
+                break;
+            }
+
+            if (callIdx > 0) {
+                emit(buffer.slice(0, callIdx));
+                buffer = buffer.slice(callIdx);
+                continue;
+            }
+
+            const parsed = parseBareCallAtStart(buffer);
+            if (parsed.status === 'incomplete') {
+                if (!final) break;
+                emit(buffer);
+                buffer = '';
+                break;
+            }
+
+            if (parsed.status === 'invalid' || !parsed.segment || !parsed.name || !parsed.argumentsJson) {
+                emit(buffer.slice(0, 'call:'.length));
+                buffer = buffer.slice('call:'.length);
+                continue;
+            }
+
+            if (knownToolNames.has(parsed.name)) {
+                this.emitRecoveredBareCall(parsed.name, parsed.argumentsJson);
+            } else {
+                emit(parsed.segment);
+            }
+            buffer = buffer.slice(parsed.segment.length);
+        }
+
+        if (kind === 'text') this.pendingText = buffer;
+        else this.pendingReasoning = buffer;
     }
 
     private matchesStructuralOpenerPrefix(candidate: string): boolean {
@@ -269,7 +458,7 @@ export class StandardChatDecoder implements StreamDecoder {
 
     /** Feed native reasoning tokens from the provider */
     pushReasoning(content: string): void {
-        this.emitReasoning(content);
+        this.pushDecodedReasoning(content);
     }
 
     /** Feed structured tool calls from the provider API response */
@@ -279,22 +468,24 @@ export class StandardChatDecoder implements StreamDecoder {
 
     flush(): void {
         if (this.tagBuffer) {
-            this.emitText(this.tagBuffer);
+            this.pushDecodedText(this.tagBuffer);
             this.tagBuffer = '';
         }
+        this.drainBareCallBuffer('text', true);
         if (this.inGemmaThought) {
-            this.emitReasoning(normalizeGemmaThought(this.gemmaThoughtBody));
+            this.pushDecodedReasoning(normalizeGemmaThought(this.gemmaThoughtBody));
             this.inGemmaThought = false;
             this.gemmaThoughtBody = '';
             this.gemmaThoughtClose = '';
         }
         if (this.inProgressTag) {
             if (this.progressBody) {
-                this.emitText('<progress>' + this.progressBody);
+                this.pushDecodedText('<progress>' + this.progressBody);
             }
             this.inProgressTag = false;
             this.progressBody = '';
         }
+        this.drainBareCallBuffer('reasoning', true);
         if (this.inToolCallTag) {
             this.inToolCallTag = false;
             this.toolCallBody = '';
@@ -511,7 +702,7 @@ export function getRegisteredDecoders(): string[] {
 
 // Pre-register built-in decoders
 registerDecoder('passthrough', (cb) => new PassthroughDecoder(cb));
-registerDecoder('standard-chat', (cb) => new StandardChatDecoder(cb));
+registerDecoder('standard-chat', (cb, options) => new StandardChatDecoder(cb, options));
 registerDecoder('interleaved-reasoning', (cb) => new InterleavedReasoningDecoder(cb));
 
 /**

@@ -78,6 +78,28 @@ export function gemmaArgsToJson(body: string): string {
         return raw;
     }
 
+    function parseStringQuote(): string {
+        const quote = src[i]!;
+        i++;
+        let out = '';
+        let escaped = false;
+        while (i < n) {
+            const ch = src[i]!;
+            i++;
+            if (escaped) {
+                out += ch;
+                escaped = false;
+            } else if (ch === '\\') {
+                escaped = true;
+            } else if (ch === quote) {
+                break;
+            } else {
+                out += ch;
+            }
+        }
+        return out;
+    }
+
     function parseBare(stops: string): string {
         const start = i;
         while (i < n && !stops.includes(src[i]!) && !src.startsWith(QUOTE_TOKEN, i)) i++;
@@ -88,6 +110,7 @@ export function gemmaArgsToJson(body: string): string {
         skipWs();
         if (src.startsWith(QUOTE_TOKEN, i)) return JSON.stringify(parseQuoted());
         const c = src[i];
+        if (c === '"' || c === "'") return JSON.stringify(parseStringQuote());
         if (c === '{') return parseObject();
         if (c === '[') return parseArray();
         const bare = parseBare(',}]');

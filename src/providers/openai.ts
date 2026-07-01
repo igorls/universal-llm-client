@@ -30,7 +30,7 @@ import type {
 } from '../interfaces.js';
 import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
-import { isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
+import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
 
 const VLLM_AUTO_TOOL_CHOICE_HINT =
     'vLLM rejected automatic tool choice. Retrying with text-level tool calling. To use native tool_calls, start vLLM with --enable-auto-tool-choice and --tool-call-parser <parser>.';
@@ -75,6 +75,10 @@ function cerebrasReasoningEffort(level: ThinkingLevel | undefined): 'low' | 'med
     if (level === 'high') return 'high';
     if (level === 'low' || level === 'minimal') return 'low';
     return 'medium';
+}
+
+function usesGemmaCerebrasReasoningDefault(model: string): boolean {
+    return normalizeModelId(model) === 'gemma-4-31b';
 }
 
 function normalizeMessagesForOpenAICompat(messages: LLMChatMessage[]): LLMChatMessage[] {
@@ -195,6 +199,20 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
     return null;
 }
 
+function normalizeLooseArguments(rawArgs: string): string | null {
+    const trimmed = rawArgs.trim();
+    if (!trimmed) return '{}';
+    const jsonArgs = parseJsonObject(trimmed);
+    if (jsonArgs) return JSON.stringify(jsonArgs);
+
+    const unwrapped = trimmed.startsWith('{') && trimmed.endsWith('}') ? trimmed.slice(1, -1).trim() : trimmed;
+    try {
+        return gemmaArgsToJson(unwrapped);
+    } catch {
+        return null;
+    }
+}
+
 function parseTextToolCallBody(content: string): Array<{ name: string; arguments: string }> {
     const body = content.trim();
     if (!body) return [];
@@ -219,22 +237,18 @@ function parseTextToolCallBody(content: string): Array<{ name: string; arguments
         /* not structured JSON */
     }
 
-    const bareGemmaCallMatch = /^call:([@A-Za-z_][@A-Za-z0-9_.:-]*)\s*\(([\s\S]*)\)\s*$/u.exec(body);
+    const bareGemmaCallMatch = /^call:([@A-Za-z_][@A-Za-z0-9_.:-]*)\s*[\({]([\s\S]*)[\)}]\s*$/u.exec(body);
     if (bareGemmaCallMatch) {
         const rawArgs = bareGemmaCallMatch[2]!.trim();
-        const args = rawArgs ? parseJsonObject(rawArgs) : {};
-        if (args) {
-            return [{ name: bareGemmaCallMatch[1]!, arguments: JSON.stringify(args) }];
-        }
+        const argumentsJson = normalizeLooseArguments(rawArgs);
+        if (argumentsJson) return [{ name: bareGemmaCallMatch[1]!, arguments: argumentsJson }];
     }
 
     const functionCallMatch = /^([@A-Za-z_][@A-Za-z0-9_.:-]*)\s*\(([\s\S]*)\)\s*$/u.exec(body);
     if (functionCallMatch) {
         const rawArgs = functionCallMatch[2]!.trim();
-        const args = rawArgs ? parseJsonObject(rawArgs) : {};
-        if (args) {
-            return [{ name: functionCallMatch[1]!, arguments: JSON.stringify(args) }];
-        }
+        const argumentsJson = normalizeLooseArguments(rawArgs);
+        if (argumentsJson) return [{ name: functionCallMatch[1]!, arguments: argumentsJson }];
     }
 
     const calls: Array<{ name: string; arguments: string }> = [];
@@ -250,6 +264,59 @@ function parseTextToolCallBody(content: string): Array<{ name: string; arguments
         calls.push({ name: fMatch[1]!, arguments: JSON.stringify(args) });
     }
     return calls;
+}
+
+function findBareGemmaCallSegments(content: string): string[] {
+    const segments: string[] = [];
+    const startPattern = /call:[@A-Za-z_][@A-Za-z0-9_.:-]*\s*[\({]/gu;
+    let match: RegExpExecArray | null;
+
+    while ((match = startPattern.exec(content)) !== null) {
+        const start = match.index;
+        const opener = content[match.index + match[0].length - 1]!;
+        const openIdx = match.index + match[0].length - 1;
+        const primaryClose = opener === '(' ? ')' : '}';
+        const toleratedClose = opener === '(' ? '}' : undefined;
+
+        let depth = 0;
+        let quote: string | null = null;
+        let escaped = false;
+        for (let i = openIdx; i < content.length; i++) {
+            const ch = content[i]!;
+            if (quote) {
+                if (escaped) {
+                    escaped = false;
+                } else if (ch === '\\') {
+                    escaped = true;
+                } else if (ch === quote) {
+                    quote = null;
+                }
+                continue;
+            }
+
+            if (ch === '"' || ch === "'") {
+                quote = ch;
+            } else if (ch === opener) {
+                depth++;
+            } else if (ch === primaryClose) {
+                depth--;
+                if (depth === 0) {
+                    segments.push(content.slice(start, i + 1));
+                    startPattern.lastIndex = i + 1;
+                    break;
+                }
+            } else if (depth === 1 && toleratedClose !== undefined && ch === toleratedClose) {
+                const rawArgs = content.slice(openIdx + 1, i).trim();
+                if (rawArgs.startsWith('{')) continue;
+                if (!normalizeLooseArguments(rawArgs)) continue;
+                segments.push(content.slice(start, i + 1));
+                startPattern.lastIndex = i + 1;
+                break;
+            }
+        }
+    }
+
+    return segments;
 }
 
 function recoverToolCallsFromText(
@@ -280,10 +347,8 @@ function recoverToolCallsFromText(
         if (matched) cleanContent = cleanContent.replace(tcMatch[0], '');
     }
 
-    for (const line of content.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!/^\s*call:[@A-Za-z_][@A-Za-z0-9_.:-]*\s*\(/u.test(trimmed)) continue;
-        const parsedCalls = parseTextToolCallBody(trimmed);
+    for (const segment of findBareGemmaCallSegments(content)) {
+        const parsedCalls = parseTextToolCallBody(segment);
         let matched = false;
         for (const parsed of parsedCalls) {
             if (!isKnownTool(parsed.name)) continue;
@@ -294,20 +359,7 @@ function recoverToolCallsFromText(
                 function: { name: parsed.name, arguments: parsed.arguments },
             });
         }
-        if (matched) cleanContent = cleanContent.replace(line, '');
-    }
-
-    if (calls.length === 0 && /^\s*call:[@A-Za-z_][@A-Za-z0-9_.:-]*\s*\(/u.test(content)) {
-        const parsedCalls = parseTextToolCallBody(content);
-        for (const parsed of parsedCalls) {
-            if (!isKnownTool(parsed.name)) continue;
-            calls.push({
-                id: generateId(),
-                type: 'function',
-                function: { name: parsed.name, arguments: parsed.arguments },
-            });
-        }
-        if (calls.length > 0) cleanContent = '';
+        if (matched) cleanContent = cleanContent.replace(segment, '');
     }
 
     if (calls.length === 0) return null;
@@ -566,6 +618,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         const url = this.buildUrl('/chat/completions');
         const tools = options?.tools;
+        const knownToolNames = new Set(tools?.map(tool => tool.function.name) ?? []);
 
         const body: Record<string, unknown> = {
             model: this.options.model,
@@ -600,12 +653,25 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const decoderEvents: DecodedEvent[] = [];
         const decoderOption = options?.decoder;
         const decoderInstanceProvided = Boolean(decoderOption && typeof decoderOption === 'object');
-        const yieldDecoderEvents = !decoderInstanceProvided && (this.gemmaNative || typeof decoderOption === 'string');
+        const yieldDecoderEvents = !decoderInstanceProvided
+            && (this.gemmaNative || typeof decoderOption === 'string' || knownToolNames.size > 0);
         const decoder: StreamDecoder = typeof decoderOption === 'string'
-            ? createDecoder(decoderOption, e => decoderEvents.push(e))
+            ? createDecoder(decoderOption, e => decoderEvents.push(e), { knownToolNames })
             : decoderInstanceProvided
                 ? decoderOption as StreamDecoder
-                : new StandardChatDecoder(this.gemmaNative ? e => decoderEvents.push(e) : () => {});
+                : new StandardChatDecoder(yieldDecoderEvents ? e => decoderEvents.push(e) : () => {}, { knownToolNames });
+        const decoderToolCalls: LLMToolCall[] = [];
+        const takeDecoderEvents = function* (): Generator<DecodedEvent> {
+            while (decoderEvents.length) {
+                const event = decoderEvents.shift()!;
+                if (event.type === 'tool_call') {
+                    decoderToolCalls.push(...event.calls);
+                    yield event;
+                } else if (yieldDecoderEvents) {
+                    yield event;
+                }
+            }
+        };
 
         // Track accumulated tool calls across chunks
         const toolCallAccum: Map<number, {
@@ -680,13 +746,18 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                         const reasoningDelta = delta.reasoning ?? delta.reasoning_content;
                         if (reasoningDelta) {
                             reasoningBuffer += reasoningDelta;
-                            yield { type: 'thinking', content: reasoningDelta };
+                            decoder.pushReasoning?.(reasoningDelta);
+                            if (yieldDecoderEvents) {
+                                for (const event of takeDecoderEvents()) yield event;
+                            } else {
+                                yield { type: 'thinking', content: reasoningDelta };
+                            }
                         }
 
                         if (delta.content) {
                             decoder.push(delta.content);
                             if (yieldDecoderEvents) {
-                                while (decoderEvents.length) yield decoderEvents.shift()!;
+                                for (const event of takeDecoderEvents()) yield event;
                             } else {
                                 yield { type: 'text', content: delta.content };
                             }
@@ -747,7 +818,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         decoder.flush();
         if (yieldDecoderEvents) {
-            while (decoderEvents.length) yield decoderEvents.shift()!;
+            for (const event of takeDecoderEvents()) yield event;
         }
 
         // Augment usage with client-measured timing (vLLM streams no timing).
@@ -773,11 +844,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         let finalToolCalls = toolCallAccum.size > 0
             ? Array.from(toolCallAccum.values()).map(tc => this.normalizeToolCall(tc))
-            : undefined;
+            : decoderToolCalls.length > 0
+                ? decoderToolCalls
+                : undefined;
         let cleanContent = decoder.getCleanContent();
         // Prefer the server's dedicated reasoning field; fall back to <think>
         // tags parsed from the content stream by the decoder.
-        let reasoning = reasoningBuffer || decoder.getReasoning();
+        const decodedReasoning = decoder.getReasoning();
+        let reasoning = decodedReasoning !== undefined ? decodedReasoning : yieldDecoderEvents ? undefined : reasoningBuffer;
 
         if (this.gemmaNative) {
             // Native tool-call blocks live in the text channel; extract them.
@@ -909,12 +983,16 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // `reasoning_effort`; vLLM / Qwen use `chat_template_kwargs.enable_thinking`.
         // A user-supplied value (via parameters) always wins.
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
-        if (thinking) {
-            if (isCerebrasEndpoint(this.options.url)) {
-                if (params['reasoning_effort'] === undefined && params['disable_reasoning'] === undefined) {
+        if (isCerebrasEndpoint(this.options.url)) {
+            if (params['reasoning_effort'] === undefined && params['disable_reasoning'] === undefined) {
+                if (thinking) {
                     params['reasoning_effort'] = thinking.enabled ? cerebrasReasoningEffort(thinking.level) : 'none';
+                } else if (usesGemmaCerebrasReasoningDefault(this.options.model)) {
+                    params['reasoning_effort'] = 'medium';
                 }
-            } else if (isOpenAIReasoningModel(this.options.model)) {
+            }
+        } else if (thinking) {
+            if (isOpenAIReasoningModel(this.options.model)) {
                 if (params['reasoning_effort'] === undefined) {
                     params['reasoning_effort'] = thinking.enabled ? (thinking.level ?? 'medium') : 'minimal';
                 }
