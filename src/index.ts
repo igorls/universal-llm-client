@@ -147,6 +147,19 @@ export {
 } from './mcp.js';
 
 // ============================================================================
+// Typed Errors
+// ============================================================================
+
+export {
+    LLMHttpError,
+    LLMProviderError,
+    extractProviderErrorMessage,
+    looksLikeErrorPayload,
+    classifyFailure,
+    type FailureDisposition,
+} from './errors.js';
+
+// ============================================================================
 // Structured Output
 // ============================================================================
 

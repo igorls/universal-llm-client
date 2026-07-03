@@ -20,6 +20,7 @@ import {
     getJsonSchemaFromConfig,
 } from '../structured-output.js';
 import { extractGemmaThoughtChannels } from '../gemma-channel.js';
+import { LLMProviderError, extractProviderErrorMessage } from '../errors.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -97,6 +98,18 @@ export class OllamaClient extends BaseLLMClient {
         });
 
         const data = response.data;
+
+        // Ollama can answer HTTP 200 with a bare `{"error":"…"}` (quota/session
+        // limit, bad request) instead of a completion. Fail hard so the Router's
+        // failover engages — never let it flow through as the model's reply.
+        const providerError = extractProviderErrorMessage(data);
+        if (providerError) {
+            throw new LLMProviderError('ollama', `Ollama error: ${providerError}`);
+        }
+        if (!data.message) {
+            throw new LLMProviderError('ollama', `Ollama returned no message: ${JSON.stringify(data).slice(0, 300)}`);
+        }
+
         const usage: TokenUsageInfo | undefined = (data.prompt_eval_count || data.eval_count)
             ? {
                 inputTokens: data.prompt_eval_count ?? 0,
@@ -201,6 +214,15 @@ export class OllamaClient extends BaseLLMClient {
         });
 
         for await (const chunk of parseNDJSON<OllamaResponse>(stream)) {
+            // A quota / session-limit error can arrive mid-stream as a 200 NDJSON
+            // line carrying a bare `{"error":"…"}` (no `message`). Throw so the
+            // Router fails over, rather than silently dropping it (empty reply)
+            // or, worse, letting it surface as content.
+            const streamError = extractProviderErrorMessage(chunk);
+            if (streamError) {
+                throw new LLMProviderError('ollama', `Ollama error: ${streamError}`);
+            }
+
             lastResponse = chunk;
 
             if (chunk.message?.thinking) {

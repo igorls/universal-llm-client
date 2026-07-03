@@ -14,6 +14,7 @@
 import { BaseLLMClient } from './client.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
+import { classifyFailure, type FailureDisposition } from './errors.js';
 import type {
     LLMChatMessage,
     LLMChatResponse,
@@ -152,6 +153,9 @@ export class Router {
         let lastError: Error | undefined;
 
         for (const provider of available) {
+            // Default disposition if the loop never runs a catch (won't happen, but
+            // keeps the post-loop recordFailure well-defined).
+            let disposition: FailureDisposition = { retry: true, cooldown: false };
             for (let attempt = 0; attempt <= this.config.retriesPerProvider; attempt++) {
                 try {
                     if (attempt > 0) {
@@ -169,19 +173,24 @@ export class Router {
                     return result;
                 } catch (error) {
                     lastError = error instanceof Error ? error : new Error(String(error));
+                    disposition = classifyFailure(lastError);
                     this.auditor.record({
                         timestamp: Date.now(),
                         type: 'error',
                         provider: provider.id,
                         model: provider.modelOverride ?? provider.client.model,
                         error: lastError.message,
-                        metadata: { attempt, context },
+                        metadata: { attempt, context, retryable: disposition.retry },
                     });
+                    // Terminal for this node (quota/auth/down/timeout) — stop burning
+                    // retries on it and move on.
+                    if (!disposition.retry) break;
                 }
             }
 
-            // All retries exhausted for this provider
-            this.recordFailure(provider.id);
+            // Retries exhausted (or skipped) for this provider — record with the
+            // classified disposition (cooldown terminal/unavailable nodes now).
+            this.recordFailure(provider.id, { cooldown: disposition.cooldown });
 
             // Try next provider (failover)
             const nextProvider = this.getNextAvailableAfter(provider.id);
@@ -204,8 +213,14 @@ export class Router {
     }
 
     /**
-     * Execute a streaming function with failover.
-     * On failure, retries with the next provider from the beginning.
+     * Execute a streaming function with failover — bounded by the first token.
+     *
+     * Failover for streaming is only safe BEFORE the first event reaches the
+     * consumer: a provider that fails on connect / immediately (e.g. a quota
+     * error, an unreachable node) can be transparently swapped for the next one.
+     * Once any token has been yielded, re-streaming from another provider would
+     * DUPLICATE the visible output, so a failure past that boundary is surfaced
+     * to the caller instead of silently retried.
      */
     async *executeStream(
         fn: (client: BaseLLMClient) => AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown>,
@@ -220,17 +235,20 @@ export class Router {
         let lastError: Error | undefined;
 
         for (const provider of available) {
+            // Has this attempt emitted anything yet? Once it has, we are past the
+            // first-token boundary and can no longer fail over without duplicating.
+            let emitted = false;
             try {
                 const stream = fn(provider.client);
                 let returnValue: LLMChatResponse | void;
 
-                // We need to yield all values and capture the return
                 while (true) {
                     const result = await stream.next();
                     if (result.done) {
                         returnValue = result.value;
                         break;
                     }
+                    emitted = true;
                     yield result.value;
                 }
 
@@ -238,17 +256,29 @@ export class Router {
                 return returnValue;
             } catch (error) {
                 lastError = error instanceof Error ? error : new Error(String(error));
-                this.recordFailure(provider.id);
+                this.recordFailure(provider.id, { cooldown: classifyFailure(lastError).cooldown });
 
+                if (emitted) {
+                    // Past the first-token boundary — re-streaming elsewhere would
+                    // double the output. Surface the error rather than fail over.
+                    this.auditor.record({
+                        timestamp: Date.now(),
+                        type: 'error',
+                        provider: provider.id,
+                        error: lastError.message,
+                        metadata: { context, phase: 'mid-stream', failedOver: false },
+                    });
+                    throw lastError;
+                }
+
+                // Nothing emitted yet — safe to fail over to the next provider.
                 this.auditor.record({
                     timestamp: Date.now(),
                     type: 'failover',
                     provider: provider.id,
                     error: lastError.message,
-                    metadata: { context },
+                    metadata: { context, phase: 'pre-stream' },
                 });
-
-                // Continue to next provider
             }
         }
 
@@ -770,14 +800,16 @@ export class Router {
         }
     }
 
-    private recordFailure(id: string): void {
+    private recordFailure(id: string, opts?: { cooldown?: boolean }): void {
         const h = this.health.get(id);
         if (!h) return;
 
         h.consecutiveFailures++;
         h.lastFailure = Date.now();
 
-        if (h.consecutiveFailures >= this.config.maxFailures) {
+        // Cool down when the caller classified the failure as
+        // provider-unavailable, OR once the consecutive-failure threshold trips.
+        if (opts?.cooldown || h.consecutiveFailures >= this.config.maxFailures) {
             h.healthy = false;
             h.cooldownUntil = Date.now() + this.config.cooldownMs;
         }

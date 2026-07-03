@@ -5,6 +5,7 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { Router, type ProviderEntry } from '../router.js';
 import { BaseLLMClient } from '../client.js';
 import { BufferedAuditor } from '../auditor.js';
+import { LLMHttpError, LLMProviderError } from '../errors.js';
 import type {
     LLMChatMessage,
     LLMChatResponse,
@@ -21,9 +22,12 @@ class MockClient extends BaseLLMClient {
     public embedFn: (text: string) => Promise<number[]>;
     public modelsFn: () => Promise<string[]>;
 
+    public streamFn?: () => AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown>;
+
     constructor(id: string, opts?: {
         chatFn?: (messages: LLMChatMessage[]) => Promise<LLMChatResponse>;
         embedFn?: (text: string) => Promise<number[]>;
+        streamFn?: () => AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown>;
     }) {
         super({
             model: `mock-${id}`,
@@ -36,6 +40,7 @@ class MockClient extends BaseLLMClient {
         }));
         this.embedFn = opts?.embedFn ?? (async () => [1, 2, 3]);
         this.modelsFn = async () => [`mock-${id}`];
+        this.streamFn = opts?.streamFn;
     }
 
     async chat(messages: LLMChatMessage[]): Promise<LLMChatResponse> {
@@ -43,6 +48,9 @@ class MockClient extends BaseLLMClient {
     }
 
     async *chatStream(): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+        if (this.streamFn) {
+            return yield* this.streamFn();
+        }
         yield { type: 'text', content: 'streamed' };
         return { message: { role: 'assistant', content: 'streamed' }, provider: 'mock' };
     }
@@ -249,6 +257,110 @@ describe('Router', () => {
             const models = await router.getModels();
             expect(models).toContain('mock-a');
             expect(models).toContain('mock-b');
+        });
+    });
+
+    describe('streaming failover (first-token boundary)', () => {
+        const okStream = (label: string) => (async function* (): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+            yield { type: 'text', content: label };
+            return { message: { role: 'assistant', content: label }, provider: label };
+        });
+        const failBeforeToken = () => (async function* (): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+            throw new Error('connection refused');
+        });
+        const failAfterToken = () => (async function* (): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+            yield { type: 'text', content: 'partial from A' };
+            throw new Error('mid-stream boom');
+        });
+
+        async function drainAll(gen: AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown>) {
+            const events: DecodedEvent[] = [];
+            let value: LLMChatResponse | void;
+            while (true) {
+                const r = await gen.next();
+                if (r.done) { value = r.value; break; }
+                events.push(r.value);
+            }
+            return { events, value };
+        }
+
+        it('fails over cleanly when the first provider fails BEFORE any token', async () => {
+            const r = new Router({ retriesPerProvider: 0 });
+            r.addProvider({ id: 'a', priority: 0, client: new MockClient('a', { streamFn: failBeforeToken() }) });
+            r.addProvider({ id: 'b', priority: 1, client: new MockClient('b', { streamFn: okStream('b') }) });
+
+            const { events, value } = await drainAll(r.executeStream(c => c.chatStream()));
+            expect(events).toEqual([{ type: 'text', content: 'b' }]); // only B — no duplication
+            expect((value as LLMChatResponse).provider).toBe('b');
+            expect(r.getStatus().find(s => s.id === 'a')?.consecutiveFailures).toBe(1);
+        });
+
+        it('surfaces the error WITHOUT failover once a token has been emitted', async () => {
+            const r = new Router({ retriesPerProvider: 0 });
+            let bTried = false;
+            r.addProvider({ id: 'a', priority: 0, client: new MockClient('a', { streamFn: failAfterToken() }) });
+            r.addProvider({
+                id: 'b', priority: 1, client: new MockClient('b', {
+                    streamFn: async function* () { bTried = true; yield { type: 'text', content: 'from B' }; },
+                }),
+            });
+
+            const events: DecodedEvent[] = [];
+            const run = async () => {
+                const gen = r.executeStream(c => c.chatStream());
+                while (true) { const x = await gen.next(); if (x.done) break; events.push(x.value); }
+            };
+            await expect(run()).rejects.toThrow('mid-stream boom');
+            expect(events).toEqual([{ type: 'text', content: 'partial from A' }]); // A's partial, not re-streamed
+            expect(bTried).toBe(false); // B never tried — no double output
+        });
+
+        it('throws when every provider fails before the first token', async () => {
+            const r = new Router({ retriesPerProvider: 0 });
+            r.addProvider({ id: 'a', priority: 0, client: new MockClient('a', { streamFn: failBeforeToken() }) });
+            r.addProvider({ id: 'b', priority: 1, client: new MockClient('b', { streamFn: failBeforeToken() }) });
+            const run = async () => { const gen = r.executeStream(c => c.chatStream()); while (true) { if ((await gen.next()).done) break; } };
+            await expect(run()).rejects.toThrow('connection refused');
+        });
+    });
+
+    describe('fast failover (error classification, Gap 3)', () => {
+        it('skips per-provider retries on a terminal error and cools the node down', async () => {
+            const r = new Router({ retriesPerProvider: 3, maxFailures: 5 });
+            let aCalls = 0;
+            r.addProvider({ id: 'a', priority: 0, client: new MockClient('a', { chatFn: async () => { aCalls++; throw new LLMProviderError('ollama', 'quota'); } }) });
+            r.addProvider({ id: 'b', priority: 1, client: new MockClient('b') });
+
+            const res = await r.chat([{ role: 'user', content: 'hi' }]);
+            expect(res.provider).toBe('b');
+            expect(aCalls).toBe(1); // terminal error → NOT retriesPerProvider+1 attempts
+            const aStatus = r.getStatus().find(s => s.id === 'a')!;
+            expect(aStatus.healthy).toBe(false); // cooled down now, despite maxFailures=5
+            expect(aStatus.cooldownUntil).toBeGreaterThan(Date.now() - 1);
+        });
+
+        it('still retries the same provider on a transient (5xx) error', async () => {
+            const r = new Router({ retriesPerProvider: 2, maxFailures: 5 });
+            let aCalls = 0;
+            r.addProvider({ id: 'a', priority: 0, client: new MockClient('a', { chatFn: async () => { aCalls++; throw new LLMHttpError(503, 'unavailable'); } }) });
+            r.addProvider({ id: 'b', priority: 1, client: new MockClient('b') });
+
+            const res = await r.chat([{ role: 'user', content: 'hi' }]);
+            expect(res.provider).toBe('b');
+            expect(aCalls).toBe(3); // 1 initial + 2 retries before failover
+            expect(r.getStatus().find(s => s.id === 'a')!.healthy).toBe(true); // one failover, 5xx isn't a cooldown reason
+        });
+
+        it('a cooled-down provider is skipped entirely on the next call', async () => {
+            const r = new Router({ retriesPerProvider: 3, maxFailures: 5, cooldownMs: 10_000 });
+            let aCalls = 0;
+            r.addProvider({ id: 'a', priority: 0, client: new MockClient('a', { chatFn: async () => { aCalls++; throw new LLMHttpError(429, 'rate limited'); } }) });
+            r.addProvider({ id: 'b', priority: 1, client: new MockClient('b') });
+
+            await r.chat([{ role: 'user', content: '1' }]); // a → 429 → cooldown; b serves
+            expect(aCalls).toBe(1);
+            await r.chat([{ role: 'user', content: '2' }]); // a in cooldown → not tried at all
+            expect(aCalls).toBe(1);
         });
     });
 });

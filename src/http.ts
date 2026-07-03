@@ -6,6 +6,7 @@
  */
 
 import type { LLMClientOptions } from './interfaces.js';
+import { LLMHttpError } from './errors.js';
 
 // ============================================================================
 // Types
@@ -64,7 +65,7 @@ export async function httpRequest<T = unknown>(
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Unknown error');
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
+            throw new LLMHttpError(response.status, errorText, url);
         }
 
         const data = (await response.json()) as T;
@@ -121,7 +122,7 @@ export async function* httpStream(
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Unknown error');
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
+            throw new LLMHttpError(response.status, errorText, url);
         }
 
         if (!response.body) {

@@ -15,6 +15,7 @@ import { fromZod } from '../../zod-adapter.js';
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { z } from 'zod';
 import { OllamaClient } from '../../providers/ollama.js';
+import { LLMProviderError } from '../../errors.js';
 import type { LLMClientOptions, LLMChatMessage, ChatOptions } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 import type { DecodedEvent } from '../../stream-decoder.js';
@@ -105,6 +106,55 @@ describe('OllamaClient', () => {
             const body = getBody()!;
             const messages = body['messages'] as Record<string, unknown>[];
             expect(messages[0]!['content']).toBe('');
+        });
+    });
+
+    // ========================================================================
+    // Error detection → failover (Gap 1)
+    // ========================================================================
+
+    describe('error detection', () => {
+        test('chat() throws LLMProviderError on a 200 {error} payload (quota/limit)', async () => {
+            mockFetchAndCapture({ error: 'you have reached your session usage limit' }, 200);
+            const client = createClient();
+            await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(LLMProviderError);
+        });
+
+        test('chat() throws when a 200 payload carries no message', async () => {
+            mockFetchAndCapture({ done: true }, 200);
+            const client = createClient();
+            await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/no message/i);
+        });
+
+        test('chatStream() throws LLMProviderError on a 200 NDJSON {error} line', async () => {
+            // A 200 stream whose line is a bare error object must THROW so the
+            // Router fails over — not silently produce an empty reply.
+            mockFetchAndCapture({ error: 'session usage limit reached' }, 200);
+            const client = createClient();
+            const drain = async () => {
+                for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }])) {
+                    /* consume */
+                }
+            };
+            await expect(drain()).rejects.toThrow(LLMProviderError);
+        });
+
+        test('chatStream() surfaces the provider error message', async () => {
+            mockFetchAndCapture({ error: 'quota exceeded (ref: abc123)' }, 200);
+            const client = createClient();
+            const drain = async () => {
+                for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }])) {
+                    /* consume */
+                }
+            };
+            await expect(drain()).rejects.toThrow(/quota exceeded/);
+        });
+
+        test('a healthy 200 completion is unaffected', async () => {
+            mockFetchAndCapture(OLLAMA_RESPONSE, 200);
+            const client = createClient();
+            const res = await client.chat([{ role: 'user', content: 'hi' }]);
+            expect(res.message.content).toBe('test response');
         });
     });
 
