@@ -122,11 +122,35 @@ export function classifyFailure(error: unknown): FailureDisposition {
         // provider explicitly marked it retryable.
         return { retry: error.retryable, cooldown: !error.retryable };
     }
-    const message = error instanceof Error ? error.message : String(error);
     // A hung/timed-out or unreachable node — don't re-hang on it; fail over + cooldown.
-    if (/timeout|econnrefused|enotfound|econnreset|fetch failed|network|socket|unreachable/i.test(message)) {
-        return { retry: false, cooldown: true };
-    }
+    if (isConnectivityFailure(error)) return { retry: false, cooldown: true };
     // Unknown error — preserve the historical retry-then-failover behavior.
     return { retry: true, cooldown: false };
+}
+
+/** Best-effort error code from an error or its `cause` (Node sets `.code`/`.cause.code`). */
+function errorCode(error: unknown): string {
+    if (error && typeof error === 'object') {
+        const e = error as { code?: unknown; cause?: unknown };
+        if (typeof e.code === 'string') return e.code;
+        if (e.cause && typeof e.cause === 'object' && typeof (e.cause as { code?: unknown }).code === 'string') {
+            return (e.cause as { code: string }).code;
+        }
+    }
+    return '';
+}
+
+/**
+ * True for transport-level connectivity failures (unreachable node, refused
+ * connection, DNS failure, timeout). Matches across runtimes: Node throws a
+ * TypeError('fetch failed') with `cause.code` = ECONNREFUSED/ENOTFOUND/…, while
+ * Bun throws 'Unable to connect. Is the computer able to access the url?'.
+ */
+export function isConnectivityFailure(error: unknown): boolean {
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (/timeout|fetch failed|failed to fetch|network|socket|unreachable|unable to connect|connection (refused|reset|closed|timed out|error)|econnrefused|econnreset|econnaborted|enotfound|ehostunreach|enetunreach|etimedout/.test(message)) {
+        return true;
+    }
+    const code = errorCode(error).toUpperCase();
+    return /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR)$/.test(code);
 }

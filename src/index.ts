@@ -156,6 +156,7 @@ export {
     extractProviderErrorMessage,
     looksLikeErrorPayload,
     classifyFailure,
+    isConnectivityFailure,
     type FailureDisposition,
 } from './errors.js';
 

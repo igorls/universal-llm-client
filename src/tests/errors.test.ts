@@ -68,9 +68,15 @@ describe('classifyFailure', () => {
         expect(classifyFailure(new LLMProviderError('ollama', 'blip', { retryable: true }))).toEqual({ retry: true, cooldown: false });
     });
 
-    test('timeouts and connection errors → no retry, cooldown', () => {
+    test('timeouts and connection errors → no retry, cooldown (cross-runtime)', () => {
         expect(classifyFailure(new Error('Request timeout after 30000ms'))).toEqual({ retry: false, cooldown: true });
-        expect(classifyFailure(new Error('fetch failed: ECONNREFUSED'))).toEqual({ retry: false, cooldown: true });
+        expect(classifyFailure(new Error('fetch failed'))).toEqual({ retry: false, cooldown: true });
+        // Bun's connection-refused message (surfaced by the local failover test):
+        expect(classifyFailure(new Error('Unable to connect. Is the computer able to access the url?'))).toEqual({ retry: false, cooldown: true });
+        // Node-style TypeError('fetch failed') with cause.code:
+        expect(classifyFailure(Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toEqual({ retry: false, cooldown: true });
+        // A direct .code (some HTTP stacks):
+        expect(classifyFailure(Object.assign(new Error('boom'), { code: 'ENOTFOUND' }))).toEqual({ retry: false, cooldown: true });
     });
 
     test('unknown errors preserve retry-then-failover', () => {
