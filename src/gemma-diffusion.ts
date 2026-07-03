@@ -43,6 +43,16 @@ export function isGemmaDiffusionModel(model: string): boolean {
     return /diffusion[-_]?gemma/i.test(model);
 }
 
+/**
+ * Request params that must accompany a DiffusionGemma model call so the native
+ * protocol tokens (thought channels, `<|tool_call>` markers) survive to the
+ * decoder instead of being stripped by the server's `skip_special_tokens`
+ * default.
+ */
+export const GEMMA_DIFFUSION_REQUEST_PARAMS: Readonly<Record<string, unknown>> = {
+    skip_special_tokens: false,
+};
+
 const TOOL_CALL_BLOCK = /<\|tool_call>\s*call:([a-zA-Z0-9_.-]+)\s*\{([\s\S]*?)\}\s*<tool_call\|>/g;
 
 /**
@@ -160,6 +170,18 @@ export function gemmaArgsToJson(body: string): string {
  * Parse a complete raw DiffusionGemma output into reasoning, tool calls and
  * clean answer text.
  */
+/**
+ * Parse a single DiffusionGemma tool-call body of the form
+ * `call:name{pseudo-json}` into a normalized `{name, argumentsJson}`.
+ * Returns null when the body doesn't match the grammar. Used by the stream
+ * decoder to recover native `<|tool_call>…<tool_call|>` calls token-by-token.
+ */
+export function parseGemmaToolCallBody(body: string): GemmaParsedToolCall | null {
+    const m = body.match(/^\s*call:([a-zA-Z0-9_.-]+)\s*\{([\s\S]*)\}\s*$/);
+    if (!m) return null;
+    return { name: m[1]!, argumentsJson: gemmaArgsToJson(m[2]!) };
+}
+
 export function parseGemmaDiffusionOutput(raw: string): GemmaDiffusionParsed {
     if (!raw) return { content: raw, reasoning: '', toolCalls: [] };
 

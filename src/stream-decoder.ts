@@ -8,8 +8,8 @@
  */
 
 import type { LLMToolCall } from './interfaces.js';
-import { GEMMA_THOUGHT_OPENERS, normalizeGemmaThought } from './gemma-channel.js';
-import { gemmaArgsToJson } from './gemma-diffusion.js';
+import { normalizeGemmaThought } from './gemma-channel.js';
+import { gemmaArgsToJson, parseGemmaToolCallBody } from './gemma-diffusion.js';
 
 // ============================================================================
 // Decoded Event Types
@@ -198,6 +198,111 @@ function parseBareCallAtStart(text: string): BareCallParseResult {
     return { status: 'incomplete' };
 }
 
+interface OpenerMatch {
+    readonly type: 'progress' | 'gemma-thought' | 'think' | 'tool-call' | 'gemma-tool-call' | 'tool-response' | 'discard';
+    readonly close: string;
+}
+
+/**
+ * Match a partial `<…`-prefixed buffer against every structural opener the
+ * decoder understands. Returns `matches: true` while the buffer is still a
+ * viable prefix of some opener, and a `fullMatch` (with its closing token)
+ * once the whole opener has arrived. This is what lets tags stream in
+ * token-by-token without leaking partial markup as visible text.
+ */
+function checkOpenerMatch(candidate: string): { readonly matches: boolean; readonly fullMatch?: OpenerMatch } {
+    // <progress>…</progress>
+    if ('<progress>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<progress>' ? { type: 'progress', close: '</progress>' } : undefined,
+        };
+    }
+
+    // <think>…</think>
+    if ('<think>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<think>' ? { type: 'think', close: '</think>' } : undefined,
+        };
+    }
+
+    // <thinking>…</thinking>
+    if ('<thinking>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<thinking>' ? { type: 'think', close: '</thinking>' } : undefined,
+        };
+    }
+
+    // <tool_call|>…<|tool_response>  (legacy JSON tool-call grammar)
+    if ('<tool_call|>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<tool_call|>' ? { type: 'tool-call', close: '<|tool_response>' } : undefined,
+        };
+    }
+
+    // <|tool_response>  (stray closer to strip)
+    if ('<|tool_response>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<|tool_response>' ? { type: 'tool-response', close: '' } : undefined,
+        };
+    }
+
+    // <|tool_call>call:name{…}<tool_call|>  (DiffusionGemma native tool call)
+    if ('<|tool_call>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<|tool_call>' ? { type: 'gemma-tool-call', close: '<tool_call|>' } : undefined,
+        };
+    }
+
+    // Stray DiffusionGemma markers that must never reach visible text:
+    // unbalanced <channel|> closers and <turn|> turn terminators.
+    if ('<channel|>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<channel|>' ? { type: 'discard', close: '' } : undefined,
+        };
+    }
+    if ('<turn|>'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<turn|>' ? { type: 'discard', close: '' } : undefined,
+        };
+    }
+
+    // <|thought … |>  (compact Gemma thought marker)
+    if ('<|thought'.startsWith(candidate)) {
+        return {
+            matches: true,
+            fullMatch: candidate === '<|thought' ? { type: 'gemma-thought', close: '|>' } : undefined,
+        };
+    }
+
+    // <|channel>\s*thought … <channel|>  (Gemma thought channel, whitespace-tolerant)
+    if (candidate.startsWith('<')) {
+        if ('<|channel>'.startsWith(candidate)) {
+            return { matches: true };
+        }
+        if (candidate.startsWith('<|channel>')) {
+            const suffix = candidate.slice('<|channel>'.length);
+            const suffixRegex = /^\s*(t(h(o(u(g(h(t)?)?)?)?)?)?)?$/i;
+            if (suffixRegex.test(suffix)) {
+                const isFullMatch = /^\s*thought$/i.test(suffix);
+                return {
+                    matches: true,
+                    fullMatch: isFullMatch ? { type: 'gemma-thought', close: '<channel|>' } : undefined,
+                };
+            }
+        }
+    }
+
+    return { matches: false };
+}
+
 /**
  * Decoder for standard LLM chat patterns — text streaming with native
  * reasoning and structured API tool calls. No text-level tag parsing.
@@ -219,9 +324,13 @@ export class StandardChatDecoder implements StreamDecoder {
     private inGemmaThought = false;
     private gemmaThoughtBody = '';
     private gemmaThoughtClose = '';
+    private inThinkTag = false;
+    private thinkBody = '';
+    private thinkClose = '';
     private inToolCallTag = false;
     private toolCallBody = '';
     private toolCallClose = '';
+    private toolCallKind: 'json' | 'gemma' = 'json';
 
     constructor(callback: DecoderCallback, options: DecoderOptions = {}) {
         this.callback = callback;
@@ -247,6 +356,21 @@ export class StandardChatDecoder implements StreamDecoder {
                 return;
             }
 
+            if (this.inThinkTag) {
+                this.thinkBody += token.slice(pos);
+                const closeIdx = this.thinkBody.indexOf(this.thinkClose);
+                if (closeIdx !== -1) {
+                    const body = this.thinkBody.slice(0, closeIdx);
+                    const remainder = this.thinkBody.slice(closeIdx + this.thinkClose.length);
+                    this.pushDecodedReasoning(normalizeGemmaThought(body));
+                    this.inThinkTag = false;
+                    this.thinkBody = '';
+                    this.thinkClose = '';
+                    if (remainder) this.push(remainder);
+                }
+                return;
+            }
+
             if (this.inToolCallTag) {
                 this.toolCallBody += token.slice(pos);
                 const closeIdx = this.toolCallBody.indexOf(this.toolCallClose);
@@ -254,7 +378,22 @@ export class StandardChatDecoder implements StreamDecoder {
                     const body = this.toolCallBody.slice(0, closeIdx);
                     const remainder = this.toolCallBody.slice(closeIdx + this.toolCallClose.length);
 
-                    if (body.trim()) {
+                    if (this.toolCallKind === 'gemma') {
+                        // DiffusionGemma native: call:name{pseudo-json args}
+                        const parsed = parseGemmaToolCallBody(body);
+                        if (parsed) {
+                            this.callback({
+                                type: 'tool_call',
+                                calls: [
+                                    {
+                                        id: `gemma_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+                                        type: 'function',
+                                        function: { name: parsed.name, arguments: parsed.argumentsJson },
+                                    },
+                                ],
+                            });
+                        }
+                    } else if (body.trim()) {
                         try {
                             const normalizedJson = body.trim()
                                 .replace(/'/g, '"')
@@ -314,29 +453,36 @@ export class StandardChatDecoder implements StreamDecoder {
                 const ch = token[pos]!;
                 pos++;
                 this.tagBuffer += ch;
-                if (this.matchesStructuralOpenerPrefix(this.tagBuffer)) {
-                    if (this.tagBuffer === '<progress>') {
-                        this.inProgressTag = true;
-                        this.progressBody = '';
-                        this.tagBuffer = '';
-                    } else if (this.tagBuffer === '<tool_call|>') {
-                        this.inToolCallTag = true;
-                        this.toolCallBody = '';
-                        this.toolCallClose = '<|tool_response>';
-                        this.tagBuffer = '';
-                    } else if (this.tagBuffer === '<|tool_response>') {
-                        this.tagBuffer = '';
-                    } else if (this.tagBuffer === '<|channel>thought') {
-                        this.inGemmaThought = true;
-                        this.gemmaThoughtBody = '';
-                        this.gemmaThoughtClose = '<channel|>';
-                        this.tagBuffer = '';
-                    } else if (this.tagBuffer === '<|thought') {
-                        this.inGemmaThought = true;
-                        this.gemmaThoughtBody = '';
-                        this.gemmaThoughtClose = '|>';
+                const matchResult = checkOpenerMatch(this.tagBuffer);
+                if (matchResult.matches) {
+                    if (matchResult.fullMatch) {
+                        const fm = matchResult.fullMatch;
+                        if (fm.type === 'progress') {
+                            this.inProgressTag = true;
+                            this.progressBody = '';
+                        } else if (fm.type === 'think') {
+                            this.inThinkTag = true;
+                            this.thinkBody = '';
+                            this.thinkClose = fm.close;
+                        } else if (fm.type === 'gemma-thought') {
+                            this.inGemmaThought = true;
+                            this.gemmaThoughtBody = '';
+                            this.gemmaThoughtClose = fm.close;
+                        } else if (fm.type === 'tool-call') {
+                            this.inToolCallTag = true;
+                            this.toolCallBody = '';
+                            this.toolCallClose = fm.close;
+                            this.toolCallKind = 'json';
+                        } else if (fm.type === 'gemma-tool-call') {
+                            this.inToolCallTag = true;
+                            this.toolCallBody = '';
+                            this.toolCallClose = fm.close;
+                            this.toolCallKind = 'gemma';
+                        }
+                        // 'tool-response' / 'discard': nothing to open — just drop the marker
                         this.tagBuffer = '';
                     }
+                    // else keep buffering (still a viable opener prefix)
                 } else {
                     this.pushDecodedText(this.tagBuffer);
                     this.tagBuffer = '';
@@ -449,13 +595,6 @@ export class StandardChatDecoder implements StreamDecoder {
         else this.pendingReasoning = buffer;
     }
 
-    private matchesStructuralOpenerPrefix(candidate: string): boolean {
-        if ('<progress>'.startsWith(candidate)) return true;
-        if ('<tool_call|>'.startsWith(candidate)) return true;
-        if ('<|tool_response>'.startsWith(candidate)) return true;
-        return GEMMA_THOUGHT_OPENERS.some(opener => opener.startsWith(candidate));
-    }
-
     /** Feed native reasoning tokens from the provider */
     pushReasoning(content: string): void {
         this.pushDecodedReasoning(content);
@@ -477,6 +616,13 @@ export class StandardChatDecoder implements StreamDecoder {
             this.inGemmaThought = false;
             this.gemmaThoughtBody = '';
             this.gemmaThoughtClose = '';
+        }
+        // Treat an unclosed think/thinking block as reasoning, not visible text.
+        if (this.inThinkTag) {
+            this.pushDecodedReasoning(normalizeGemmaThought(this.thinkBody));
+            this.inThinkTag = false;
+            this.thinkBody = '';
+            this.thinkClose = '';
         }
         if (this.inProgressTag) {
             if (this.progressBody) {

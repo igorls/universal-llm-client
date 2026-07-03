@@ -276,6 +276,79 @@ describe('StandardChatDecoder', () => {
     });
 });
 
+describe('StandardChatDecoder — reasoning tags + DiffusionGemma native protocol', () => {
+    it('parses <think> tags into reasoning', () => {
+        const decoder = new StandardChatDecoder(() => {});
+        decoder.push("<think>Let's find the answer</think>The answer is 42.");
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe("Let's find the answer");
+        expect(decoder.getCleanContent()).toBe('The answer is 42.');
+    });
+
+    it('parses <thinking> tags into reasoning', () => {
+        const decoder = new StandardChatDecoder(() => {});
+        decoder.push('<thinking>Let\'s check facts</thinking>Correct.');
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe("Let's check facts");
+        expect(decoder.getCleanContent()).toBe('Correct.');
+    });
+
+    it('parses Gemma thought channel with whitespace variants into reasoning', () => {
+        const decoder = new StandardChatDecoder(() => {});
+        decoder.push('<|channel>   thought\nNeed Portuguese.<channel|>Olá!');
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe('Need Portuguese.');
+        expect(decoder.getCleanContent()).toBe('Olá!');
+    });
+
+    it('parses a native DiffusionGemma tool call in one chunk', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+        decoder.push('<|tool_call>call:get_weather{city:<|"|>Paris<|"|>,unit:<|"|>celsius<|"|>}<tool_call|>');
+        decoder.flush();
+        const calls = events.filter(e => e.type === 'tool_call');
+        expect(calls).toHaveLength(1);
+        const call = (calls[0] as { calls: Array<{ function: { name: string; arguments: string } }> }).calls[0]!;
+        expect(call.function.name).toBe('get_weather');
+        expect(JSON.parse(call.function.arguments)).toEqual({ city: 'Paris', unit: 'celsius' });
+        expect(decoder.getCleanContent()).toBe('');
+    });
+
+    it('parses a native DiffusionGemma tool call split across chunks', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+        decoder.push('<|tool_');
+        decoder.push('call>call:shell_exec{com');
+        decoder.push('mand:<|"|>ls -la<|"|>}<tool_');
+        decoder.push('call|>Done.');
+        decoder.flush();
+        const calls = events.filter(e => e.type === 'tool_call');
+        expect(calls).toHaveLength(1);
+        const call = (calls[0] as { calls: Array<{ function: { name: string; arguments: string } }> }).calls[0]!;
+        expect(call.function.name).toBe('shell_exec');
+        expect(JSON.parse(call.function.arguments)).toEqual({ command: 'ls -la' });
+        expect(decoder.getCleanContent()).toBe('Done.');
+    });
+
+    it('handles thought channel + native tool call in one stream', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+        decoder.push('<|channel>thought\nNeed the weather tool.<channel|>');
+        decoder.push('<|tool_call>call:get_weather{city:<|"|>Rio<|"|>}<tool_call|>');
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe('Need the weather tool.');
+        expect(events.filter(e => e.type === 'tool_call')).toHaveLength(1);
+        expect(decoder.getCleanContent()).toBe('');
+    });
+
+    it('discards stray channel and turn markers', () => {
+        const decoder = new StandardChatDecoder(() => {});
+        decoder.push('<channel|>The answer is 42.<turn|>');
+        decoder.flush();
+        expect(decoder.getCleanContent()).toBe('The answer is 42.');
+    });
+});
+
 describe('InterleavedReasoningDecoder', () => {
     it('extracts think tags from text', () => {
         const events: DecodedEvent[] = [];
