@@ -55,10 +55,12 @@ export class OllamaClient extends BaseLLMClient {
         // Structured output and tools can now be used together.\n        // The provider sends both format and tools in the request.\n        // The Router handles skipping validation when the response contains tool calls.
 
         const url = `${this.options.url}/api/chat`;
+        // Per-call model override (same endpoint/credentials), else the configured model.
+        const model = options?.model ?? this.options.model;
         const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
 
         const body: Record<string, unknown> = {
-            model: this.options.model,
+            model,
             messages: this.convertMessages(messages),
             stream: false,
             options: this.buildOllamaOptions(options),
@@ -87,7 +89,7 @@ export class OllamaClient extends BaseLLMClient {
             timestamp: start,
             type: 'request',
             provider: 'ollama',
-            model: this.options.model,
+            model,
         });
 
         const response = await httpRequest<OllamaResponse>(url, {
@@ -145,7 +147,7 @@ export class OllamaClient extends BaseLLMClient {
             timestamp: Date.now(),
             type: 'response',
             provider: 'ollama',
-            model: this.options.model,
+            model,
             duration: Date.now() - start,
             usage,
         });
@@ -162,10 +164,12 @@ export class OllamaClient extends BaseLLMClient {
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         const url = `${this.options.url}/api/chat`;
+        // Per-call model override (same endpoint/credentials), else the configured model.
+        const model = options?.model ?? this.options.model;
         const tools = options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
 
         const body: Record<string, unknown> = {
-            model: this.options.model,
+            model,
             messages: this.convertMessages(messages),
             stream: true,
             options: this.buildOllamaOptions(options),
@@ -194,7 +198,7 @@ export class OllamaClient extends BaseLLMClient {
             timestamp: start,
             type: 'stream_start',
             provider: 'ollama',
-            model: this.options.model,
+            model,
         });
 
         const decoderEvents: DecodedEvent[] = [];
@@ -270,7 +274,7 @@ export class OllamaClient extends BaseLLMClient {
             timestamp: Date.now(),
             type: 'stream_end',
             provider: 'ollama',
-            model: this.options.model,
+            model,
             duration: Date.now() - start,
             usage,
         });

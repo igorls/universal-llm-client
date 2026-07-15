@@ -373,6 +373,15 @@ export interface ChatOptions {
     /** Max tokens to generate */
     maxTokens?: number;
     /**
+     * Per-call model override. When set, this request uses this model name
+     * instead of the one the provider was constructed with — without mutating
+     * the provider. Useful for routing a single turn to a different model on the
+     * SAME endpoint (e.g. a cloud model proxied by the local Ollama daemon).
+     * Only honored by providers on the same endpoint/credentials; it does not
+     * re-point the base URL or API key.
+     */
+    model?: string;
+    /**
      * Enable/disable/level model thinking for this request, overriding the
      * model-level `thinking` config. `true`/`false` or a level
      * ('minimal' | 'low' | 'medium' | 'high'). Mapped per provider: Gemini

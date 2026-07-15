@@ -110,6 +110,37 @@ describe('OllamaClient', () => {
     });
 
     // ========================================================================
+    // Per-call model override (same endpoint, different model per request)
+    // ========================================================================
+
+    describe('per-call model override', () => {
+        test('chat() defaults to the configured model and honors options.model', async () => {
+            const getDefault = mockFetchAndCapture();
+            const client = createClient();
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            expect(getDefault()!['model']).toBe('test-model');
+
+            const getOverride = mockFetchAndCapture();
+            await client.chat([{ role: 'user', content: 'hi' }], { model: 'kimi-k2.7-code:cloud' });
+            expect(getOverride()!['model']).toBe('kimi-k2.7-code:cloud');
+        });
+
+        test('chatStream() honors options.model without mutating the client', async () => {
+            const getOverride = mockFetchAndCapture();
+            const client = createClient();
+            for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }], { model: 'kimi-k2.7-code:cloud' })) {
+                /* consume */
+            }
+            expect(getOverride()!['model']).toBe('kimi-k2.7-code:cloud');
+
+            // The next default call still uses the configured model.
+            const getDefault = mockFetchAndCapture();
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            expect(getDefault()!['model']).toBe('test-model');
+        });
+    });
+
+    // ========================================================================
     // Error detection → failover (Gap 1)
     // ========================================================================
 
