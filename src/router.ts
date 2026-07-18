@@ -41,10 +41,21 @@ export interface ProviderEntry {
     id: string;
     /** The underlying LLM client */
     client: BaseLLMClient;
-    /** Priority (lower = tried first, defaults to insertion order) */
+    /**
+     * Priority (lower = tried first, defaults to insertion order). Entries
+     * sharing a priority form a POOL: the router load-balances across the pool
+     * (least-inflight + session affinity) and only moves to the next priority
+     * tier on failure or saturation.
+     */
     priority: number;
     /** Override model name for this provider */
     modelOverride?: string;
+    /**
+     * Max concurrent in-flight requests on this node (default: unlimited).
+     * At the cap the node is skipped; when a whole pool is capped the request
+     * waits up to `spillAfterMs` for a slot, then spills to the next tier.
+     */
+    maxConcurrent?: number;
 }
 
 interface ProviderHealth {
@@ -54,6 +65,34 @@ interface ProviderHealth {
     cooldownUntil?: number;
 }
 
+/** Per-node runtime routing metrics (inflight + lifetime counters). */
+interface ProviderMetrics {
+    inflight: number;
+    requests: number;
+    failures: number;
+    lastLatencyMs?: number;
+    /** Exponential moving average (α = 0.2) of successful-call latency. */
+    avgLatencyMs?: number;
+}
+
+/** Per-priority-tier counters (a tier = one pool). */
+interface PoolMetrics {
+    /** Requests that left this saturated pool for a lower tier. */
+    spills: number;
+    /** Requests that waited (bounded) for a slot in this pool. */
+    queueWaits: number;
+}
+
+/** Per-request routing hints threaded from ChatOptions. */
+export interface RouteOptions {
+    /**
+     * Affinity key: within a pool, prefer a stable node per key (rendezvous
+     * hashing) so a conversation keeps hitting the same node's prompt cache.
+     * Preference only — busy/unhealthy nodes fall through to the next-best.
+     */
+    sessionKey?: string;
+}
+
 export interface RouterConfig {
     /** Max retries per provider before failover (default: 2) */
     retriesPerProvider?: number;
@@ -61,6 +100,11 @@ export interface RouterConfig {
     maxFailures?: number;
     /** Cooldown period in ms for unhealthy providers (default: 30000) */
     cooldownMs?: number;
+    /**
+     * How long (ms) to wait for a slot when every node of a pool is at its
+     * `maxConcurrent` cap before spilling to the next tier (default: 750).
+     */
+    spillAfterMs?: number;
     /** Auditor for observability */
     auditor?: Auditor;
 }
@@ -72,6 +116,33 @@ export interface ProviderStatus {
     consecutiveFailures: number;
     cooldownUntil?: number;
     model: string;
+    /** Priority tier (pool) this node belongs to. */
+    priority: number;
+    /** Requests currently in flight on this node. */
+    inflight: number;
+    /** Concurrency cap (undefined = unlimited). */
+    maxConcurrent?: number;
+    /** Lifetime successful+failed dispatches to this node. */
+    requests: number;
+    /** Lifetime failed dispatches (retries exhausted / terminal). */
+    failures: number;
+    /** EMA of successful-call latency in ms. */
+    avgLatencyMs?: number;
+    /** Latency of the most recent successful call in ms. */
+    lastLatencyMs?: number;
+}
+
+/** Pool-level view for telemetry (one entry per priority tier). */
+export interface PoolStatus {
+    priority: number;
+    /** Node ids in this pool. */
+    nodes: string[];
+    /** Sum of inflight across the pool. */
+    inflight: number;
+    /** Requests that spilled OUT of this pool because it was saturated. */
+    spills: number;
+    /** Requests that queued (bounded wait) on this pool. */
+    queueWaits: number;
 }
 
 // ============================================================================
@@ -81,6 +152,10 @@ export interface ProviderStatus {
 export class Router {
     private providers: ProviderEntry[] = [];
     private health: Map<string, ProviderHealth> = new Map();
+    private metrics: Map<string, ProviderMetrics> = new Map();
+    private poolMetrics: Map<number, PoolMetrics> = new Map();
+    /** Wake-ups for requests waiting on a `maxConcurrent` slot. */
+    private slotWaiters: Array<() => void> = [];
     private auditor: Auditor;
     private config: Required<Omit<RouterConfig, 'auditor'>>;
 
@@ -90,6 +165,7 @@ export class Router {
             retriesPerProvider: config.retriesPerProvider ?? 2,
             maxFailures: config.maxFailures ?? 3,
             cooldownMs: config.cooldownMs ?? 30000,
+            spillAfterMs: config.spillAfterMs ?? 750,
         };
     }
 
@@ -103,6 +179,11 @@ export class Router {
             healthy: true,
             consecutiveFailures: 0,
         });
+        this.metrics.set(entry.id, {
+            inflight: 0,
+            requests: 0,
+            failures: 0,
+        });
         // Re-sort by priority
         this.providers.sort((a, b) => a.priority - b.priority);
     }
@@ -110,6 +191,7 @@ export class Router {
     removeProvider(id: string): void {
         this.providers = this.providers.filter(p => p.id !== id);
         this.health.delete(id);
+        this.metrics.delete(id);
     }
 
     setAuditor(auditor: Auditor): void {
@@ -122,14 +204,46 @@ export class Router {
     }
 
     getStatus(): ProviderStatus[] {
-        return this.providers.map(p => ({
-            id: p.id,
-            healthy: this.isAvailable(p.id),
-            active: true,
-            consecutiveFailures: this.health.get(p.id)?.consecutiveFailures ?? 0,
-            cooldownUntil: this.health.get(p.id)?.cooldownUntil,
-            model: p.modelOverride ?? p.client.model,
-        }));
+        return this.providers.map(p => {
+            const m = this.metrics.get(p.id);
+            return {
+                id: p.id,
+                healthy: this.isAvailable(p.id),
+                active: true,
+                consecutiveFailures: this.health.get(p.id)?.consecutiveFailures ?? 0,
+                cooldownUntil: this.health.get(p.id)?.cooldownUntil,
+                model: p.modelOverride ?? p.client.model,
+                priority: p.priority,
+                inflight: m?.inflight ?? 0,
+                maxConcurrent: p.maxConcurrent,
+                requests: m?.requests ?? 0,
+                failures: m?.failures ?? 0,
+                avgLatencyMs: m?.avgLatencyMs,
+                lastLatencyMs: m?.lastLatencyMs,
+            };
+        });
+    }
+
+    /** Pool-level (priority-tier) telemetry: membership, load, spill counters. */
+    getPoolStatus(): PoolStatus[] {
+        const pools = new Map<number, PoolStatus>();
+        for (const p of this.providers) {
+            let pool = pools.get(p.priority);
+            if (!pool) {
+                const pm = this.poolMetrics.get(p.priority);
+                pool = {
+                    priority: p.priority,
+                    nodes: [],
+                    inflight: 0,
+                    spills: pm?.spills ?? 0,
+                    queueWaits: pm?.queueWaits ?? 0,
+                };
+                pools.set(p.priority, pool);
+            }
+            pool.nodes.push(p.id);
+            pool.inflight += this.metrics.get(p.id)?.inflight ?? 0;
+        }
+        return [...pools.values()].sort((a, b) => a.priority - b.priority);
     }
 
     // ========================================================================
@@ -138,74 +252,92 @@ export class Router {
 
     /**
      * Execute a function against providers with automatic failover.
-     * Tries each available provider in priority order.
+     *
+     * Selection is pool-aware: available providers are grouped by priority
+     * tier; within a tier the request goes to the session-affine node (when
+     * `route.sessionKey` is set) or the least-loaded one, skipping nodes at
+     * their `maxConcurrent` cap. A fully-capped tier is waited on (bounded by
+     * `spillAfterMs`) before the request spills to the next tier. Failure
+     * semantics per node (retries, terminal-error classification, cooldown)
+     * are unchanged from the classic ordered chain.
      */
     async execute<T>(
         fn: (client: BaseLLMClient) => Promise<T>,
         context: string = 'execute',
+        route?: RouteOptions,
     ): Promise<T> {
-        const available = this.getAvailableProviders();
-
-        if (available.length === 0) {
+        if (this.getAvailableProviders().length === 0) {
             throw new Error('No available LLM providers. All providers are unhealthy or in cooldown.');
         }
 
         let lastError: Error | undefined;
+        const tried = new Set<string>();
 
-        for (const provider of available) {
-            // Default disposition if the loop never runs a catch (won't happen, but
-            // keeps the post-loop recordFailure well-defined).
-            let disposition: FailureDisposition = { retry: true, cooldown: false };
-            for (let attempt = 0; attempt <= this.config.retriesPerProvider; attempt++) {
+        for (const priority of this.poolPriorities()) {
+            while (true) {
+                const provider = await this.pickFromPool(priority, route?.sessionKey, tried);
+                if (!provider) break; // pool exhausted or saturated past the queue window — spill
+
+                tried.add(provider.id);
+                this.acquireSlot(provider.id);
+                const started = Date.now();
+                let disposition: FailureDisposition = { retry: true, cooldown: false };
                 try {
-                    if (attempt > 0) {
-                        this.auditor.record({
-                            timestamp: Date.now(),
-                            type: 'retry',
-                            provider: provider.id,
-                            model: provider.modelOverride ?? provider.client.model,
-                            metadata: { attempt, context },
-                        });
-                    }
+                    for (let attempt = 0; attempt <= this.config.retriesPerProvider; attempt++) {
+                        try {
+                            if (attempt > 0) {
+                                this.auditor.record({
+                                    timestamp: Date.now(),
+                                    type: 'retry',
+                                    provider: provider.id,
+                                    model: provider.modelOverride ?? provider.client.model,
+                                    metadata: { attempt, context },
+                                });
+                            }
 
-                    const result = await fn(provider.client);
-                    this.recordSuccess(provider.id);
-                    return result;
-                } catch (error) {
-                    lastError = error instanceof Error ? error : new Error(String(error));
-                    disposition = classifyFailure(lastError);
+                            const result = await fn(provider.client);
+                            this.recordSuccess(provider.id, Date.now() - started);
+                            return result;
+                        } catch (error) {
+                            lastError = error instanceof Error ? error : new Error(String(error));
+                            disposition = classifyFailure(lastError);
+                            this.auditor.record({
+                                timestamp: Date.now(),
+                                type: 'error',
+                                provider: provider.id,
+                                model: provider.modelOverride ?? provider.client.model,
+                                error: lastError.message,
+                                metadata: { attempt, context, retryable: disposition.retry },
+                            });
+                            // Terminal for this node (quota/auth/down/timeout) — stop burning
+                            // retries on it and move on.
+                            if (!disposition.retry) break;
+                        }
+                    }
+                } finally {
+                    this.releaseSlot(provider.id);
+                }
+
+                // Retries exhausted (or skipped) for this provider — record with the
+                // classified disposition (cooldown terminal/unavailable nodes now).
+                this.recordFailure(provider.id, { cooldown: disposition.cooldown });
+
+                // Try next node (same pool first, then the next tier — the loop
+                // structure IS the failover order).
+                const next = this.peekNextCandidate(tried);
+                if (next) {
                     this.auditor.record({
                         timestamp: Date.now(),
-                        type: 'error',
+                        type: 'failover',
                         provider: provider.id,
-                        model: provider.modelOverride ?? provider.client.model,
-                        error: lastError.message,
-                        metadata: { attempt, context, retryable: disposition.retry },
+                        metadata: {
+                            from: provider.id,
+                            nextProvider: next.id,
+                            context,
+                            reason: lastError?.message,
+                        },
                     });
-                    // Terminal for this node (quota/auth/down/timeout) — stop burning
-                    // retries on it and move on.
-                    if (!disposition.retry) break;
                 }
-            }
-
-            // Retries exhausted (or skipped) for this provider — record with the
-            // classified disposition (cooldown terminal/unavailable nodes now).
-            this.recordFailure(provider.id, { cooldown: disposition.cooldown });
-
-            // Try next provider (failover)
-            const nextProvider = this.getNextAvailableAfter(provider.id);
-            if (nextProvider) {
-                this.auditor.record({
-                    timestamp: Date.now(),
-                    type: 'failover',
-                    provider: provider.id,
-                    metadata: {
-                        from: provider.id,
-                        nextProvider: nextProvider.id,
-                        context,
-                        reason: lastError?.message,
-                    },
-                });
             }
         }
 
@@ -225,60 +357,73 @@ export class Router {
     async *executeStream(
         fn: (client: BaseLLMClient) => AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown>,
         context: string = 'stream',
+        route?: RouteOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
-        const available = this.getAvailableProviders();
-
-        if (available.length === 0) {
+        if (this.getAvailableProviders().length === 0) {
             throw new Error('No available LLM providers for streaming.');
         }
 
         let lastError: Error | undefined;
+        const tried = new Set<string>();
 
-        for (const provider of available) {
-            // Has this attempt emitted anything yet? Once it has, we are past the
-            // first-token boundary and can no longer fail over without duplicating.
-            let emitted = false;
-            try {
-                const stream = fn(provider.client);
-                let returnValue: LLMChatResponse | void;
+        for (const priority of this.poolPriorities()) {
+            while (true) {
+                const provider = await this.pickFromPool(priority, route?.sessionKey, tried);
+                if (!provider) break; // pool exhausted or saturated — spill to next tier
 
-                while (true) {
-                    const result = await stream.next();
-                    if (result.done) {
-                        returnValue = result.value;
-                        break;
+                tried.add(provider.id);
+                // Has this attempt emitted anything yet? Once it has, we are past the
+                // first-token boundary and can no longer fail over without duplicating.
+                let emitted = false;
+                this.acquireSlot(provider.id);
+                const started = Date.now();
+                try {
+                    const stream = fn(provider.client);
+                    let returnValue: LLMChatResponse | void;
+
+                    while (true) {
+                        const result = await stream.next();
+                        if (result.done) {
+                            returnValue = result.value;
+                            break;
+                        }
+                        emitted = true;
+                        yield result.value;
                     }
-                    emitted = true;
-                    yield result.value;
-                }
 
-                this.recordSuccess(provider.id);
-                return returnValue;
-            } catch (error) {
-                lastError = error instanceof Error ? error : new Error(String(error));
-                this.recordFailure(provider.id, { cooldown: classifyFailure(lastError).cooldown });
+                    this.recordSuccess(provider.id, Date.now() - started);
+                    return returnValue;
+                } catch (error) {
+                    lastError = error instanceof Error ? error : new Error(String(error));
+                    this.recordFailure(provider.id, { cooldown: classifyFailure(lastError).cooldown });
 
-                if (emitted) {
-                    // Past the first-token boundary — re-streaming elsewhere would
-                    // double the output. Surface the error rather than fail over.
+                    if (emitted) {
+                        // Past the first-token boundary — re-streaming elsewhere would
+                        // double the output. Surface the error rather than fail over.
+                        this.auditor.record({
+                            timestamp: Date.now(),
+                            type: 'error',
+                            provider: provider.id,
+                            error: lastError.message,
+                            metadata: { context, phase: 'mid-stream', failedOver: false },
+                        });
+                        throw lastError;
+                    }
+
+                    // Nothing emitted yet — safe to fail over to the next provider.
                     this.auditor.record({
                         timestamp: Date.now(),
-                        type: 'error',
+                        type: 'failover',
                         provider: provider.id,
                         error: lastError.message,
-                        metadata: { context, phase: 'mid-stream', failedOver: false },
+                        metadata: { context, phase: 'pre-stream' },
                     });
-                    throw lastError;
+                } finally {
+                    // Slot is held for the FULL stream lifetime (also released when
+                    // the consumer abandons the generator early — gen.return() runs
+                    // finally blocks).
+                    this.releaseSlot(provider.id);
                 }
-
-                // Nothing emitted yet — safe to fail over to the next provider.
-                this.auditor.record({
-                    timestamp: Date.now(),
-                    type: 'failover',
-                    provider: provider.id,
-                    error: lastError.message,
-                    metadata: { context, phase: 'pre-stream' },
-                });
             }
         }
 
@@ -331,6 +476,7 @@ export class Router {
         return this.execute(
             client => client.chat(messages, options),
             'chat',
+            { sessionKey: options?.sessionKey },
         );
     }
 
@@ -465,6 +611,7 @@ export class Router {
         return this.execute(
             client => client.chatWithTools(messages, options),
             'chatWithTools',
+            { sessionKey: options?.sessionKey },
         );
     }
 
@@ -484,6 +631,7 @@ export class Router {
         return yield* this.executeStream(
             client => client.chatStream(messages, options),
             'chatStream',
+            { sessionKey: options?.sessionKey },
         );
     }
 
@@ -781,26 +929,164 @@ export class Router {
         return this.providers.filter(p => this.isAvailable(p.id));
     }
 
-    private getNextAvailableAfter(currentId: string): ProviderEntry | undefined {
-        const idx = this.providers.findIndex(p => p.id === currentId);
-        for (let i = idx + 1; i < this.providers.length; i++) {
-            if (this.isAvailable(this.providers[i]!.id)) {
-                return this.providers[i];
-            }
-        }
-        return undefined;
+    // ========================================================================
+    // Pool Selection (priority tiers, load, affinity, bounded queue)
+    // ========================================================================
+
+    /** Distinct priority values in ascending order — the tier iteration order. */
+    private poolPriorities(): number[] {
+        return [...new Set(this.providers.map(p => p.priority))].sort((a, b) => a - b);
     }
 
-    private recordSuccess(id: string): void {
+    private inflight(id: string): number {
+        return this.metrics.get(id)?.inflight ?? 0;
+    }
+
+    private hasCapacity(p: ProviderEntry): boolean {
+        return this.inflight(p.id) < (p.maxConcurrent ?? Infinity);
+    }
+
+    /**
+     * FNV-1a 32-bit — rendezvous-hash score for (sessionKey, node). Stable per
+     * pair, so each key gets a consistent node ranking that only shifts for
+     * keys whose top node actually changed when membership changes.
+     */
+    private static affinityScore(sessionKey: string, nodeId: string): number {
+        let h = 0x811c9dc5;
+        const s = `${sessionKey} ${nodeId}`;
+        for (let i = 0; i < s.length; i++) {
+            h ^= s.charCodeAt(i);
+            h = Math.imul(h, 0x01000193);
+        }
+        return h >>> 0;
+    }
+
+    /**
+     * Nodes of one tier that are healthy and not yet tried, in dispatch-preference
+     * order: session-affine ranking when a key is given, else least-inflight
+     * (ties broken by declaration order, already priority-sorted).
+     */
+    private poolCandidates(priority: number, sessionKey: string | undefined, tried: Set<string>): ProviderEntry[] {
+        const nodes = this.providers.filter(
+            p => p.priority === priority && !tried.has(p.id) && this.isAvailable(p.id),
+        );
+        if (sessionKey && nodes.length > 1) {
+            return [...nodes].sort(
+                (a, b) => Router.affinityScore(sessionKey, b.id) - Router.affinityScore(sessionKey, a.id),
+            );
+        }
+        return [...nodes].sort((a, b) => this.inflight(a.id) - this.inflight(b.id));
+    }
+
+    /**
+     * Pick the node to dispatch to within one tier, or null to spill.
+     * Returns immediately when a candidate has a free slot; when every
+     * candidate is at its cap, waits (bounded by `spillAfterMs`) for a slot to
+     * free anywhere and re-evaluates, then gives up (spill) at the deadline.
+     */
+    private async pickFromPool(
+        priority: number,
+        sessionKey: string | undefined,
+        tried: Set<string>,
+    ): Promise<ProviderEntry | null> {
+        let candidates = this.poolCandidates(priority, sessionKey, tried);
+        if (candidates.length === 0) return null;
+
+        const withSlot = candidates.find(p => this.hasCapacity(p));
+        if (withSlot) return withSlot;
+
+        // Whole tier is at its concurrency caps — bounded queue, then spill.
+        this.bumpPool(priority, 'queueWaits');
+        const deadline = Date.now() + this.config.spillAfterMs;
+        while (Date.now() < deadline) {
+            const woke = await this.waitForSlot(deadline - Date.now());
+            if (!woke) break;
+            candidates = this.poolCandidates(priority, sessionKey, tried);
+            if (candidates.length === 0) return null;
+            const freed = candidates.find(p => this.hasCapacity(p));
+            if (freed) return freed;
+        }
+        this.bumpPool(priority, 'spills');
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'failover',
+            provider: `pool:${priority}`,
+            metadata: {
+                phase: 'spill',
+                reason: `pool saturated for ${this.config.spillAfterMs}ms`,
+                nodes: candidates.map(p => p.id),
+            },
+        });
+        return null;
+    }
+
+    /** Cheap lookahead for failover audit events — next untried healthy node. */
+    private peekNextCandidate(tried: Set<string>): ProviderEntry | undefined {
+        return this.providers.find(p => !tried.has(p.id) && this.isAvailable(p.id));
+    }
+
+    private acquireSlot(id: string): void {
+        const m = this.metrics.get(id);
+        if (!m) return;
+        m.inflight++;
+        m.requests++;
+    }
+
+    private releaseSlot(id: string): void {
+        const m = this.metrics.get(id);
+        if (m && m.inflight > 0) m.inflight--;
+        // Wake one queued request per freed slot; it re-checks capacity itself.
+        const waiter = this.slotWaiters.shift();
+        if (waiter) waiter();
+    }
+
+    /** Resolves true when a slot frees somewhere, false at the timeout. */
+    private waitForSlot(ms: number): Promise<boolean> {
+        if (ms <= 0) return Promise.resolve(false);
+        return new Promise<boolean>(resolve => {
+            const waiter = (): void => {
+                clearTimeout(timer);
+                resolve(true);
+            };
+            const timer = setTimeout(() => {
+                const idx = this.slotWaiters.indexOf(waiter);
+                if (idx >= 0) this.slotWaiters.splice(idx, 1);
+                resolve(false);
+            }, ms);
+            this.slotWaiters.push(waiter);
+        });
+    }
+
+    private bumpPool(priority: number, counter: keyof PoolMetrics): void {
+        let pm = this.poolMetrics.get(priority);
+        if (!pm) {
+            pm = { spills: 0, queueWaits: 0 };
+            this.poolMetrics.set(priority, pm);
+        }
+        pm[counter]++;
+    }
+
+    private recordSuccess(id: string, latencyMs?: number): void {
         const h = this.health.get(id);
         if (h) {
             h.healthy = true;
             h.consecutiveFailures = 0;
             h.cooldownUntil = undefined;
         }
+        if (latencyMs !== undefined) {
+            const m = this.metrics.get(id);
+            if (m) {
+                m.lastLatencyMs = latencyMs;
+                m.avgLatencyMs = m.avgLatencyMs === undefined
+                    ? latencyMs
+                    : Math.round(m.avgLatencyMs * 0.8 + latencyMs * 0.2);
+            }
+        }
     }
 
     private recordFailure(id: string, opts?: { cooldown?: boolean }): void {
+        const m = this.metrics.get(id);
+        if (m) m.failures++;
         const h = this.health.get(id);
         if (!h) return;
 

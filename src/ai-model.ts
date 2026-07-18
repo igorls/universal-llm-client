@@ -63,6 +63,7 @@ export class AIModel {
 
         const routerConfig: RouterConfig = {
             retriesPerProvider: config.retries ?? 2,
+            ...(config.spillAfterMs !== undefined ? { spillAfterMs: config.spillAfterMs } : {}),
             auditor: this.auditor,
         };
         this.router = new Router(routerConfig);
@@ -78,6 +79,9 @@ export class AIModel {
                 client,
                 priority: providerConfig.priority ?? i,
                 modelOverride: providerConfig.model,
+                ...(providerConfig.maxConcurrent !== undefined
+                    ? { maxConcurrent: providerConfig.maxConcurrent }
+                    : {}),
             });
         }
     }
@@ -353,6 +357,12 @@ export class AIModel {
         const type = this.normalizeType(providerConfig.type);
         const modelName = providerConfig.model ?? this.config.model;
 
+        // Per-node defaultParameters layer OVER the model-level block (node wins)
+        // so each node of a chain can carry its own serving knobs (keep_alive…).
+        const defaultParameters = providerConfig.defaultParameters
+            ? { ...this.config.defaultParameters, ...providerConfig.defaultParameters }
+            : this.config.defaultParameters;
+
         const clientOptions: LLMClientOptions = {
             model: modelName,
             url: providerConfig.url ?? DEFAULT_URLS[type] ?? '',
@@ -361,7 +371,7 @@ export class AIModel {
             timeout: this.config.timeout ?? 30000,
             retries: this.config.retries ?? 2,
             debug: this.config.debug ?? false,
-            defaultParameters: this.config.defaultParameters,
+            defaultParameters,
             contextLength: providerConfig.contextLength ?? this.config.contextLength,
             // Preserve `undefined` (not set) vs explicit false so providers can
             // decide whether to send a thinking toggle at all.

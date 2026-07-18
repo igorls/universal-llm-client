@@ -59,8 +59,32 @@ export interface ProviderConfig {
      * {@link LLMClientOptions.contextLength} for the mapping (Ollama num_ctx).
      */
     contextLength?: number;
-    /** Explicit priority (default: array order, lower = higher priority) */
+    /**
+     * Explicit priority (default: array order, lower = higher priority).
+     * Providers sharing the SAME priority form a **pool**: the Router
+     * load-balances across the pool (least-inflight, session affinity)
+     * instead of always hitting the first node, and only moves to the next
+     * priority tier on failure or saturation. Distinct priorities keep the
+     * classic ordered-failover semantics.
+     */
     priority?: number;
+    /**
+     * Max concurrent in-flight requests this provider node accepts before the
+     * Router routes past it (default: unlimited). Size it to the serving
+     * runtime's real parallelism (e.g. Ollama's OLLAMA_NUM_PARALLEL). When every
+     * node of a pool is at its cap, the request waits briefly
+     * ({@link AIModelConfig.spillAfterMs}) for a slot, then spills to the next
+     * priority tier.
+     */
+    maxConcurrent?: number;
+    /**
+     * Per-provider default request parameters, merged OVER
+     * {@link AIModelConfig.defaultParameters} (node values win). Lets each node
+     * of a chain carry its own serving knobs (e.g. Ollama `keep_alive`,
+     * `num_predict`) — the model-level block alone can't express per-node
+     * differences.
+     */
+    defaultParameters?: Record<string, unknown>;
     /** Vertex AI region (e.g., "us-central1") */
     region?: string;
     /** Google API version (default: "v1beta") */
@@ -137,6 +161,13 @@ export interface AIModelConfig {
     timeout?: number;
     /** Retries per provider before failover (default: 2) */
     retries?: number;
+    /**
+     * How long (ms) a request waits for a busy pool to free a slot before
+     * spilling to the next priority tier (default: 750). Only meaningful when
+     * providers declare {@link ProviderConfig.maxConcurrent}; a pool with no
+     * caps never queues.
+     */
+    spillAfterMs?: number;
     /** Observability hooks */
     auditor?: import('./auditor.js').Auditor;
     /** Enable debug logging */
@@ -415,6 +446,14 @@ export interface ChatOptions {
      * {@link LLMClientOptions.contextLength} for provider mapping.
      */
     contextLength?: number;
+    /**
+     * Routing-affinity key (e.g. a conversation/session id) — NEVER sent to the
+     * provider API. Within a same-priority pool the Router prefers a stable node
+     * per key (rendezvous hashing) so consecutive turns of one conversation hit
+     * the same node and reuse its prompt cache. A preference only: a busy or
+     * unhealthy preferred node falls through to the next-best.
+     */
+    sessionKey?: string;
     /** Tool definitions (auto-populated from registry if not set) */
     tools?: LLMToolDefinition[];
     /** Tool choice mode */
