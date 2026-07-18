@@ -112,6 +112,13 @@ export {
     createRandomNumberTool,
 } from './tools.js';
 
+export {
+    coerceAndValidateToolArgs,
+    parseToolArguments,
+    type ToolParameterSchema,
+    type ToolArgCoercionResult,
+} from './tool-arg-coercion.js';
+
 // ============================================================================
 // HTTP Utilities (for advanced use cases)
 // ============================================================================

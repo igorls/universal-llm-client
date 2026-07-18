@@ -27,6 +27,7 @@ import {
 import type { DecodedEvent } from './stream-decoder.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
+import { coerceAndValidateToolArgs } from './tool-arg-coercion.js';
 
 // ============================================================================
 // Abstract Base Client
@@ -193,8 +194,30 @@ export abstract class BaseLLMClient {
         });
 
         try {
-            const args = JSON.parse(toolCall.function.arguments);
-            const output = await tool.handler(args);
+            // Coerce small-model near-misses (string→number, scalar→array, …)
+            // and, on an unrecoverable arg error, hand the model a
+            // self-correcting message instead of running the handler blind.
+            const coercion = coerceAndValidateToolArgs(
+                toolCall.function.arguments,
+                tool.definition.parameters,
+                tool.definition.name,
+            );
+            if (coercion.error) {
+                const result: ToolExecutionResult = {
+                    tool_call_id: toolCall.id,
+                    output: null,
+                    error: coercion.error,
+                    duration: Date.now() - start,
+                };
+                this.auditor.record({
+                    timestamp: Date.now(),
+                    type: 'tool_result',
+                    toolExecution: result,
+                    error: result.error,
+                });
+                return result;
+            }
+            const output = await tool.handler(coercion.args);
             const result: ToolExecutionResult = {
                 tool_call_id: toolCall.id,
                 output,
@@ -267,13 +290,20 @@ export abstract class BaseLLMClient {
             const toolResults = await this.executeTools(response.message.tool_calls);
             allToolExecutions.push(...toolResults);
 
-            // Add tool results as messages
+            // Add tool results as messages. A failed call must feed its ERROR
+            // back to the model (not the bare `null` output) — otherwise a small
+            // model that malforms a call gets "null" and cannot self-correct.
             for (const result of toolResults) {
+                const content = result.error
+                    ? (result.output == null
+                        ? result.error
+                        : `${result.error}\n${typeof result.output === 'string' ? result.output : JSON.stringify(result.output)}`)
+                    : typeof result.output === 'string'
+                        ? result.output
+                        : JSON.stringify(result.output);
                 conversationMessages.push({
                     role: 'tool',
-                    content: typeof result.output === 'string'
-                        ? result.output
-                        : JSON.stringify(result.output),
+                    content,
                     tool_call_id: result.tool_call_id,
                 });
             }
