@@ -13,6 +13,9 @@
 
 export { AIModel } from './ai-model.js';
 
+// Router status/telemetry types (returned by AIModel.getProviderStatus/getPoolStatus)
+export type { ProviderStatus, PoolStatus, RouteOptions } from './router.js';
+
 // ============================================================================
 // Types & Interfaces
 // ============================================================================

@@ -23,7 +23,7 @@ import {
     type DeepResearchEvent,
 } from './interfaces.js';
 import type { DecodedEvent } from './stream-decoder.js';
-import { Router, type RouterConfig, type ProviderStatus } from './router.js';
+import { Router, type RouterConfig, type ProviderStatus, type PoolStatus } from './router.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
 import { OllamaClient } from './providers/ollama.js';
@@ -338,6 +338,11 @@ export class AIModel {
     /** Get health/status of all configured providers */
     getProviderStatus(): ProviderStatus[] {
         return this.router.getStatus();
+    }
+
+    /** Pool-level (priority-tier) routing telemetry: membership, load, spill counters. */
+    getPoolStatus(): PoolStatus[] {
+        return this.router.getPoolStatus();
     }
 
     // ========================================================================

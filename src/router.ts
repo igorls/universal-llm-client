@@ -116,6 +116,8 @@ export interface ProviderStatus {
     consecutiveFailures: number;
     cooldownUntil?: number;
     model: string;
+    /** Endpoint base URL of this node (for telemetry labeling). */
+    url: string;
     /** Priority tier (pool) this node belongs to. */
     priority: number;
     /** Requests currently in flight on this node. */
@@ -213,6 +215,7 @@ export class Router {
                 consecutiveFailures: this.health.get(p.id)?.consecutiveFailures ?? 0,
                 cooldownUntil: this.health.get(p.id)?.cooldownUntil,
                 model: p.modelOverride ?? p.client.model,
+                url: p.client.url,
                 priority: p.priority,
                 inflight: m?.inflight ?? 0,
                 maxConcurrent: p.maxConcurrent,
