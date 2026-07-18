@@ -153,6 +153,48 @@ describe('OllamaClient', () => {
     });
 
     // ========================================================================
+    // keep_alive hoisting (top-level request field, never an option)
+    // ========================================================================
+
+    describe('keep_alive hoisting', () => {
+        test('keep_alive in defaultParameters is hoisted to the request top level', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ defaultParameters: { keep_alive: '30m', temperature: 0.4 } });
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            const body = getBody()!;
+            expect(body['keep_alive']).toBe('30m');
+            const params = body['options'] as Record<string, unknown>;
+            expect(params['keep_alive']).toBeUndefined();
+            expect(params['temperature']).toBe(0.4); // siblings stay in options
+        });
+
+        test('numeric-string keep_alive ("-1") is coerced to a number (Ollama rejects unit-less strings)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ defaultParameters: { keep_alive: '-1' } });
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            expect(getBody()!['keep_alive']).toBe(-1);
+        });
+
+        test('chatStream() hoists keep_alive too', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ defaultParameters: { keep_alive: '-1' } });
+            for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }])) {
+                /* consume */
+            }
+            const body = getBody()!;
+            expect(body['keep_alive']).toBe(-1);
+            expect((body['options'] as Record<string, unknown>)['keep_alive']).toBeUndefined();
+        });
+
+        test('no keep_alive is sent when none is configured', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            expect(getBody()!['keep_alive']).toBeUndefined();
+        });
+    });
+
+    // ========================================================================
     // Per-call model override (same endpoint, different model per request)
     // ========================================================================
 

@@ -65,6 +65,7 @@ export class OllamaClient extends BaseLLMClient {
             stream: false,
             options: this.buildOllamaOptions(options),
         };
+        this.hoistKeepAlive(body);
 
         if (tools?.length) {
             body['tools'] = this.convertToolsToOllama(tools);
@@ -174,6 +175,7 @@ export class OllamaClient extends BaseLLMClient {
             stream: true,
             options: this.buildOllamaOptions(options),
         };
+        this.hoistKeepAlive(body);
 
         if (tools?.length) {
             body['tools'] = this.convertToolsToOllama(tools);
@@ -504,6 +506,23 @@ export class OllamaClient extends BaseLLMClient {
                 parameters: t.function.parameters,
             },
         }));
+    }
+
+    /**
+     * `keep_alive` is a TOP-LEVEL Ollama request field, not a sampling option —
+     * left inside `options` it is silently ignored (models unload on the
+     * server's default and pinning policies do nothing). Callers configure it
+     * via defaultParameters/parameters like everything else; this hoists it out
+     * of the built options onto the request body. Numeric strings ("-1", "300")
+     * are coerced to numbers: Ollama parses bare numbers as seconds (negative =
+     * keep forever) but REJECTS unit-less duration strings.
+     */
+    private hoistKeepAlive(body: Record<string, unknown>): void {
+        const params = body['options'] as Record<string, unknown> | undefined;
+        if (!params || params['keep_alive'] === undefined) return;
+        const raw = params['keep_alive'];
+        delete params['keep_alive'];
+        body['keep_alive'] = typeof raw === 'string' && /^-?\d+$/.test(raw.trim()) ? Number(raw.trim()) : raw;
     }
 
     private buildOllamaOptions(options?: ChatOptions): Record<string, unknown> {
