@@ -362,6 +362,7 @@ export class AIModel {
             retries: this.config.retries ?? 2,
             debug: this.config.debug ?? false,
             defaultParameters: this.config.defaultParameters,
+            contextLength: providerConfig.contextLength ?? this.config.contextLength,
             // Preserve `undefined` (not set) vs explicit false so providers can
             // decide whether to send a thinking toggle at all.
             thinking: this.config.thinking,

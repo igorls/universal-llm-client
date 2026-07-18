@@ -110,6 +110,49 @@ describe('OllamaClient', () => {
     });
 
     // ========================================================================
+    // Context window (contextLength → options.num_ctx)
+    // ========================================================================
+
+    describe('contextLength → num_ctx', () => {
+        test('client-level contextLength is sent as options.num_ctx', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ contextLength: 16384 });
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            expect((getBody()!['options'] as Record<string, unknown>)['num_ctx']).toBe(16384);
+        });
+
+        test('per-call contextLength overrides the client-level value', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ contextLength: 16384 });
+            await client.chat([{ role: 'user', content: 'hi' }], { contextLength: 32768 });
+            expect((getBody()!['options'] as Record<string, unknown>)['num_ctx']).toBe(32768);
+        });
+
+        test('explicit num_ctx in parameters wins over contextLength', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ contextLength: 16384 });
+            await client.chat([{ role: 'user', content: 'hi' }], { parameters: { num_ctx: 8192 } });
+            expect((getBody()!['options'] as Record<string, unknown>)['num_ctx']).toBe(8192);
+        });
+
+        test('no num_ctx is sent when contextLength is unset', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+            await client.chat([{ role: 'user', content: 'hi' }]);
+            expect((getBody()!['options'] as Record<string, unknown>)['num_ctx']).toBeUndefined();
+        });
+
+        test('chatStream() also carries num_ctx', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ contextLength: 16384 });
+            for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }])) {
+                /* consume */
+            }
+            expect((getBody()!['options'] as Record<string, unknown>)['num_ctx']).toBe(16384);
+        });
+    });
+
+    // ========================================================================
     // Per-call model override (same endpoint, different model per request)
     // ========================================================================
 

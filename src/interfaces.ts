@@ -53,6 +53,12 @@ export interface ProviderConfig {
     apiKey?: string;
     /** Override model name for this specific provider */
     model?: string;
+    /**
+     * Per-provider context-window override (tokens). Falls back to
+     * {@link AIModelConfig.contextLength}. See
+     * {@link LLMClientOptions.contextLength} for the mapping (Ollama num_ctx).
+     */
+    contextLength?: number;
     /** Explicit priority (default: array order, lower = higher priority) */
     priority?: number;
     /** Vertex AI region (e.g., "us-central1") */
@@ -121,6 +127,12 @@ export interface AIModelConfig {
     defaultParameters?: Record<string, unknown>;
     /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high'). */
     thinking?: boolean | ThinkingLevel;
+    /**
+     * Context window (tokens) requested from the serving runtime, applied to
+     * every provider unless a ProviderConfig overrides it. See
+     * {@link LLMClientOptions.contextLength} for the per-provider mapping.
+     */
+    contextLength?: number;
     /** Request timeout in ms (default: 30000) */
     timeout?: number;
     /** Retries per provider before failover (default: 2) */
@@ -154,6 +166,15 @@ export interface LLMClientOptions {
     retries?: number;
     /** API key for authenticated endpoints */
     apiKey?: string;
+    /**
+     * Context window (in tokens) to request from the serving runtime.
+     * Ollama: sent as `options.num_ctx` — without it Ollama uses its own
+     * (small, typically 4096) default and long agent prompts silently
+     * truncate. Providers whose context is configured server-side
+     * (OpenAI-compatible, Anthropic, Google) ignore it. An explicit
+     * `num_ctx` in defaultParameters/parameters always wins.
+     */
+    contextLength?: number;
     /** Enable debug logging */
     debug?: boolean;
     /** Vertex AI region */
@@ -389,6 +410,11 @@ export interface ChatOptions {
      * `enable_thinking`, Anthropic `budget_tokens`, Ollama `think`.
      */
     thinking?: boolean | ThinkingLevel;
+    /**
+     * Per-call context-window override (tokens). See
+     * {@link LLMClientOptions.contextLength} for provider mapping.
+     */
+    contextLength?: number;
     /** Tool definitions (auto-populated from registry if not set) */
     tools?: LLMToolDefinition[];
     /** Tool choice mode */
