@@ -102,6 +102,44 @@ function normalizeMessagesForOpenAICompat(messages: LLMChatMessage[]): LLMChatMe
     });
 }
 
+/** True when a tool-call arguments payload is a JSON object/array literal. */
+function isValidToolArgumentsJson(args: unknown): boolean {
+    if (typeof args !== 'string') return false;
+    try {
+        JSON.parse(args);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Outbound history frames must NEVER carry non-JSON tool-call arguments:
+ * vLLM's serving layer json.loads-validates every assistant tool_calls
+ * frame in the request and 400s the whole turn ("Unterminated string
+ * starting at: line 1 column N") when one is malformed — observed live
+ * after a max_tokens-truncated call left partial arguments in history.
+ * The frame is informational (the paired tool result tells the story), so
+ * a stub preserves the exchange without poisoning the request.
+ */
+function sanitizeOutboundToolCalls(
+    toolCalls: LLMChatMessage['tool_calls'],
+): LLMChatMessage['tool_calls'] {
+    if (!toolCalls?.length) return toolCalls;
+    if (toolCalls.every(tc => isValidToolArgumentsJson(tc.function.arguments))) return toolCalls;
+    return toolCalls.map(tc =>
+        isValidToolArgumentsJson(tc.function.arguments)
+            ? tc
+            : {
+                ...tc,
+                function: {
+                    ...tc.function,
+                    arguments: JSON.stringify({ _invalid: 'arguments were truncated/malformed and stubbed' }),
+                },
+            },
+    );
+}
+
 function toOpenAICompatMessage(
     message: LLMChatMessage,
     content: LLMChatMessage['content'] = message.content,
@@ -112,7 +150,7 @@ function toOpenAICompatMessage(
     };
 
     if (message.role === 'assistant' && message.tool_calls) {
-        normalized.tool_calls = message.tool_calls;
+        normalized.tool_calls = sanitizeOutboundToolCalls(message.tool_calls);
     }
     if (message.role === 'tool' && message.tool_call_id) {
         normalized.tool_call_id = message.tool_call_id;
@@ -730,6 +768,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // fires pre-stream, so a retry after ANY emitted delta would replay
         // content the caller already received — guard against it.
         let emittedDeltas = 0;
+        // Natural finish reason from the final chunk ('stop' | 'tool_calls' |
+        // 'length' | ...). 'length' means the output cap cut the generation —
+        // any accumulated tool call is partial by construction.
+        let lastFinishReason: string | undefined;
 
         let usage: TokenUsageInfo | undefined;
         // Accumulates reasoning deltas from servers that stream a dedicated
@@ -854,6 +896,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                             if (loopGuard.detection) break;
                         }
 
+                        if (parsed.choices?.[0]?.finish_reason) {
+                            lastFinishReason = parsed.choices[0].finish_reason;
+                        }
+
                         // Emit tool calls when stream finishes
                         if (parsed.choices?.[0]?.finish_reason === 'tool_calls' || parsed.choices?.[0]?.finish_reason === 'stop') {
                             if (toolCallAccum.size > 0) {
@@ -915,7 +961,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         // A guard-aborted stream was cut mid-generation: any accumulated tool
         // call is partial by construction (its argument tail is the loop
-        // garbage that triggered the abort) — never execute it.
+        // garbage that triggered the abort) — never execute it. Same for a
+        // 'length'-truncated stream whose accumulated arguments don't parse:
+        // executing them misfires, and re-sending the partial JSON in the
+        // next request makes vLLM 400 the whole turn ("Unterminated string").
         let finalToolCalls = loopGuard.detection
             ? undefined
             : toolCallAccum.size > 0
@@ -923,6 +972,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 : decoderToolCalls.length > 0
                     ? decoderToolCalls
                     : undefined;
+        if (finalToolCalls?.length) {
+            const valid = finalToolCalls.filter(tc => isValidToolArgumentsJson(tc.function.arguments));
+            if (valid.length < finalToolCalls.length) {
+                console.warn(
+                    `[openai] Dropped ${finalToolCalls.length - valid.length} tool call(s) with malformed arguments (finish_reason=${lastFinishReason ?? 'unknown'})`,
+                );
+                finalToolCalls = valid.length > 0 ? valid : undefined;
+            }
+        }
         let cleanContent = decoder.getCleanContent();
         // Prefer the server's dedicated reasoning field; fall back to <think>
         // tags parsed from the content stream by the decoder.
@@ -967,7 +1025,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             provider: 'openai',
             // Consumers can tell a guard-aborted turn from a natural stop and
             // e.g. nudge the model instead of trusting the truncated output.
-            ...(loopGuard.detection ? { finishReason: 'degeneration' } : {}),
+            // The natural finish_reason ('length' etc.) flows through so the
+            // tool loop's truncation handling can react.
+            ...(loopGuard.detection
+                ? { finishReason: 'degeneration' }
+                : lastFinishReason
+                    ? { finishReason: lastFinishReason }
+                    : {}),
         };
     }
 

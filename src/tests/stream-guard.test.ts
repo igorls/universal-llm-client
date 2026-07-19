@@ -283,4 +283,94 @@ describe('OpenAICompatibleClient runaway protection', () => {
             console.warn = originalWarn;
         }
     });
+
+    test('drops length-truncated tool calls with malformed arguments and carries finish_reason', async () => {
+        const originalWarn = console.warn;
+        console.warn = mock(() => undefined) as unknown as typeof console.warn;
+
+        globalThis.fetch = mock(async (input: string | URL | Request) => {
+            if (String(input).includes('/models')) {
+                return new Response(JSON.stringify({ object: 'list', data: [] }), {
+                    status: 200, headers: { 'content-type': 'application/json' },
+                });
+            }
+            // A tool call cut mid-arguments by the output cap: finish 'length'
+            const sse =
+                sseChunk({ tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'write_file', arguments: '{"path":"x.zig","content":"const s' } }] }) +
+                `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n` +
+                'data: [DONE]\n\n';
+            return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        }) as unknown as typeof globalThis.fetch;
+
+        try {
+            const client = new OpenAICompatibleClient({
+                model: 'truncated-tool',
+                url: 'http://localhost:8010/v1',
+                apiType: AIModelApiType.OpenAI,
+            });
+            const gen = client.chatStream([{ role: 'user', content: 'hi' }], {
+                tools: [{
+                    type: 'function',
+                    function: { name: 'write_file', description: 'w', parameters: { type: 'object', properties: {} } },
+                }],
+            });
+            let result: IteratorResult<unknown, unknown>;
+            while (!(result = await gen.next()).done) { /* consume */ }
+
+            const response = result.value as { finishReason?: string; message?: { tool_calls?: unknown[] } };
+            // Partial JSON args must never surface for execution or history
+            expect(response?.message?.tool_calls ?? undefined).toBeUndefined();
+            expect(response?.finishReason).toBe('length');
+        } finally {
+            console.warn = originalWarn;
+        }
+    });
+
+    test('sanitizes malformed tool-call arguments in OUTBOUND history frames', async () => {
+        let chatBody: { messages?: Array<{ tool_calls?: Array<{ function: { arguments: string } }> }> } | null = null;
+        globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+            if (String(input).includes('/models')) {
+                return new Response(JSON.stringify({ object: 'list', data: [] }), {
+                    status: 200, headers: { 'content-type': 'application/json' },
+                });
+            }
+            chatBody = JSON.parse(String(init?.body ?? '{}'));
+            return new Response(
+                JSON.stringify({
+                    id: 'x', object: 'chat.completion', created: 1, model: 'm',
+                    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+                    usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+                }),
+                { status: 200, headers: { 'content-type': 'application/json' } },
+            );
+        }) as unknown as typeof globalThis.fetch;
+
+        const client = new OpenAICompatibleClient({
+            model: 'm',
+            url: 'http://localhost:8010/v1',
+            apiType: AIModelApiType.OpenAI,
+        });
+        await client.chat([
+            { role: 'user', content: 'do it' },
+            {
+                role: 'assistant',
+                content: '',
+                tool_calls: [
+                    { id: 'ok', type: 'function', function: { name: 'a', arguments: '{"x":1}' } },
+                    { id: 'bad', type: 'function', function: { name: 'b', arguments: '{"path":"x.zig","content":"const s' } },
+                ],
+            },
+            { role: 'tool', content: '{}', tool_call_id: 'ok' },
+            { role: 'tool', content: '{}', tool_call_id: 'bad' },
+        ]);
+
+        const frame = chatBody!.messages!.find((m) => m.tool_calls);
+        expect(frame).toBeDefined();
+        const args = frame!.tool_calls!.map((tc) => tc.function.arguments);
+        expect(args[0]).toBe('{"x":1}');
+        // Malformed args replaced with a valid-JSON stub — vLLM json.loads-
+        // validates every frame and 400s the whole request otherwise.
+        expect(() => JSON.parse(args[1]!)).not.toThrow();
+        expect(args[1]).toContain('_invalid');
+    });
 });
