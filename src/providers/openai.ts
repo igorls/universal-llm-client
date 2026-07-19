@@ -965,9 +965,44 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // Internals
     // ========================================================================
 
+    /** Cached endpoint-reported model metadata, keyed by model id. */
+    private modelInfoCache = new Map<string, ModelMetadata>();
+
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         const model = modelName ?? this.options.model;
-        return knownOpenAICompatModelInfo(this.options.url, model) ?? super.getModelInfo(model);
+        const known = knownOpenAICompatModelInfo(this.options.url, model);
+        if (known) return known;
+
+        const cached = this.modelInfoCache.get(model);
+        if (cached) return cached;
+
+        // Ask the endpoint itself before falling back to the conservative
+        // 8192 default: vLLM reports `max_model_len` per model card and
+        // llama.cpp exposes `meta.n_ctx_train`. Without this, every local
+        // vLLM/llama.cpp server is treated as an 8K-context model and
+        // callers budget/truncate against the wrong window.
+        try {
+            const response = await httpRequest<{
+                data?: Array<{ id: string; max_model_len?: number; meta?: { n_ctx_train?: number } }>;
+            }>(this.buildUrl('/models'), {
+                headers: buildHeaders(this.options),
+                timeout: 5000,
+            });
+            if (response.ok) {
+                const cards = response.data.data ?? [];
+                const card = cards.find(m => m.id === model) ?? cards[0];
+                const ctx = card?.max_model_len ?? card?.meta?.n_ctx_train;
+                if (typeof ctx === 'number' && ctx > 0) {
+                    const info: ModelMetadata = { model, contextLength: ctx };
+                    this.modelInfoCache.set(model, info);
+                    return info;
+                }
+            }
+        } catch {
+            // Endpoint variant without metadata — fall through to default
+        }
+
+        return super.getModelInfo(model);
     }
 
     private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {

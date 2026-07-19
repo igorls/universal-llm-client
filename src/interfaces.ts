@@ -601,6 +601,16 @@ export interface LLMChatResponse<T = unknown> {
     reasoning?: string;
     /** Token usage info */
     usage?: TokenUsageInfo;
+    /**
+     * Usage of the FINAL model call in an agentic tool loop. Loop
+     * orchestrators overwrite `usage` with a cumulative total across
+     * iterations (billing semantics), which makes `usage.inputTokens`
+     * useless as a context-size reading — a 5-iteration loop reports ~5×
+     * the real prompt. `lastCallUsage` carries the last single call's
+     * usage: its `inputTokens` is the true size of the final assembled
+     * prompt. Use it for context-window accounting; use `usage` for billing.
+     */
+    lastCallUsage?: TokenUsageInfo;
     /** Tool execution trace (populated by chatWithTools) */
     toolExecutions?: ToolExecutionResult[];
     /** Which provider served this response */
