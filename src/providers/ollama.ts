@@ -21,6 +21,7 @@ import {
 } from '../structured-output.js';
 import { extractGemmaThoughtChannels } from '../gemma-channel.js';
 import { LLMProviderError, extractProviderErrorMessage } from '../errors.js';
+import { StreamLoopGuard } from '../stream-guard.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -212,46 +213,79 @@ export class OllamaClient extends BaseLLMClient {
         // Ensure at least 5 minutes regardless of the base request timeout.
         const streamTimeout = Math.max(this.options.timeout ?? 300000, 300000);
 
+        // Client-side runaway protection — same contract as the OpenAI
+        // provider: feed content, reasoning AND tool-call arguments into the
+        // guard; on detection abort the socket so the server stops generating.
+        const loopGuard = new StreamLoopGuard();
+        const loopAbort = new AbortController();
+        const effectiveSignal = options?.signal
+            ? AbortSignal.any([options.signal, loopAbort.signal])
+            : loopAbort.signal;
+        const abortOnLoop = (): boolean => {
+            const d = loopGuard.detection;
+            if (!d) return false;
+            console.warn(
+                `[ollama] Stream loop guard triggered (${d.reason}${d.pattern ? `: "${d.pattern}" ×${d.repeats}` : ''}) after ${d.totalChars} chars — aborting generation`,
+            );
+            loopAbort.abort();
+            return true;
+        };
+
         const stream = httpStream(url, {
             method: 'POST',
             headers: buildHeaders(this.options),
             body,
             timeout: streamTimeout,
+            // Caller aborts + loop-guard aborts MUST reach the socket;
+            // without this the server keeps generating after a cancel.
+            signal: effectiveSignal,
         });
 
-        for await (const chunk of parseNDJSON<OllamaResponse>(stream)) {
-            // A quota / session-limit error can arrive mid-stream as a 200 NDJSON
-            // line carrying a bare `{"error":"…"}` (no `message`). Throw so the
-            // Router fails over, rather than silently dropping it (empty reply)
-            // or, worse, letting it surface as content.
-            const streamError = extractProviderErrorMessage(chunk);
-            if (streamError) {
-                throw new LLMProviderError('ollama', `Ollama error: ${streamError}`);
-            }
+        try {
+            for await (const chunk of parseNDJSON<OllamaResponse>(stream)) {
+                // A quota / session-limit error can arrive mid-stream as a 200 NDJSON
+                // line carrying a bare `{"error":"…"}` (no `message`). Throw so the
+                // Router fails over, rather than silently dropping it (empty reply)
+                // or, worse, letting it surface as content.
+                const streamError = extractProviderErrorMessage(chunk);
+                if (streamError) {
+                    throw new LLMProviderError('ollama', `Ollama error: ${streamError}`);
+                }
 
-            lastResponse = chunk;
+                lastResponse = chunk;
 
-            if (chunk.message?.thinking) {
-                decoder.pushReasoning(chunk.message.thinking);
-                const pending = decoderEvents.splice(0);
-                for (const event of pending) {
-                    yield event;
+                if (chunk.message?.thinking) {
+                    decoder.pushReasoning(chunk.message.thinking);
+                    const pending = decoderEvents.splice(0);
+                    for (const event of pending) {
+                        yield event;
+                    }
+                    if (loopGuard.push(chunk.message.thinking) && abortOnLoop()) break;
+                }
+
+                if (chunk.message?.content) {
+                    decoder.push(chunk.message.content);
+                    const pending = decoderEvents.splice(0);
+                    for (const event of pending) {
+                        yield event;
+                    }
+                    if (loopGuard.push(chunk.message.content) && abortOnLoop()) break;
+                }
+
+                if (chunk.message?.tool_calls?.length) {
+                    const normalized = chunk.message.tool_calls.map(tc => this.normalizeToolCall(tc));
+                    streamedToolCalls.push(...normalized);
+                    yield { type: 'tool_call', calls: normalized };
+                    for (const tc of normalized) {
+                        if (loopGuard.push(tc.function.arguments) && abortOnLoop()) break;
+                    }
+                    if (loopGuard.detection) break;
                 }
             }
-
-            if (chunk.message?.content) {
-                decoder.push(chunk.message.content);
-                const pending = decoderEvents.splice(0);
-                for (const event of pending) {
-                    yield event;
-                }
-            }
-
-            if (chunk.message?.tool_calls?.length) {
-                const normalized = chunk.message.tool_calls.map(tc => this.normalizeToolCall(tc));
-                streamedToolCalls.push(...normalized);
-                yield { type: 'tool_call', calls: normalized };
-            }
+        } catch (error) {
+            // Loop-guard abort races the in-flight read — the stream was
+            // intentionally killed; salvage what streamed as a clean end.
+            if (!loopGuard.detection) throw error;
         }
 
         decoder.flush();
@@ -285,9 +319,11 @@ export class OllamaClient extends BaseLLMClient {
             message: {
                 role: 'assistant',
                 content: decoder.getCleanContent(),
-                tool_calls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
+                // A guard-aborted stream was cut mid-generation — never surface
+                // its (potentially partial/looping) tool calls for execution.
+                tool_calls: !loopGuard.detection && streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
             },
-            finishReason: lastResponse?.done_reason,
+            finishReason: loopGuard.detection ? 'degeneration' : lastResponse?.done_reason,
             reasoning: decoder.getReasoning(),
             usage,
             provider: 'ollama',
