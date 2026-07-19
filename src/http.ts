@@ -101,7 +101,23 @@ export async function* httpStream(
     const { method = 'POST', headers = {}, body, timeout = 120000, signal } = options;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    // Per-chunk IDLE timeout: resets on every received chunk. The old code
+    // cleared the timer once headers arrived, so `timeout` only bounded
+    // time-to-first-byte — a mid-stream server stall (thinking-model pause,
+    // wedged backend) left reader.read() blocking FOREVER with no watchdog.
+    let idleTimeoutId: ReturnType<typeof setTimeout> | null = null;
+    const resetIdleTimeout = (): void => {
+        if (idleTimeoutId) clearTimeout(idleTimeoutId);
+        idleTimeoutId = setTimeout(() => controller.abort(), timeout);
+    };
+    const clearIdleTimeout = (): void => {
+        if (idleTimeoutId) clearTimeout(idleTimeoutId);
+        idleTimeoutId = null;
+    };
+
+    // Covers connection + first chunk
+    resetIdleTimeout();
 
     const combinedSignal = signal
         ? AbortSignal.any([signal, controller.signal])
@@ -118,14 +134,14 @@ export async function* httpStream(
             signal: combinedSignal,
         });
 
-        clearTimeout(timeoutId);
-
         if (!response.ok) {
+            clearIdleTimeout();
             const errorText = await response.text().catch(() => 'Unknown error');
             throw new LLMHttpError(response.status, errorText, url);
         }
 
         if (!response.body) {
+            clearIdleTimeout();
             throw new Error('No response body for streaming');
         }
 
@@ -134,18 +150,23 @@ export async function* httpStream(
 
         try {
             while (true) {
+                resetIdleTimeout();
                 const { done, value } = await reader.read();
                 if (done) break;
                 yield decoder.decode(value, { stream: true });
             }
         } finally {
+            clearIdleTimeout();
             reader.releaseLock();
         }
     } catch (error) {
-        clearTimeout(timeoutId);
+        clearIdleTimeout();
 
         if (error instanceof Error && error.name === 'AbortError') {
-            throw new Error(`Stream timeout after ${timeout}ms: ${url}`);
+            // Distinguish caller-initiated aborts from the idle watchdog so
+            // cancellations don't masquerade as timeouts.
+            if (signal?.aborted) throw error;
+            throw new Error(`Stream idle timeout after ${timeout}ms: ${url}`);
         }
         throw error;
     }

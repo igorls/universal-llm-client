@@ -520,7 +520,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             {
                 headers: buildHeaders(this.options),
                 body,
-                timeout: this.options.timeout ?? 30000,
+                // Local single-request inference (vLLM/llama.cpp on busy GPUs)
+                // routinely exceeds 30s; align with the BentoKit module client.
+                timeout: this.options.timeout ?? 60000,
             },
             tools,
             () => this.warnVllmToolFallback(),
@@ -723,7 +725,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 method: 'POST',
                 headers: buildHeaders(this.options),
                 body: activeBody,
-                timeout: this.options.timeout ?? 120000,
+                // Per-chunk IDLE timeout (resets on every chunk — see httpStream).
+                // Thinking models legitimately pause between visible chunks;
+                // floor at 5 minutes so a healthy long pause isn't killed while
+                // a genuinely wedged stream still aborts.
+                timeout: Math.max(this.options.timeout ?? 300000, 300000),
                 // Caller aborts + loop-guard aborts MUST reach the socket;
                 // without this the server keeps generating after a cancel.
                 signal: effectiveSignal,
