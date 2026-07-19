@@ -101,6 +101,12 @@ export {
     InterleavedReasoningDecoder,
 } from './stream-decoder.js';
 
+export {
+    StreamLoopGuard,
+    type StreamLoopGuardOptions,
+    type LoopDetection,
+} from './stream-guard.js';
+
 // ============================================================================
 // Tool Utilities
 // ============================================================================

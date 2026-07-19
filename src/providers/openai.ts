@@ -31,6 +31,7 @@ import type {
 import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
+import { StreamLoopGuard } from '../stream-guard.js';
 
 const VLLM_AUTO_TOOL_CHOICE_HINT =
     'vLLM rejected automatic tool choice. Retrying with text-level tool calling. To use native tool_calls, start vLLM with --enable-auto-tool-choice and --tool-call-parser <parser>.';
@@ -503,6 +504,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (tools?.length) body['tool_choice'] = 'none';
         }
 
+        await this.applyDefaultOutputBound(body, messages, tools);
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
@@ -644,6 +647,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (tools?.length) body['tool_choice'] = 'none';
         }
 
+        await this.applyDefaultOutputBound(body, messages, tools);
+
         const start = Date.now();
         this.auditor.record({
             timestamp: start,
@@ -651,6 +656,24 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             provider: 'openai',
             model: this.options.model,
         });
+
+        // Client-side runaway protection: feed every streamed delta (content
+        // AND reasoning — reasoning loops are the common failure) into the
+        // guard; on detection, abort the socket so the SERVER stops generating.
+        const loopGuard = new StreamLoopGuard();
+        const loopAbort = new AbortController();
+        const effectiveSignal = options?.signal
+            ? AbortSignal.any([options.signal, loopAbort.signal])
+            : loopAbort.signal;
+        const abortOnLoop = (): boolean => {
+            const d = loopGuard.detection;
+            if (!d) return false;
+            console.warn(
+                `[openai] Stream loop guard triggered (${d.reason}${d.pattern ? `: "${d.pattern}" ×${d.repeats}` : ''}) after ${d.totalChars} chars — aborting generation`,
+            );
+            loopAbort.abort();
+            return true;
+        };
 
         // In gemma-native mode, or when a caller selects an explicit decoder,
         // the decoder classifies content into typed events instead of exposing
@@ -699,6 +722,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 headers: buildHeaders(this.options),
                 body: activeBody,
                 timeout: this.options.timeout ?? 120000,
+                // Caller aborts + loop-guard aborts MUST reach the socket;
+                // without this the server keeps generating after a cancel.
+                signal: effectiveSignal,
             });
 
             try {
@@ -757,6 +783,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                             } else {
                                 yield { type: 'thinking', content: reasoningDelta };
                             }
+                            if (loopGuard.push(reasoningDelta) && abortOnLoop()) break;
                         }
 
                         if (delta.content) {
@@ -766,6 +793,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                             } else {
                                 yield { type: 'text', content: delta.content };
                             }
+                            if (loopGuard.push(delta.content) && abortOnLoop()) break;
                         }
 
                         // Accumulate streamed tool calls
@@ -806,6 +834,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 }
                 break;
             } catch (error) {
+                // Loop-guard abort races the in-flight read — the stream was
+                // intentionally killed; salvage what streamed as a clean end.
+                if (loopGuard.detection) break;
                 if (
                     !retriedWithTextTools
                     && tools?.length
@@ -894,6 +925,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             reasoning,
             usage,
             provider: 'openai',
+            // Consumers can tell a guard-aborted turn from a natural stop and
+            // e.g. nudge the model instead of trusting the truncated output.
+            ...(loopGuard.detection ? { finishReason: 'degeneration' } : {}),
         };
     }
 
@@ -967,6 +1001,51 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
     /** Cached endpoint-reported model metadata, keyed by model id. */
     private modelInfoCache = new Map<string, ModelMetadata>();
+
+    /**
+     * Context length we positively KNOW (endpoint metadata probe or the known-
+     * model map) — never the conservative 8192 fallback. Undefined for cloud
+     * endpoints that expose no window metadata. Negative results are cached so
+     * cloud endpoints pay the /models probe exactly once per client.
+     */
+    private knownWindowCache = new Map<string, number | null>();
+
+    private async resolveKnownContextLength(model: string): Promise<number | undefined> {
+        const cached = this.knownWindowCache.get(model);
+        if (cached !== undefined) return cached ?? undefined;
+        const known = knownOpenAICompatModelInfo(this.options.url, model);
+        if (known?.contextLength) {
+            this.knownWindowCache.set(model, known.contextLength);
+            return known.contextLength;
+        }
+        await this.getModelInfo(model).catch(() => undefined);
+        const probed = this.modelInfoCache.get(model)?.contextLength ?? null;
+        this.knownWindowCache.set(model, probed);
+        return probed ?? undefined;
+    }
+
+    /**
+     * Bound the output when the caller didn't. Hard-window backends treat an
+     * omitted max_tokens as "generate until the window fills" — a reasoning
+     * loop then runs for minutes and the oversized result overflows the next
+     * request. Only applies when the endpoint's REAL window is known (vLLM
+     * max_model_len / llama.cpp n_ctx_train / known-model map): cloud APIs
+     * with server-managed defaults keep today's behavior.
+     */
+    private async applyDefaultOutputBound(
+        body: Record<string, unknown>,
+        messages: LLMChatMessage[],
+        tools: LLMToolDefinition[] | undefined,
+    ): Promise<void> {
+        if (body['max_tokens'] != null || body['max_completion_tokens'] != null) return;
+        const window = await this.resolveKnownContextLength(this.options.model);
+        if (!window) return;
+        const promptChars = JSON.stringify(messages).length + (tools?.length ? JSON.stringify(tools).length : 0);
+        const promptEstimate = Math.ceil(promptChars / 4);
+        const MARGIN = 512;
+        const CAP = 8192;
+        body['max_tokens'] = Math.max(256, Math.min(CAP, window - promptEstimate - MARGIN));
+    }
 
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         const model = modelName ?? this.options.model;

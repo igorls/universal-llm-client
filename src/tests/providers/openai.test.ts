@@ -1034,7 +1034,14 @@ describe('OpenAICompatibleClient Structured Output', () => {
             const originalWarn = console.warn;
             console.warn = mock(() => undefined) as unknown as typeof console.warn;
 
-            globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+            globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+                // The window-probe (/models) is not part of the chat-call sequence.
+                if (String(input).includes('/models')) {
+                    return new Response(JSON.stringify({ object: 'list', data: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' },
+                    });
+                }
                 requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
                 if (requestBodies.length === 1) {
                     return new Response(JSON.stringify({
