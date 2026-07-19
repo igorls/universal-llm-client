@@ -624,6 +624,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             model: this.options.model,
             messages: this.convertMessages(messages),
             stream: true,
+            // Without this, OpenAI-compatible servers (vLLM, llama.cpp, LM Studio)
+            // omit the `usage` object from the stream entirely — the final-chunk
+            // usage parser below then never fires and consumers get NO token
+            // accounting for streamed turns (billing/telemetry silently empty).
+            stream_options: { include_usage: true },
             ...this.buildRequestParams(options),
         };
 
