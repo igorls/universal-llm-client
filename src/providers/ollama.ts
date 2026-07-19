@@ -531,7 +531,12 @@ export class OllamaClient extends BaseLLMClient {
             ...options?.parameters,
         };
         if (options?.temperature !== undefined) params['temperature'] = options.temperature;
-        if (options?.maxTokens !== undefined) params['num_predict'] = options.maxTokens;
+        // Output cap: map the first-class maxTokens option to Ollama's
+        // num_predict unless the caller already pinned num_predict via
+        // defaultParameters/parameters (explicit params win).
+        if (options?.maxTokens !== undefined && params['num_predict'] === undefined) {
+            params['num_predict'] = options.maxTokens;
+        }
         // Context window: Ollama defaults num_ctx to a small value (typically
         // 4096), silently truncating long agent prompts. Map the first-class
         // contextLength option unless the caller already pinned num_ctx via

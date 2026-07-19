@@ -456,6 +456,57 @@ describe('OllamaClient', () => {
             expect(options['num_predict']).toBe(100);
         });
 
+        test('explicit num_predict in parameters wins over maxTokens', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+
+            await client.chat(
+                [{ role: 'user', content: 'Hi' }],
+                { maxTokens: 100, parameters: { num_predict: 512 } },
+            );
+
+            expect((getBody()!['options'] as Record<string, unknown>)['num_predict']).toBe(512);
+        });
+
+        test('explicit num_predict in defaultParameters wins over maxTokens', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ defaultParameters: { num_predict: 256 } });
+
+            await client.chat(
+                [{ role: 'user', content: 'Hi' }],
+                { maxTokens: 100 },
+            );
+
+            expect((getBody()!['options'] as Record<string, unknown>)['num_predict']).toBe(256);
+        });
+
+        test('no num_predict is sent when maxTokens is unset', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+
+            await client.chat([{ role: 'user', content: 'Hi' }]);
+
+            expect((getBody()!['options'] as Record<string, unknown>)['num_predict']).toBeUndefined();
+        });
+
+        test('chatStream() maps maxTokens to num_predict without overriding explicit config', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient();
+            for await (const _ of client.chatStream([{ role: 'user', content: 'Hi' }], { maxTokens: 100 })) {
+                /* consume */
+            }
+            expect((getBody()!['options'] as Record<string, unknown>)['num_predict']).toBe(100);
+
+            const getExplicit = mockFetchAndCapture();
+            for await (const _ of client.chatStream(
+                [{ role: 'user', content: 'Hi' }],
+                { maxTokens: 100, parameters: { num_predict: 512 } },
+            )) {
+                /* consume */
+            }
+            expect((getExplicit()!['options'] as Record<string, unknown>)['num_predict']).toBe(512);
+        });
+
         test('enables thinking mode when configured', async () => {
             const getBody = mockFetchAndCapture();
             const client = createClient({ thinking: true });
