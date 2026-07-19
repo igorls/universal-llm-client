@@ -19,7 +19,7 @@ import {
     normalizeJsonSchema,
     getJsonSchemaFromConfig,
 } from '../structured-output.js';
-import { extractGemmaThoughtChannels } from '../gemma-channel.js';
+import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { LLMProviderError, extractProviderErrorMessage } from '../errors.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 import type {
@@ -315,16 +315,19 @@ export class OllamaClient extends BaseLLMClient {
             usage,
         });
 
+        const rawReasoning = decoder.getReasoning();
         return {
             message: {
                 role: 'assistant',
-                content: decoder.getCleanContent(),
+                // Strip stray gemma channel markers that survive decoding
+                // (same leak class as the vLLM reasoning path).
+                content: stripGemmaChannelMarkers(decoder.getCleanContent()),
                 // A guard-aborted stream was cut mid-generation — never surface
                 // its (potentially partial/looping) tool calls for execution.
                 tool_calls: !loopGuard.detection && streamedToolCalls.length > 0 ? streamedToolCalls : undefined,
             },
             finishReason: loopGuard.detection ? 'degeneration' : lastResponse?.done_reason,
-            reasoning: decoder.getReasoning(),
+            reasoning: rawReasoning ? stripGemmaChannelMarkers(rawReasoning) : rawReasoning,
             usage,
             provider: 'ollama',
         };

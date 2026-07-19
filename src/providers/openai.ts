@@ -31,6 +31,7 @@ import type {
 import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
+import { stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 
 const VLLM_AUTO_TOOL_CHOICE_HINT =
@@ -777,6 +778,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // Accumulates reasoning deltas from servers that stream a dedicated
         // `reasoning` / `reasoning_content` field (vLLM, DeepSeek-R1, etc.).
         let reasoningBuffer = '';
+        // Head-of-stream buffer for the thinking channel — see the marker
+        // filter at the reasoning-delta yield site. null = filter done.
+        let thinkingHeadPending: string | null = '';
 
         while (true) {
             const stream = httpStream(url, {
@@ -850,7 +854,22 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                             if (yieldDecoderEvents) {
                                 for (const event of takeDecoderEvents()) yield event;
                             } else {
-                                yield { type: 'thinking', content: reasoningDelta };
+                                // Head-of-stream marker filter: gemma leaks literal
+                                // channel markers (e.g. `<|channel|>' think'`) at the
+                                // START of the reasoning stream when the server-side
+                                // parser routed the text but kept the marker. Buffer
+                                // the head until a newline (or 96 chars) so a marker
+                                // split across chunks is stripped before display.
+                                if (thinkingHeadPending !== null) {
+                                    thinkingHeadPending += reasoningDelta;
+                                    if (thinkingHeadPending.includes('\n') || thinkingHeadPending.length >= 96) {
+                                        const cleaned = stripGemmaChannelMarkers(thinkingHeadPending);
+                                        thinkingHeadPending = null;
+                                        if (cleaned) yield { type: 'thinking', content: cleaned };
+                                    }
+                                } else {
+                                    yield { type: 'thinking', content: reasoningDelta };
+                                }
                             }
                             if (loopGuard.push(reasoningDelta) && abortOnLoop()) break;
                         }
@@ -937,6 +956,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         if (yieldDecoderEvents) {
             for (const event of takeDecoderEvents()) yield event;
         }
+        // Flush a still-buffered thinking head (short reasoning that never hit
+        // the newline/size threshold).
+        if (thinkingHeadPending) {
+            const cleaned = stripGemmaChannelMarkers(thinkingHeadPending);
+            thinkingHeadPending = null;
+            if (cleaned) yield { type: 'thinking', content: cleaned };
+        }
 
         // Augment usage with client-measured timing (vLLM streams no timing).
         if (usage) {
@@ -981,11 +1007,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 finalToolCalls = valid.length > 0 ? valid : undefined;
             }
         }
-        let cleanContent = decoder.getCleanContent();
+        let cleanContent = stripGemmaChannelMarkers(decoder.getCleanContent());
         // Prefer the server's dedicated reasoning field; fall back to <think>
-        // tags parsed from the content stream by the decoder.
+        // tags parsed from the content stream by the decoder. Strip any leaked
+        // channel markers in either case (observed: `<|channel|>' think'` at
+        // the head of vLLM gemma reasoning).
         const decodedReasoning = decoder.getReasoning();
         let reasoning = decodedReasoning !== undefined ? decodedReasoning : yieldDecoderEvents ? undefined : reasoningBuffer;
+        if (reasoning) reasoning = stripGemmaChannelMarkers(reasoning);
 
         if (this.gemmaNative) {
             // Native tool-call blocks live in the text channel; extract them.
