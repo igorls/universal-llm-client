@@ -502,6 +502,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             // and request-level tool parsing is unavailable server-side.
             body['skip_special_tokens'] = false;
             if (tools?.length) body['tool_choice'] = 'none';
+            // Diffusion vLLM builds generate exactly ONE 256-token block when
+            // max_tokens is omitted — long turns get truncated mid-thought.
+            // Give the model a real budget unless the caller set one.
+            if (body['max_tokens'] == null) body['max_tokens'] = 4096;
         }
 
         this.applyFamilySamplingDefaults(body);
@@ -563,7 +567,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // `--reasoning-parser`, DeepSeek-R1, etc.) return the chain-of-thought
         // in a dedicated field instead of inline <think> tags. vLLM uses
         // `reasoning_content`; some gateways use `reasoning`.
-        const serverReasoning = choice.message.reasoning ?? choice.message.reasoning_content;
+        // Join both fields when a gateway populates them differently instead
+        // of silently dropping one (defensive — most servers set exactly one).
+        const serverReasoning =
+            [choice.message.reasoning, choice.message.reasoning_content]
+                .filter((value): value is string => typeof value === 'string' && value.length > 0)
+                .join('\n\n') || undefined;
         if (typeof serverReasoning === 'string' && serverReasoning.length > 0) {
             reasoning = serverReasoning;
         }
@@ -648,6 +657,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         if (this.gemmaNative) {
             body['skip_special_tokens'] = false;
             if (tools?.length) body['tool_choice'] = 'none';
+            // See the chat() gemma-native block: parser-less diffusion vLLM
+            // needs an explicit output budget or it stops after one block.
+            if (body['max_tokens'] == null) body['max_tokens'] = 4096;
         }
 
         this.applyFamilySamplingDefaults(body);
@@ -714,6 +726,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         let activeBody = body;
         let retriedWithTextTools = false;
+        // Deltas already yielded to the consumer. The vLLM tool-choice 400
+        // fires pre-stream, so a retry after ANY emitted delta would replay
+        // content the caller already received — guard against it.
+        let emittedDeltas = 0;
 
         let usage: TokenUsageInfo | undefined;
         // Accumulates reasoning deltas from servers that stream a dedicated
@@ -780,6 +796,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
                         const delta = parsed.choices?.[0]?.delta;
                         if (!delta) continue;
+                        if (delta.content || delta.reasoning || delta.reasoning_content || delta.tool_calls) {
+                            emittedDeltas++;
+                        }
 
                         // Surface server-side reasoning deltas as thinking events.
                         const reasoningDelta = delta.reasoning ?? delta.reasoning_content;
@@ -854,6 +873,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 if (loopGuard.detection) break;
                 if (
                     !retriedWithTextTools
+                    && emittedDeltas === 0
                     && tools?.length
                     && hasToolDefinitions(activeBody)
                     && isVllmAutoToolChoiceError(error)
