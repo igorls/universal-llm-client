@@ -504,6 +504,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (tools?.length) body['tool_choice'] = 'none';
         }
 
+        this.applyFamilySamplingDefaults(body);
         await this.applyDefaultOutputBound(body, messages, tools);
 
         const start = Date.now();
@@ -647,6 +648,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (tools?.length) body['tool_choice'] = 'none';
         }
 
+        this.applyFamilySamplingDefaults(body);
         await this.applyDefaultOutputBound(body, messages, tools);
 
         const start = Date.now();
@@ -817,7 +819,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                                         existing.function.name += tc.function.name;
                                     }
                                 }
+                                // Tool-call ARGUMENTS are a loop channel too: a model
+                                // with content and reasoning both empty can still spiral
+                                // inside e.g. a think-tool argument (observed live).
+                                if (tc.function?.arguments && loopGuard.push(tc.function.arguments) && abortOnLoop()) {
+                                    break;
+                                }
                             }
+                            if (loopGuard.detection) break;
                         }
 
                         // Emit tool calls when stream finishes
@@ -878,11 +887,16 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             usage,
         });
 
-        let finalToolCalls = toolCallAccum.size > 0
-            ? Array.from(toolCallAccum.values()).map(tc => this.normalizeToolCall(tc))
-            : decoderToolCalls.length > 0
-                ? decoderToolCalls
-                : undefined;
+        // A guard-aborted stream was cut mid-generation: any accumulated tool
+        // call is partial by construction (its argument tail is the loop
+        // garbage that triggered the abort) — never execute it.
+        let finalToolCalls = loopGuard.detection
+            ? undefined
+            : toolCallAccum.size > 0
+                ? Array.from(toolCallAccum.values()).map(tc => this.normalizeToolCall(tc))
+                : decoderToolCalls.length > 0
+                    ? decoderToolCalls
+                    : undefined;
         let cleanContent = decoder.getCleanContent();
         // Prefer the server's dedicated reasoning field; fall back to <think>
         // tags parsed from the content stream by the decoder.
@@ -906,7 +920,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             }
         }
 
-        if (!finalToolCalls?.length && tools?.length && cleanContent) {
+        if (!finalToolCalls?.length && tools?.length && cleanContent && !loopGuard.detection) {
             const knownToolNames = new Set(tools.map(tool => tool.function.name));
             const recovered = recoverToolCallsFromText(cleanContent, knownToolNames, () => this.generateToolCallId());
             if (recovered) {
@@ -1022,6 +1036,22 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const probed = this.modelInfoCache.get(model)?.contextLength ?? null;
         this.knownWindowCache.set(model, probed);
         return probed ?? undefined;
+    }
+
+    /**
+     * Family-aware sampling defaults. Gemma models degenerate into sentence
+     * loops under low-temperature sampling (measured live: temp 0.7 → 17.8K
+     * output tokens / 111s of spiraling on a failing-tool scenario; Google's
+     * recommended temp 1.0 / top_p 0.95 / top_k 64 → 1.9K tokens / 11s on
+     * the identical scenario). When the caller pins nothing, send the
+     * family's recommended sampling instead of gambling on server defaults.
+     * top_k is skipped for Cerebras (not accepted by that API).
+     */
+    private applyFamilySamplingDefaults(body: Record<string, unknown>): void {
+        if (!/gemma/i.test(this.options.model)) return;
+        if (body['temperature'] === undefined) body['temperature'] = 1.0;
+        if (body['top_p'] === undefined) body['top_p'] = 0.95;
+        if (body['top_k'] === undefined && !isCerebrasEndpoint(this.options.url)) body['top_k'] = 64;
     }
 
     /**

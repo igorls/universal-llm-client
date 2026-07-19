@@ -103,6 +103,8 @@ export {
 
 export {
     StreamLoopGuard,
+    collapseRepeatedRuns,
+    collapseRepeatsInToolArguments,
     type StreamLoopGuardOptions,
     type LoopDetection,
 } from './stream-guard.js';

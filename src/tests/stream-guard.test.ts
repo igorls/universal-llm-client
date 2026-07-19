@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { StreamLoopGuard } from '../stream-guard.js';
+import { StreamLoopGuard, collapseRepeatedRuns, collapseRepeatsInToolArguments } from '../stream-guard.js';
 import { OpenAICompatibleClient } from '../providers/openai.js';
 import { AIModelApiType } from '../interfaces.js';
 
@@ -36,6 +36,19 @@ describe('StreamLoopGuard', () => {
         }
     });
 
+    test('catches sentence loops longer than the char-pattern cap (the std.os.args incident)', () => {
+        const guard = new StreamLoopGuard({ checkIntervalPushes: 5 });
+        // The exact live loop: a ~68-char sentence separated by blank lines —
+        // longer than any char-level pattern the old detector tested.
+        const unit = "I'll try to use `std.os.args` but I'll check if it's `std.os.args`.\n\n";
+        let detection = null;
+        for (let i = 0; i < 60 && !detection; i++) {
+            detection = guard.push(unit);
+        }
+        expect(detection).not.toBeNull();
+        expect(['paragraph_loop', 'repetition']).toContain(detection!.reason);
+    });
+
     test('triggers the absolute max_chars ceiling on non-repetitive runaways', () => {
         const guard = new StreamLoopGuard({ maxChars: 5_000 });
         let detection = null;
@@ -44,6 +57,41 @@ describe('StreamLoopGuard', () => {
         }
         expect(detection).not.toBeNull();
         expect(detection!.reason).toBe('max_chars');
+    });
+});
+
+describe('collapseRepeatedRuns', () => {
+    test('collapses a looping paragraph to one copy + marker', () => {
+        const unit = "I'll try to use `std.os.args` but I'll check if it's `std.os.args`.";
+        const text = Array.from({ length: 20 }, () => unit).join('\n\n');
+        const result = collapseRepeatedRuns(text);
+        expect(result.collapsed).toBe(19);
+        expect(result.text).toContain(unit);
+        expect(result.text).toContain('repeated 20×');
+        expect(result.text.length).toBeLessThan(text.length / 5);
+    });
+
+    test('leaves varied text untouched', () => {
+        const text = 'First paragraph about A.\n\nSecond paragraph about B.\n\nThird paragraph about C.';
+        const result = collapseRepeatedRuns(text);
+        expect(result.collapsed).toBe(0);
+        expect(result.text).toBe(text);
+    });
+
+    test('collapses loops inside JSON tool arguments without corrupting the JSON', () => {
+        const loop = Array.from({ length: 15 }, () => 'I will check std.process now.').join('\n\n');
+        const args = JSON.stringify({ thought: loop, other: 42 });
+        const result = collapseRepeatsInToolArguments(args);
+        expect(result.collapsed).toBe(14);
+        const parsed = JSON.parse(result.argsJson) as { thought: string; other: number };
+        expect(parsed.other).toBe(42);
+        expect(parsed.thought).toContain('repeated 15×');
+    });
+
+    test('returns non-JSON arguments unchanged', () => {
+        const result = collapseRepeatsInToolArguments('not json at all');
+        expect(result.argsJson).toBe('not json at all');
+        expect(result.collapsed).toBe(0);
     });
 });
 
@@ -170,6 +218,67 @@ describe('OpenAICompatibleClient runaway protection', () => {
             const response = result.value as { finishReason?: string };
             expect(response?.finishReason).toBe('degeneration');
             expect(aborted).toBe(true);
+        } finally {
+            console.warn = originalWarn;
+        }
+    });
+
+    test('aborts a loop inside tool-call ARGUMENTS and drops the partial call', async () => {
+        const originalWarn = console.warn;
+        console.warn = mock(() => undefined) as unknown as typeof console.warn;
+        let aborted = false;
+        let first = true;
+
+        globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+            if (String(input).includes('/models')) {
+                return new Response(JSON.stringify({ object: 'list', data: [] }), {
+                    status: 200, headers: { 'content-type': 'application/json' },
+                });
+            }
+            init?.signal?.addEventListener('abort', () => {
+                aborted = true;
+            });
+            const stream = new ReadableStream<Uint8Array>({
+                pull(controller) {
+                    if (aborted) {
+                        controller.close();
+                        return;
+                    }
+                    const delta = first
+                        ? { tool_calls: [{ index: 0, id: 'tc_1', function: { name: 'think', arguments: '{"thought":"' } }] }
+                        : { tool_calls: [{ index: 0, function: { arguments: "I'll try to use argsAlloc again. " } }] };
+                    first = false;
+                    controller.enqueue(new TextEncoder().encode(sseChunk(delta)));
+                },
+            });
+            return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        }) as unknown as typeof globalThis.fetch;
+
+        try {
+            const client = new OpenAICompatibleClient({
+                model: 'loopy-tool',
+                url: 'http://localhost:8010/v1',
+                apiType: AIModelApiType.OpenAI,
+            });
+
+            const gen = client.chatStream([{ role: 'user', content: 'hi' }], {
+                tools: [{
+                    type: 'function',
+                    function: { name: 'think', description: 'think', parameters: { type: 'object', properties: {} } },
+                }],
+            });
+            let result: IteratorResult<unknown, unknown>;
+            let events = 0;
+            while (!(result = await gen.next()).done) {
+                events++;
+                if (events > 100_000) throw new Error('stream never terminated');
+            }
+
+            const response = result.value as { finishReason?: string; message?: { tool_calls?: unknown[] } };
+            expect(response?.finishReason).toBe('degeneration');
+            expect(aborted).toBe(true);
+            // The partial looping tool call must NOT be surfaced for execution
+            expect(response?.message?.tool_calls ?? undefined).toBeUndefined();
         } finally {
             console.warn = originalWarn;
         }
