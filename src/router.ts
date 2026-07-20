@@ -298,7 +298,7 @@ export class Router {
                 if (!provider) break; // pool exhausted or saturated past the queue window — spill
 
                 tried.add(provider.id);
-                if (!(await this.coldNodeAlive(provider, context))) {
+                if (this.needsColdProbe(provider) && !(await this.coldNodeAlive(provider, context))) {
                     lastError = new Error(`cold-node liveness probe timed out: ${provider.id}`);
                     continue;
                 }
@@ -395,7 +395,7 @@ export class Router {
                 if (!provider) break; // pool exhausted or saturated — spill to next tier
 
                 tried.add(provider.id);
-                if (!(await this.coldNodeAlive(provider, context))) {
+                if (this.needsColdProbe(provider) && !(await this.coldNodeAlive(provider, context))) {
                     lastError = new Error(`cold-node liveness probe timed out: ${provider.id}`);
                     continue;
                 }
@@ -1102,12 +1102,18 @@ export class Router {
      * reply (auth, not-found, refused) proves the host answers and defers to
      * the real dispatch. On timeout the node is failure-recorded with
      * cooldown so subsequent requests skip it without probing.
+     *
+     * `needsColdProbe` is a SYNCHRONOUS gate the call sites check first: the
+     * warm path must stay await-free, because the pool queue's wake→dispatch
+     * handoff relies on running in the same microtask chain as releaseSlot.
      */
-    private async coldNodeAlive(provider: ProviderEntry, context: string): Promise<boolean> {
-        if (this.config.coldProbeTimeoutMs <= 0) return true;
+    private needsColdProbe(provider: ProviderEntry): boolean {
+        if (this.config.coldProbeTimeoutMs <= 0) return false;
         const h = this.health.get(provider.id);
-        if (Date.now() - (h?.lastSuccessAt ?? 0) < this.config.coldProbeAfterMs) return true;
+        return Date.now() - (h?.lastSuccessAt ?? 0) >= this.config.coldProbeAfterMs;
+    }
 
+    private async coldNodeAlive(provider: ProviderEntry, context: string): Promise<boolean> {
         let timer: ReturnType<typeof setTimeout> | undefined;
         const outcome = await Promise.race([
             provider.client.getModels().then(
