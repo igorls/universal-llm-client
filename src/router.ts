@@ -63,6 +63,8 @@ interface ProviderHealth {
     consecutiveFailures: number;
     lastFailure?: number;
     cooldownUntil?: number;
+    /** Wall-clock of the last successful dispatch — freshness gate for the cold-node preflight. */
+    lastSuccessAt?: number;
 }
 
 /** Per-node runtime routing metrics (inflight + lifetime counters). */
@@ -105,6 +107,18 @@ export interface RouterConfig {
      * `maxConcurrent` cap before spilling to the next tier (default: 750).
      */
     spillAfterMs?: number;
+    /**
+     * Time-box for the cold-node liveness preflight (default: 2500; 0
+     * disables). A node with no recent success gets a cheap `getModels()`
+     * probe raced against this timer before the real request commits to it —
+     * a powered-off host blackholes TCP SYNs, and the OS retry budget alone
+     * stalls the first request ~21s+ before failover (observed 26.7s live).
+     * Only a probe TIMEOUT marks the node dead: an error reply proves the
+     * host is reachable and defers to the real dispatch.
+     */
+    coldProbeTimeoutMs?: number;
+    /** Success-freshness window that skips the preflight (default: 60000). */
+    coldProbeAfterMs?: number;
     /** Auditor for observability */
     auditor?: Auditor;
 }
@@ -168,6 +182,8 @@ export class Router {
             maxFailures: config.maxFailures ?? 3,
             cooldownMs: config.cooldownMs ?? 30000,
             spillAfterMs: config.spillAfterMs ?? 750,
+            coldProbeTimeoutMs: config.coldProbeTimeoutMs ?? 2500,
+            coldProbeAfterMs: config.coldProbeAfterMs ?? 60000,
         };
     }
 
@@ -282,6 +298,10 @@ export class Router {
                 if (!provider) break; // pool exhausted or saturated past the queue window — spill
 
                 tried.add(provider.id);
+                if (!(await this.coldNodeAlive(provider, context))) {
+                    lastError = new Error(`cold-node liveness probe timed out: ${provider.id}`);
+                    continue;
+                }
                 this.acquireSlot(provider.id);
                 const started = Date.now();
                 let disposition: FailureDisposition = { retry: true, cooldown: false };
@@ -375,6 +395,10 @@ export class Router {
                 if (!provider) break; // pool exhausted or saturated — spill to next tier
 
                 tried.add(provider.id);
+                if (!(await this.coldNodeAlive(provider, context))) {
+                    lastError = new Error(`cold-node liveness probe timed out: ${provider.id}`);
+                    continue;
+                }
                 // Has this attempt emitted anything yet? Once it has, we are past the
                 // first-token boundary and can no longer fail over without duplicating.
                 let emitted = false;
@@ -1069,12 +1093,52 @@ export class Router {
         pm[counter]++;
     }
 
+    /**
+     * Cold-node liveness preflight. A node with no success inside
+     * `coldProbeAfterMs` gets a cheap `getModels()` probe raced against
+     * `coldProbeTimeoutMs` before the real request commits to it — bounding
+     * the SYN-blackhole case (powered-off host) to the probe budget instead
+     * of the OS TCP retry stall. Only a TIMEOUT counts as dead: an error
+     * reply (auth, not-found, refused) proves the host answers and defers to
+     * the real dispatch. On timeout the node is failure-recorded with
+     * cooldown so subsequent requests skip it without probing.
+     */
+    private async coldNodeAlive(provider: ProviderEntry, context: string): Promise<boolean> {
+        if (this.config.coldProbeTimeoutMs <= 0) return true;
+        const h = this.health.get(provider.id);
+        if (Date.now() - (h?.lastSuccessAt ?? 0) < this.config.coldProbeAfterMs) return true;
+
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const outcome = await Promise.race([
+            provider.client.getModels().then(
+                () => 'ok' as const,
+                () => 'error' as const,
+            ),
+            new Promise<'timeout'>((resolve) => {
+                timer = setTimeout(() => resolve('timeout'), this.config.coldProbeTimeoutMs);
+            }),
+        ]).finally(() => clearTimeout(timer));
+        if (outcome !== 'timeout') return true;
+
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'error',
+            provider: provider.id,
+            model: provider.modelOverride ?? provider.client.model,
+            error: `cold-node liveness probe timed out after ${this.config.coldProbeTimeoutMs}ms`,
+            metadata: { context, probe: true, retryable: false },
+        });
+        this.recordFailure(provider.id, { cooldown: true });
+        return false;
+    }
+
     private recordSuccess(id: string, latencyMs?: number): void {
         const h = this.health.get(id);
         if (h) {
             h.healthy = true;
             h.consecutiveFailures = 0;
             h.cooldownUntil = undefined;
+            h.lastSuccessAt = Date.now();
         }
         if (latencyMs !== undefined) {
             const m = this.metrics.get(id);

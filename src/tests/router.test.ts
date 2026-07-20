@@ -364,3 +364,90 @@ describe('Router', () => {
         });
     });
 });
+
+// ============================================================================
+// Cold-node liveness preflight (SYN-blackhole bounding)
+// ============================================================================
+
+describe("cold-node preflight", () => {
+    function neverResolves(): Promise<string[]> {
+        return new Promise(() => undefined);
+    }
+
+    it("skips a blackholed node within the probe budget and serves from the fallback", async () => {
+        const dead = new MockClient("dead");
+        dead.modelsFn = neverResolves; // powered-off host: probe hangs
+        dead.chatFn = async () => {
+            throw new Error("should never be dispatched to the dead node");
+        };
+        const alive = new MockClient("alive");
+
+        const router = new Router({ coldProbeTimeoutMs: 100, retriesPerProvider: 0 });
+        router.addProvider({ id: "dead", client: dead, priority: 0 } as ProviderEntry);
+        router.addProvider({ id: "alive", client: alive, priority: 1 } as ProviderEntry);
+
+        const t0 = Date.now();
+        const res = await router.execute((c) => c.chat([{ role: "user", content: "hi" }]));
+        expect((res as { provider?: string }).provider).toBe("alive");
+        expect(Date.now() - t0).toBeLessThan(1500); // bounded by the probe, not a TCP stall
+    });
+
+    it("probe errors (reachable host) do NOT mark the node dead", async () => {
+        const grumpy = new MockClient("grumpy");
+        grumpy.modelsFn = async () => {
+            throw new Error("401 unauthorized"); // host answers — reachable
+        };
+        const router = new Router({ coldProbeTimeoutMs: 100, retriesPerProvider: 0 });
+        router.addProvider({ id: "grumpy", client: grumpy, priority: 0 } as ProviderEntry);
+
+        const res = await router.execute((c) => c.chat([{ role: "user", content: "hi" }]));
+        expect((res as { provider?: string }).provider).toBe("grumpy");
+    });
+
+    it("recent success skips the probe entirely", async () => {
+        let probes = 0;
+        const node = new MockClient("hot");
+        const baseModels = node.modelsFn;
+        node.modelsFn = async () => {
+            probes++;
+            return baseModels();
+        };
+        const router = new Router({ coldProbeTimeoutMs: 100, coldProbeAfterMs: 60000, retriesPerProvider: 0 });
+        router.addProvider({ id: "hot", client: node, priority: 0 } as ProviderEntry);
+
+        await router.execute((c) => c.chat([{ role: "user", content: "1" }]));
+        await router.execute((c) => c.chat([{ role: "user", content: "2" }]));
+        expect(probes).toBe(1); // only the cold first request probes
+    });
+
+    it("streaming also skips a blackholed node before the first token", async () => {
+        const dead = new MockClient("dead-stream");
+        dead.modelsFn = neverResolves;
+        const alive = new MockClient("alive-stream");
+
+        const router = new Router({ coldProbeTimeoutMs: 100, retriesPerProvider: 0 });
+        router.addProvider({ id: "dead-stream", client: dead, priority: 0 } as ProviderEntry);
+        router.addProvider({ id: "alive-stream", client: alive, priority: 1 } as ProviderEntry);
+
+        let text = "";
+        const gen = router.executeStream((c) => c.chatStream());
+        for await (const ev of gen) {
+            if (ev.type === "text" && ev.content) text += ev.content;
+        }
+        expect(text).toBe("streamed");
+    });
+
+    it("coldProbeTimeoutMs: 0 disables the preflight", async () => {
+        let probes = 0;
+        const node = new MockClient("noprobe");
+        const baseModels = node.modelsFn;
+        node.modelsFn = async () => {
+            probes++;
+            return baseModels();
+        };
+        const router = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        router.addProvider({ id: "noprobe", client: node, priority: 0 } as ProviderEntry);
+        await router.execute((c) => c.chat([{ role: "user", content: "hi" }]));
+        expect(probes).toBe(0);
+    });
+});
