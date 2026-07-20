@@ -388,6 +388,7 @@ export class AIModel {
             authHeader: providerConfig.authHeader,
             authPrefix: providerConfig.authPrefix,
             apiBasePath: providerConfig.apiBasePath,
+            omitResponseFormat: providerConfig.omitResponseFormat,
         };
 
         switch (type) {

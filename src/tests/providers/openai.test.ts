@@ -775,6 +775,32 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect((body['response_format'] as Record<string, unknown>)['type']).toBe('json_object');
         });
 
+        test('omits response_format when omitResponseFormat is true', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ omitResponseFormat: true });
+
+            await client.chat(
+                [{ role: 'user', content: 'Generate JSON' }],
+                { responseFormat: { type: 'json_object' } },
+            );
+
+            const body = getBody()!;
+            expect(body['response_format']).toBeUndefined();
+        });
+
+        test('sends response_format for NVFP4 by default (vLLM engine fix)', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gemma-4-26b-a4b-nvfp4' });
+
+            await client.chat(
+                [{ role: 'user', content: 'Generate JSON' }],
+                { responseFormat: { type: 'json_object' } },
+            );
+
+            const body = getBody()!;
+            expect(body['response_format']).toEqual({ type: 'json_object' });
+        });
+
         test('json_object mode does not include schema in request', async () => {
             const getBody = mockFetchAndCapture();
             const client = createClient();

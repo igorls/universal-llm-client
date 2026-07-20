@@ -37,6 +37,24 @@ import { StreamLoopGuard } from '../stream-guard.js';
 const VLLM_AUTO_TOOL_CHOICE_HINT =
     'vLLM rejected automatic tool choice. Retrying with text-level tool calling. To use native tool_calls, start vLLM with --enable-auto-tool-choice and --tool-call-parser <parser>.';
 
+/**
+ * Whether the OpenAI-compatible provider should omit `response_format` on the
+ * wire (prompt-only structured output). Controlled by
+ * {@link LLMClientOptions.omitResponseFormat} (default: send format when requested).
+ *
+ * Operators can set `omitResponseFormat: true` for engines that mishandle
+ * structured-output headers. (A 2026-07-20 vLLM + Gemma-4 NVFP4 EngineCore
+ * crash on `json_object` was fixed on the serving side; the option remains as
+ * an escape hatch.)
+ */
+export function shouldOmitResponseFormatWire(options: {
+    readonly omitResponseFormat?: boolean;
+    readonly url?: string;
+    readonly model?: string;
+}): boolean {
+    return options.omitResponseFormat === true;
+}
+
 const CEREBRAS_MODEL_CONTEXT_LENGTHS: Readonly<Record<string, number>> = {
     // Cerebras currently omits max context metadata from /v1/models for this
     // served model. Live requests with ~90K prompt tokens succeed, so 128K is
@@ -561,12 +579,20 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             ...this.buildRequestParams(options),
         };
 
-        // Handle structured output
-        const schemaOptions = this.extractSchemaOptions(options);
-        if (schemaOptions) {
-            body['response_format'] = this.buildResponseFormat(schemaOptions);
-        } else if (options?.responseFormat) {
-            body['response_format'] = options.responseFormat;
+        // Handle structured output. Some engines (vLLM Gemma-4 NVFP4) hard-crash
+        // on wire `response_format` — omit and rely on prompt discipline.
+        const omitWireFormat = shouldOmitResponseFormatWire({
+            omitResponseFormat: this.options.omitResponseFormat,
+            url: this.options.url,
+            model: this.options.model,
+        });
+        if (!omitWireFormat) {
+            const schemaOptions = this.extractSchemaOptions(options);
+            if (schemaOptions) {
+                body['response_format'] = this.buildResponseFormat(schemaOptions);
+            } else if (options?.responseFormat) {
+                body['response_format'] = options.responseFormat;
+            }
         }
 
         if (tools?.length) {

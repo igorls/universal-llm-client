@@ -125,6 +125,12 @@ export interface ProviderConfig {
      * a full Azure deployment URL such as ".../deployments/my-deploy".
      */
     apiBasePath?: string;
+
+    /**
+     * OpenAI-compatible only: never send `response_format` on the wire
+     * (prompt-only JSON). Escape hatch — see {@link LLMClientOptions.omitResponseFormat}.
+     */
+    omitResponseFormat?: boolean;
 }
 
 // ============================================================================
@@ -241,6 +247,14 @@ export interface LLMClientOptions {
      * the append (when the base URL already contains the full path).
      */
     apiBasePath?: string;
+
+    /**
+     * OpenAI-compatible only: never put `response_format` on the wire.
+     * Structured output becomes prompt-only (callers may still set
+     * {@link ChatOptions.responseFormat} for local intent). Escape hatch for
+     * engines that mishandle structured-output headers.
+     */
+    omitResponseFormat?: boolean;
 }
 
 // ============================================================================
