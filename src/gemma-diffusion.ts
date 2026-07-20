@@ -53,7 +53,13 @@ export const GEMMA_DIFFUSION_REQUEST_PARAMS: Readonly<Record<string, unknown>> =
     skip_special_tokens: false,
 };
 
-const TOOL_CALL_BLOCK = /<\|tool_call>\s*call:([a-zA-Z0-9_.-]+)\s*\{([\s\S]*?)\}\s*<tool_call\|>/g;
+// Grammar tolerance: models that learned the textual `call:name({...})` form
+// (observed live — a poisoned-history session emitted
+// `<|tool_call>call:sessions({action: "list"})<tool_call|>`) wrap the brace
+// body in parentheses. Accept the optional (...) wrapper instead of silently
+// swallowing the call.
+const TOOL_CALL_BLOCK =
+    /<\|tool_call>\s*call:([a-zA-Z0-9_.-]+)\s*(?:\(\s*)?\{([\s\S]*?)\}(?:\s*\))?\s*<tool_call\|>/g;
 
 /**
  * Residual control tokens that may leak into text output — including stray
@@ -177,9 +183,26 @@ export function gemmaArgsToJson(body: string): string {
  * decoder to recover native `<|tool_call>…<tool_call|>` calls token-by-token.
  */
 export function parseGemmaToolCallBody(body: string): GemmaParsedToolCall | null {
-    const m = body.match(/^\s*call:([a-zA-Z0-9_.-]+)\s*\{([\s\S]*)\}\s*$/);
+    const m =
+        body.match(/^\s*call:([a-zA-Z0-9_.-]+)\s*\{([\s\S]*)\}\s*$/) ??
+        // Parenthesized textual form: call:name({...}) — seen from models that
+        // learned the pseudo-call style from history.
+        body.match(/^\s*call:([a-zA-Z0-9_.-]+)\s*\(\s*\{([\s\S]*)\}\s*\)\s*$/);
     if (!m) return null;
-    return { name: m[1]!, argumentsJson: gemmaArgsToJson(m[2]!) };
+    return { name: m[1]!, argumentsJson: gemmaInnerArgsToJson(m[2]!) };
+}
+
+/**
+ * Argument bodies may be REAL JSON (double-quoted keys — the textual
+ * `call:name({"k": "v"})` form) or Gemma pseudo-JSON (bare keys, quote
+ * tokens). Try strict JSON first; gemmaArgsToJson double-encodes quoted keys.
+ */
+function gemmaInnerArgsToJson(inner: string): string {
+    try {
+        return JSON.stringify(JSON.parse(`{${inner}}`));
+    } catch {
+        return gemmaArgsToJson(inner);
+    }
 }
 
 export function parseGemmaDiffusionOutput(raw: string): GemmaDiffusionParsed {
@@ -187,7 +210,7 @@ export function parseGemmaDiffusionOutput(raw: string): GemmaDiffusionParsed {
 
     const toolCalls: GemmaParsedToolCall[] = [];
     let text = raw.replace(TOOL_CALL_BLOCK, (_m, name: string, args: string) => {
-        toolCalls.push({ name, argumentsJson: gemmaArgsToJson(args) });
+        toolCalls.push({ name, argumentsJson: gemmaInnerArgsToJson(args) });
         return '';
     });
 

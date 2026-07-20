@@ -96,6 +96,26 @@ describe('parseGemmaDiffusionOutput', () => {
         expect(parsed.reasoning).toBe('Still reasoning about');
     });
 
+    it('parses the parenthesized textual call form (live poisoned-history sample, July 2026)', () => {
+        // Captured verbatim from a vLLM gemma-4 session whose history taught
+        // the model the `call:name({json})` style; the old grammar silently
+        // swallowed this call.
+        const raw = '<|channel>thought\n<channel|><|tool_call>call:sessions({action: "list"})<tool_call|>';
+        const parsed = parseGemmaDiffusionOutput(raw);
+        expect(parsed.toolCalls).toHaveLength(1);
+        expect(parsed.toolCalls[0]!.name).toBe('sessions');
+        expect(JSON.parse(parsed.toolCalls[0]!.argumentsJson)).toEqual({ action: 'list' });
+        expect(parsed.content).toBe('');
+    });
+
+    it('parses parenthesized calls with strict-JSON argument bodies', () => {
+        const raw = '<|tool_call>call:activate_tools({"module": "@core/shell"})<tool_call|>';
+        const parsed = parseGemmaDiffusionOutput(raw);
+        expect(parsed.toolCalls).toHaveLength(1);
+        expect(parsed.toolCalls[0]!.name).toBe('activate_tools');
+        expect(JSON.parse(parsed.toolCalls[0]!.argumentsJson)).toEqual({ module: '@core/shell' });
+    });
+
     it('parses multiple tool calls in one turn', () => {
         const raw =
             '<|tool_call>call:get_weather{city:<|"|>Paris<|"|>}<tool_call|>' +

@@ -10,7 +10,7 @@ import { fromZod } from '../../zod-adapter.js';
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { z } from 'zod';
-import { OpenAICompatibleClient } from '../../providers/openai.js';
+import { OpenAICompatibleClient, sanitizeToolCallName, recoverLooseToolArguments } from '../../providers/openai.js';
 import type { LLMClientOptions, ChatOptions, LLMChatMessage, LLMToolDefinition } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 import type { DecodedEvent } from '../../stream-decoder.js';
@@ -1987,5 +1987,46 @@ describe('OpenAICompatibleClient Structured Output', () => {
             await expect(client.chat([{ role: 'user', content: 'Hello' }]))
                 .rejects.toThrow('Rate limit exceeded');
         });
+    });
+});
+
+// ============================================================================
+// Malformed native tool-call sanitization (server-side parser fallout)
+// ============================================================================
+
+describe('sanitizeToolCallName', () => {
+    test('strips a trailing paren left by a server-side parser', () => {
+        expect(sanitizeToolCallName('sessions(')).toBe('sessions');
+        expect(sanitizeToolCallName('shell_execute(')).toBe('shell_execute');
+        expect(sanitizeToolCallName('help( ')).toBe('help');
+    });
+
+    test('keeps valid names untouched', () => {
+        expect(sanitizeToolCallName('sessions')).toBe('sessions');
+        expect(sanitizeToolCallName('@core/shell:run_command')).toBe('@core/shell:run_command');
+    });
+
+    test('returns input unchanged when nothing valid leads', () => {
+        expect(sanitizeToolCallName('(broken')).toBe('(broken');
+        expect(sanitizeToolCallName('')).toBe('');
+    });
+});
+
+describe('recoverLooseToolArguments', () => {
+    test('recovers a sliced name({...}) argument tail', () => {
+        expect(JSON.parse(recoverLooseToolArguments('{action: "list"})')!)).toEqual({ action: 'list' });
+    });
+
+    test('recovers unquoted-key pseudo-JSON', () => {
+        expect(JSON.parse(recoverLooseToolArguments('{module: "@core/shell"}')!)).toEqual({ module: '@core/shell' });
+    });
+
+    test('passes through strict JSON', () => {
+        expect(JSON.parse(recoverLooseToolArguments('{"a": 1}')!)).toEqual({ a: 1 });
+    });
+
+    test('empty arguments become an empty object', () => {
+        expect(recoverLooseToolArguments('')).toBe('{}');
+        expect(recoverLooseToolArguments('   ')).toBe('{}');
     });
 });

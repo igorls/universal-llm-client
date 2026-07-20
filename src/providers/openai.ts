@@ -253,6 +253,46 @@ function normalizeLooseArguments(rawArgs: string): string | null {
     }
 }
 
+/**
+ * Strip trailing junk a server-side tool parser may leave on a tool NAME
+ * (`"sessions("` → `"sessions"`). Only a trailing run of opener/whitespace
+ * characters is removed — anything else passes through unchanged so
+ * downstream "unknown tool" reporting still sees the evidence.
+ */
+export function sanitizeToolCallName(raw: string): string {
+    return raw.trim().replace(/[({\s]+$/u, '');
+}
+
+/**
+ * Best-effort recovery for a non-JSON tool-argument string: tolerate a
+ * trailing `)` run left by a sliced `name({...})` form, then parse strict
+ * JSON, then gemma pseudo-JSON — but ONLY for balanced non-strict brace
+ * bodies. A truncated strict-JSON string (`{"key": "va`) must return null
+ * untouched: the malformed-arguments stub machinery owns that case, and
+ * lenient pseudo-JSON parsing would silently mangle it instead.
+ */
+export function recoverLooseToolArguments(rawArgs: string): string | null {
+    const trimmed = rawArgs.trim();
+    if (!trimmed) return '{}';
+
+    const stripped = trimmed.replace(/[)\s]+$/u, '');
+    const candidates = stripped !== trimmed && stripped.endsWith('}') ? [stripped, trimmed] : [trimmed];
+    for (const candidate of candidates) {
+        const obj = parseJsonObject(candidate);
+        if (obj) return JSON.stringify(obj);
+    }
+
+    const loose = stripped.endsWith('}') ? stripped : trimmed;
+    if (loose.startsWith('{') && loose.endsWith('}') && !loose.startsWith('{"')) {
+        try {
+            return gemmaArgsToJson(loose.slice(1, -1).trim());
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
 function parseTextToolCallBody(content: string): Array<{ name: string; arguments: string }> {
     const body = content.trim();
     if (!body) return [];
@@ -1067,14 +1107,25 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     private normalizeToolCall(
         toolCall: Partial<LLMToolCall> & { function?: Partial<LLMToolCall['function']> },
     ): LLMToolCall {
+        // Boundary defense: server-side tool parsers (observed with vLLM's
+        // gemma4 parser on pseudo-call text) can deliver names with trailing
+        // junk ("sessions(") and argument strings that aren't valid JSON.
+        // Executing those verbatim burns a whole turn on "Unknown tool: x("
+        // + "Unterminated string" errors the model cannot self-correct from.
+        const name = sanitizeToolCallName(toolCall.function?.name || '');
+        let args = this.normalizeToolArguments(toolCall.function?.arguments);
+        if (!isValidToolArgumentsJson(args)) {
+            const recovered = recoverLooseToolArguments(args);
+            if (recovered) args = recovered;
+        }
         return {
             ...toolCall,
             id: toolCall.id || this.generateToolCallId(),
             type: 'function',
             function: {
                 ...toolCall.function,
-                name: toolCall.function?.name || '',
-                arguments: this.normalizeToolArguments(toolCall.function?.arguments),
+                name,
+                arguments: args,
             },
         };
     }
