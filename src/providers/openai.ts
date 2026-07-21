@@ -31,7 +31,7 @@ import type {
 import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
-import { stripGemmaChannelMarkers } from '../gemma-channel.js';
+import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 
 const VLLM_AUTO_TOOL_CHOICE_HINT =
@@ -151,6 +151,65 @@ function cerebrasReasoningEffort(level: ThinkingLevel | undefined): 'low' | 'med
 
 function usesGemmaCerebrasReasoningDefault(model: string): boolean {
     return normalizeModelId(model) === 'gemma-4-31b';
+}
+
+/** True for Gemma family model ids (ollama `gemma4:…`, vLLM `gemma-4-…`, HF names). */
+export function isGemmaModelId(model: string): boolean {
+    return /gemma/i.test(model);
+}
+
+/**
+ * Dual-mode Gemma request defaults for OpenAI-compatible servers (vLLM).
+ *
+ * Goals (live Canvas incident + Google/vLLM docs):
+ * - **Reasoning OFF:** pin `enable_thinking:false` so the chat template never
+ *   freestyles a thought channel (`thought`×N degeneration with tools/vision).
+ * - **Reasoning ON:** pin `enable_thinking:true` so the real thought channel
+ *   opens correctly; keep Google's sampling so CoT doesn't collapse to loops.
+ * - **Both:** temp 1.0 / top_p 0.95 / top_k 64 (Google standardized config);
+ *   mild `repetition_penalty` (stronger when off) to break pure token runs
+ *   without crushing legitimate restatement in CoT.
+ *
+ * Never overwrites caller-supplied sampling or an explicit
+ * `chat_template_kwargs.enable_thinking`. Skips Cerebras (uses
+ * `reasoning_effort` instead; rejects unknown fields).
+ */
+export function applyGemmaDualModeRequestDefaults(input: {
+    readonly model: string;
+    readonly url?: string;
+    readonly body: Record<string, unknown>;
+    /** Resolved thinking intent; `undefined` = caller did not set → default OFF. */
+    readonly thinking?: { readonly enabled: boolean; readonly level?: string };
+}): void {
+    if (!isGemmaModelId(input.model)) return;
+    if (isCerebrasEndpoint(input.url)) return;
+
+    const { body, thinking } = input;
+    const thinkingOn = thinking?.enabled === true;
+
+    // Google standardized sampling — same for thinking and non-thinking.
+    if (body['temperature'] === undefined) body['temperature'] = 1.0;
+    if (body['top_p'] === undefined) body['top_p'] = 0.95;
+    if (body['top_k'] === undefined) body['top_k'] = 64;
+
+    // Anti-runaway without killing CoT diversity.
+    // OFF: slightly stronger (stops freestyle "thoughtthought…" spam).
+    // ON: gentler so intermediate reasoning can restate premises.
+    if (body['repetition_penalty'] === undefined) {
+        body['repetition_penalty'] = thinkingOn ? 1.05 : 1.1;
+    }
+
+    // Always pin enable_thinking on vLLM/self-hosted so the template is never
+    // ambiguous. User-supplied kwargs win.
+    if (supportsChatTemplateKwargs(input.url)) {
+        const existing = (body['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
+        if (existing['enable_thinking'] === undefined) {
+            body['chat_template_kwargs'] = {
+                ...existing,
+                enable_thinking: thinkingOn,
+            };
+        }
+    }
 }
 
 function normalizeMessagesForOpenAICompat(messages: LLMChatMessage[]): LLMChatMessage[] {
@@ -665,7 +724,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (body['max_tokens'] == null) body['max_tokens'] = 4096;
         }
 
-        this.applyFamilySamplingDefaults(body);
+        this.applyFamilySamplingDefaults(body, this.resolveCallThinking(options));
         await this.applyDefaultOutputBound(body, messages, tools);
 
         const start = Date.now();
@@ -745,6 +804,36 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                     function: { name: tc.name, arguments: tc.argumentsJson },
                 }));
             }
+        } else if (isGemmaModelId(this.options.model) && content) {
+            // Autoregressive Gemma-4 on vLLM without `--reasoning-parser gemma4`
+            // embeds the thought channel in `content`. Split it so callers get
+            // clean answers + reasoning (same contract as the stream path).
+            const extracted = extractGemmaThoughtChannels(content);
+            if (extracted.found) {
+                content = extracted.content.trim();
+                if (extracted.reasoning) {
+                    reasoning = reasoning
+                        ? `${reasoning}\n\n${extracted.reasoning}`
+                        : extracted.reasoning;
+                }
+            }
+            // Unclosed / truncated thought channel (max_tokens mid-CoT): keep
+            // markers out of the user-visible answer.
+            if (/<\|channel/i.test(content) || /<\|thought/i.test(content)) {
+                const unclosed = content.match(
+                    /<\|channel\|?>\s*'?\s*(?:thought|think)\s*'?\s*\r?\n?([\s\S]*)$/i,
+                );
+                if (unclosed) {
+                    const thought = (unclosed[1] ?? '').trim();
+                    if (thought) {
+                        reasoning = reasoning ? `${reasoning}\n\n${thought}` : thought;
+                    }
+                    content = content.slice(0, unclosed.index).trim();
+                } else {
+                    content = stripGemmaChannelMarkers(content).trim();
+                }
+            }
+            if (reasoning) reasoning = stripGemmaChannelMarkers(reasoning);
         }
 
         if (!toolCalls?.length && tools?.length && content) {
@@ -819,7 +908,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (body['max_tokens'] == null) body['max_tokens'] = 4096;
         }
 
-        this.applyFamilySamplingDefaults(body);
+        this.applyFamilySamplingDefaults(body, this.resolveCallThinking(options));
         await this.applyDefaultOutputBound(body, messages, tools);
 
         const start = Date.now();
@@ -1287,19 +1376,19 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     }
 
     /**
-     * Family-aware sampling defaults. Gemma models degenerate into sentence
-     * loops under low-temperature sampling (measured live: temp 0.7 → 17.8K
-     * output tokens / 111s of spiraling on a failing-tool scenario; Google's
-     * recommended temp 1.0 / top_p 0.95 / top_k 64 → 1.9K tokens / 11s on
-     * the identical scenario). When the caller pins nothing, send the
-     * family's recommended sampling instead of gambling on server defaults.
-     * top_k is skipped for Cerebras (not accepted by that API).
+     * Family-aware sampling + dual-mode thinking defaults (Gemma on/off).
+     * See {@link applyGemmaDualModeRequestDefaults}.
      */
-    private applyFamilySamplingDefaults(body: Record<string, unknown>): void {
-        if (!/gemma/i.test(this.options.model)) return;
-        if (body['temperature'] === undefined) body['temperature'] = 1.0;
-        if (body['top_p'] === undefined) body['top_p'] = 0.95;
-        if (body['top_k'] === undefined && !isCerebrasEndpoint(this.options.url)) body['top_k'] = 64;
+    private applyFamilySamplingDefaults(
+        body: Record<string, unknown>,
+        thinking?: { readonly enabled: boolean; readonly level?: string },
+    ): void {
+        applyGemmaDualModeRequestDefaults({
+            model: this.options.model,
+            url: this.options.url,
+            body,
+            thinking,
+        });
     }
 
     /**
@@ -1309,6 +1398,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
      * request. Only applies when the endpoint's REAL window is known (vLLM
      * max_model_len / llama.cpp n_ctx_train / known-model map): cloud APIs
      * with server-managed defaults keep today's behavior.
+     *
+     * Thinking-ON turns get a higher floor/cap so a real CoT + answer can finish
+     * without being clipped into another retry spiral.
      */
     private async applyDefaultOutputBound(
         body: Record<string, unknown>,
@@ -1321,8 +1413,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const promptChars = JSON.stringify(messages).length + (tools?.length ? JSON.stringify(tools).length : 0);
         const promptEstimate = Math.ceil(promptChars / 4);
         const MARGIN = 512;
-        const CAP = 8192;
-        body['max_tokens'] = Math.max(256, Math.min(CAP, window - promptEstimate - MARGIN));
+        const thinkingOn =
+            (body['chat_template_kwargs'] as { enable_thinking?: boolean } | undefined)?.enable_thinking === true;
+        // Thinking needs headroom for the thought channel + final answer.
+        // Without a high enough floor, enable_thinking:true burns the whole
+        // budget inside CoT and returns empty content (measured live).
+        const CAP = thinkingOn ? 16_384 : 8_192;
+        const FLOOR = thinkingOn ? 2_048 : 256;
+        body['max_tokens'] = Math.max(FLOOR, Math.min(CAP, window - promptEstimate - MARGIN));
     }
 
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
@@ -1383,10 +1481,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         applyMaxTokensParam(params, options?.maxTokens, this.options.url);
 
         // Unified thinking flag. Per-call overrides model config; only emitted
-        // when explicitly set, so servers that reject unknown fields are
-        // unaffected by default. OpenAI reasoning models (o-series / GPT-5) use
+        // when explicitly set for non-Gemma models (so servers that reject
+        // unknown fields are unaffected). OpenAI reasoning models use
         // `reasoning_effort`; vLLM / Qwen use `chat_template_kwargs.enable_thinking`.
-        // A user-supplied value (via parameters) always wins.
+        // Gemma on vLLM is special-cased below + in applyGemmaDualModeRequestDefaults
+        // so enable_thinking is ALWAYS pinned (on or off) — ambiguity freestyles
+        // a broken thought channel.
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
         if (isCerebrasEndpoint(this.options.url)) {
             if (params['reasoning_effort'] === undefined && params['disable_reasoning'] === undefined) {
@@ -1407,10 +1507,16 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 // Groq, Fireworks, …) reject unknown body fields with HTTP 400,
                 // so only send it to endpoints not on the strict-host list.
                 const existing = (params['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
+                // existing (user parameters) wins over our enable_thinking key order
                 params['chat_template_kwargs'] = { enable_thinking: thinking.enabled, ...existing };
             }
         }
         return params;
+    }
+
+    /** Resolve thinking for a call (shared by chat + stream body assembly). */
+    private resolveCallThinking(options?: ChatOptions) {
+        return resolveThinking(options?.thinking, this.options.thinking);
     }
 
     // ========================================================================

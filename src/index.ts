@@ -15,6 +15,8 @@ export { AIModel } from './ai-model.js';
 export {
     shouldOmitResponseFormatWire,
     inferOpenAICompatCapabilities,
+    isGemmaModelId,
+    applyGemmaDualModeRequestDefaults,
 } from './providers/openai.js';
 
 // Router status/telemetry types (returned by AIModel.getProviderStatus/getPoolStatus)
