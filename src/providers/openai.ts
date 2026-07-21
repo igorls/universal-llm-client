@@ -70,10 +70,62 @@ function normalizeModelId(model: string): string {
     return model.toLowerCase();
 }
 
+/**
+ * OpenAI-compat endpoints (vLLM, llama.cpp, gateways) rarely advertise
+ * modality capabilities on `/v1/models`. Without a `vision` flag, BentoKit's
+ * ProviderManager treats the model as text-only and **strips images** before
+ * they ever reach the server — even when the served weights are multimodal
+ * (e.g. Gemma-4 on vLLM, proven live via image OCR + describe benches).
+ *
+ * Infer a best-effort capability list from the model id so callers can route
+ * images. Conservative: only families known to accept OpenAI-style
+ * `image_url` parts. Tools are tagged for families with documented function
+ * calling. Callers that need certainty should live-probe (CP image-probe).
+ */
+export function inferOpenAICompatCapabilities(model: string): string[] {
+    const m = normalizeModelId(model);
+    const caps = new Set<string>(['completion']);
+
+    // Multimodal / vision-language families (OpenAI image_url or equivalent)
+    const vision =
+        /gemma-?4/.test(m) ||
+        /gemma-?3(?!\s*embedding)/.test(m) || // Gemma 3 IT is multimodal; skip embeddinggemma
+        /\bgpt-4o\b/.test(m) ||
+        /\bgpt-4\.1\b/.test(m) ||
+        /\bgpt-5\b/.test(m) ||
+        /o[1-4](-|$)/.test(m) ||
+        /claude-(3|4|sonnet|opus|haiku)/.test(m) ||
+        /llava|bakllava|moondream|pixtral|molmo|internvl|minicpm-v|phi-4-multimodal|phi-3\.5-vision/.test(m) ||
+        /qwen[-_.]?(2\.5-)?vl|qwen3-vl|qwen.*-vl|vl.*qwen/.test(m) ||
+        /llama-?4/.test(m) ||
+        /mistral-small.*vision|mistral-medium/.test(m) ||
+        /glm-4v|glm-ocr|step-1v|aria\b|idefics|paligemma/.test(m);
+    if (vision) caps.add('vision');
+
+    // Native / OpenAI tool calling (not exhaustive; safe over-tag for chat IT models)
+    const tools =
+        /gemma-?4/.test(m) ||
+        /\bgpt-4|\bgpt-5|\bo[1-4]/.test(m) ||
+        /claude|qwen|llama|mistral|glm|kimi|deepseek|command-r|minimax/.test(m);
+    if (tools) caps.add('tools');
+
+    return [...caps];
+}
+
 function knownOpenAICompatModelInfo(url: string | undefined, model: string): ModelMetadata | undefined {
     if (!isCerebrasEndpoint(url)) return undefined;
     const contextLength = CEREBRAS_MODEL_CONTEXT_LENGTHS[normalizeModelId(model)];
-    return contextLength ? { model, contextLength } : undefined;
+    if (!contextLength) return undefined;
+    return {
+        model,
+        contextLength,
+        capabilities: inferOpenAICompatCapabilities(model),
+    };
+}
+
+function withInferredCapabilities(model: string, info: ModelMetadata): ModelMetadata {
+    if (info.capabilities?.length) return info;
+    return { ...info, capabilities: inferOpenAICompatCapabilities(model) };
 }
 
 function applyMaxTokensParam(
@@ -1286,6 +1338,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // llama.cpp exposes `meta.n_ctx_train`. Without this, every local
         // vLLM/llama.cpp server is treated as an 8K-context model and
         // callers budget/truncate against the wrong window.
+        //
+        // Capabilities are almost never on the card — attach family inference
+        // so multimodal models (Gemma-4, etc.) are not treated as text-only.
         try {
             const response = await httpRequest<{
                 data?: Array<{ id: string; max_model_len?: number; meta?: { n_ctx_train?: number } }>;
@@ -1298,7 +1353,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 const card = cards.find(m => m.id === model) ?? cards[0];
                 const ctx = card?.max_model_len ?? card?.meta?.n_ctx_train;
                 if (typeof ctx === 'number' && ctx > 0) {
-                    const info: ModelMetadata = { model, contextLength: ctx };
+                    const info = withInferredCapabilities(model, { model, contextLength: ctx });
                     this.modelInfoCache.set(model, info);
                     return info;
                 }
@@ -1307,7 +1362,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             // Endpoint variant without metadata — fall through to default
         }
 
-        return super.getModelInfo(model);
+        const fallback = withInferredCapabilities(model, {
+            model,
+            contextLength: 8192,
+        });
+        this.modelInfoCache.set(model, fallback);
+        return fallback;
     }
 
     private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {

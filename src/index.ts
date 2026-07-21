@@ -12,7 +12,10 @@
 // ============================================================================
 
 export { AIModel } from './ai-model.js';
-export { shouldOmitResponseFormatWire } from './providers/openai.js';
+export {
+    shouldOmitResponseFormatWire,
+    inferOpenAICompatCapabilities,
+} from './providers/openai.js';
 
 // Router status/telemetry types (returned by AIModel.getProviderStatus/getPoolStatus)
 export type { ProviderStatus, PoolStatus, RouteOptions } from './router.js';
