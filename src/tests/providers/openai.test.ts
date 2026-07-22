@@ -628,6 +628,51 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(getBody()!['reasoning_effort']).toBeUndefined();
         });
 
+        // gpt-5.x / o-series reject `max_tokens` (use max_completion_tokens) and
+        // non-default `temperature` on strict OpenAI hosts.
+        test('renames max_tokens → max_completion_tokens for a reasoning model on strict OpenAI host', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5.6-luna' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { maxTokens: 1234 });
+
+            const body = getBody()!;
+            expect(body['max_completion_tokens']).toBe(1234);
+            expect(body['max_tokens']).toBeUndefined();
+        });
+
+        test('omits temperature for a reasoning model on strict OpenAI host', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5.4-mini' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { temperature: 0.7 });
+
+            expect(getBody()!['temperature']).toBeUndefined();
+        });
+
+        test('keeps max_tokens + temperature for a NON-reasoning model on strict host', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-4o' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { maxTokens: 1234, temperature: 0.7 });
+
+            const body = getBody()!;
+            expect(body['max_tokens']).toBe(1234);
+            expect(body['max_completion_tokens']).toBeUndefined();
+            expect(body['temperature']).toBe(0.7);
+        });
+
+        test('keeps max_tokens for a reasoning model on a self-hosted (non-strict) host', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5.6-luna', url: 'http://localhost:8000/v1' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { maxTokens: 1234 });
+
+            const body = getBody()!;
+            expect(body['max_tokens']).toBe(1234);
+            expect(body['max_completion_tokens']).toBeUndefined();
+        });
+
         // ===================================================================
         // Usage stats (timing / throughput)
         // ===================================================================

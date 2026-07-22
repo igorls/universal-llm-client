@@ -1425,7 +1425,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // budget inside CoT and returns empty content (measured live).
         const CAP = thinkingOn ? 16_384 : 8_192;
         const FLOOR = thinkingOn ? 2_048 : 256;
-        body['max_tokens'] = Math.max(FLOOR, Math.min(CAP, window - promptEstimate - MARGIN));
+        const bound = Math.max(FLOOR, Math.min(CAP, window - promptEstimate - MARGIN));
+        // OpenAI reasoning models reject `max_tokens` — use `max_completion_tokens`.
+        if (isOpenAIReasoningModel(this.options.model) && isStrictOpenAICompatHost(this.options.url)) {
+            body['max_completion_tokens'] = bound;
+        } else {
+            body['max_tokens'] = bound;
+        }
     }
 
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
@@ -1517,20 +1523,26 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             }
         }
 
-        // OpenAI's /v1/chat/completions rejects `reasoning_effort` together with
-        // function tools unless it is 'none' (HTTP 400: "...set 'reasoning_effort'
-        // to 'none'..."). When targeting an OpenAI reasoning model (o-series /
-        // GPT-5, incl. gpt-5.x-mini/-nano/-luna) on a strict hosted OpenAI-compat
-        // endpoint AND the turn carries tools, force 'none' — overriding the
-        // 'minimal'/'medium'/level resolved above. Toolless turns keep their
-        // effort so reasoning quality is unaffected. (Routing tool turns through
-        // /v1/responses is the alternative; forcing 'none' is the minimal fix.)
-        if (
-            (options?.tools?.length ?? 0) > 0 &&
-            isOpenAIReasoningModel(this.options.model) &&
-            isStrictOpenAICompatHost(this.options.url)
-        ) {
-            params['reasoning_effort'] = 'none';
+        // gpt-5.x / o-series reasoning models on strict hosted OpenAI-compat
+        // endpoints (api.openai.com, …) reject several /v1/chat/completions params
+        // with HTTP 400. Normalize the ones we may have set — all share one
+        // predicate (reasoning model AND strict host):
+        if (isOpenAIReasoningModel(this.options.model) && isStrictOpenAICompatHost(this.options.url)) {
+            // (a) `max_tokens` is unsupported on these models — rename to
+            //     `max_completion_tokens` ("Unsupported parameter: 'max_tokens' …
+            //     Use 'max_completion_tokens' instead.").
+            if (params['max_tokens'] !== undefined && params['max_completion_tokens'] === undefined) {
+                params['max_completion_tokens'] = params['max_tokens'];
+            }
+            delete params['max_tokens'];
+            // (b) non-default `temperature` is rejected — omit it (server default = 1).
+            delete params['temperature'];
+            // (c) `reasoning_effort` is rejected ALONGSIDE function tools unless
+            //     it is 'none' (routing tool turns through /v1/responses is the
+            //     alternative; forcing 'none' is the minimal in-band fix).
+            if ((options?.tools?.length ?? 0) > 0) {
+                params['reasoning_effort'] = 'none';
+            }
         }
         return params;
     }
