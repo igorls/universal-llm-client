@@ -6,7 +6,12 @@
  */
 
 import { BaseLLMClient } from '../client.js';
-import { resolveThinking, isOpenAIReasoningModel, supportsChatTemplateKwargs } from '../thinking.js';
+import {
+    resolveThinking,
+    isOpenAIReasoningModel,
+    supportsChatTemplateKwargs,
+    isStrictOpenAICompatHost,
+} from '../thinking.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
 import { createDecoder, StandardChatDecoder } from '../stream-decoder.js';
 import {
@@ -1510,6 +1515,22 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 // existing (user parameters) wins over our enable_thinking key order
                 params['chat_template_kwargs'] = { enable_thinking: thinking.enabled, ...existing };
             }
+        }
+
+        // OpenAI's /v1/chat/completions rejects `reasoning_effort` together with
+        // function tools unless it is 'none' (HTTP 400: "...set 'reasoning_effort'
+        // to 'none'..."). When targeting an OpenAI reasoning model (o-series /
+        // GPT-5, incl. gpt-5.x-mini/-nano/-luna) on a strict hosted OpenAI-compat
+        // endpoint AND the turn carries tools, force 'none' — overriding the
+        // 'minimal'/'medium'/level resolved above. Toolless turns keep their
+        // effort so reasoning quality is unaffected. (Routing tool turns through
+        // /v1/responses is the alternative; forcing 'none' is the minimal fix.)
+        if (
+            (options?.tools?.length ?? 0) > 0 &&
+            isOpenAIReasoningModel(this.options.model) &&
+            isStrictOpenAICompatHost(this.options.url)
+        ) {
+            params['reasoning_effort'] = 'none';
         }
         return params;
     }

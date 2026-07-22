@@ -574,6 +574,60 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(getBody()!['reasoning_effort']).toBe('minimal');
         });
 
+        // reasoning_effort + tools is rejected by strict OpenAI-compat hosts
+        // (HTTP 400) unless it is 'none'. The provider forces 'none' for reasoning
+        // models on strict hosts when the turn carries tools.
+        const reasoningToolFixTool: LLMToolDefinition = {
+            type: 'function',
+            function: {
+                name: 'lookup',
+                description: 'Look something up',
+                parameters: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+            },
+        };
+
+        for (const model of ['gpt-5.6-luna', 'gpt-5.4-nano', 'gpt-5.4-mini', 'o3']) {
+            test(`forces reasoning_effort 'none' for ${model} + tools on strict OpenAI host`, async () => {
+                const getBody = mockFetchAndCapture();
+                // thinking:'high' would otherwise resolve to reasoning_effort 'high'.
+                const client = createClient({ model, thinking: 'high' });
+
+                await client.chat([{ role: 'user', content: 'hi' }], { tools: [reasoningToolFixTool] });
+
+                expect(getBody()!['reasoning_effort']).toBe('none');
+            });
+        }
+
+        test('keeps resolved reasoning_effort for a reasoning model WITHOUT tools', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5.6-luna', thinking: 'high' });
+
+            await client.chat([{ role: 'user', content: 'hi' }]);
+
+            // Toolless turns are unaffected — reasoning quality preserved.
+            expect(getBody()!['reasoning_effort']).toBe('high');
+        });
+
+        test('does NOT force none for a reasoning model + tools on a self-hosted (non-strict) host', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-5.6-luna', url: 'http://localhost:8000/v1', thinking: 'high' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { tools: [reasoningToolFixTool] });
+
+            // Self-hosted vLLM/SGLang isn't on the strict list; the override must not fire.
+            expect(getBody()!['reasoning_effort']).not.toBe('none');
+        });
+
+        test('does NOT set reasoning_effort for a NON-reasoning model + tools on strict host', async () => {
+            const getBody = mockFetchAndCapture();
+            const client = createClient({ model: 'gpt-4o', thinking: 'high' });
+
+            await client.chat([{ role: 'user', content: 'hi' }], { tools: [reasoningToolFixTool] });
+
+            // gpt-4o is not a reasoning model → the tools override is scoped out.
+            expect(getBody()!['reasoning_effort']).toBeUndefined();
+        });
+
         // ===================================================================
         // Usage stats (timing / throughput)
         // ===================================================================

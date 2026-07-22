@@ -82,6 +82,19 @@ export function supportsChatTemplateKwargs(url: string | undefined): boolean {
 }
 
 /**
+ * Whether the endpoint is a hosted, strictly-validating OpenAI-compatible
+ * gateway (official OpenAI + the gateways in {@link STRICT_OPENAI_COMPAT_HOSTS}).
+ * These reject `reasoning_effort` alongside function tools on
+ * `/v1/chat/completions` unless it is `'none'` (HTTP 400). Inverse of
+ * {@link supportsChatTemplateKwargs}; an unknown/empty URL is treated as NOT
+ * strict (assumed self-hosted), matching the permissive default there.
+ */
+export function isStrictOpenAICompatHost(url: string | undefined): boolean {
+    const u = (url ?? '').toLowerCase();
+    return STRICT_OPENAI_COMPAT_HOSTS.some((host) => u.includes(host));
+}
+
+/**
  * Gemini 2.5 `thinkingBudget` for a level. 0 disables, -1 is dynamic, and the
  * Flash range is 0–24576. A bare `true` (no level) maps to dynamic (-1).
  */
