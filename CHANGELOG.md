@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.0] - 2026-07-22
+
+### Added
+
+- **Pool-aware routing + telemetry (Router)** — providers sharing the same priority now form a **pool** the Router load-balances across (least-inflight selection, `maxConcurrent`, a bounded request queue that spills to the next tier when saturated, and session affinity) instead of always hitting the first node; distinct priorities keep classic ordered-failover semantics. New public surface: `AIModel.getPoolStatus()`, `ProviderStatus.url`, and exported status types.
+- **Cold-node liveness preflight (Router)** — configurable probe settings verify a cold provider is actually reachable before dispatch, while the warm dispatch path stays await-free so healthy nodes pay no added latency.
+- **`StreamLoopGuard` — client-side runaway protection** — detects degenerate/looping streamed output and aborts, returning `finishReason: 'degeneration'`, so a model that loops for minutes with `max_tokens` omitted no longer hangs the call. Includes repeated-run collapsing and enhanced loop detection; wired into Ollama `chatStream` with abort-signal passthrough.
+- **Per-chunk idle-reset stream watchdog** (`http` / OpenAI-compatible) with realistic timeouts — a stalled stream is aborted on inactivity rather than an absolute deadline.
+- **First-class `contextLength` option** — mapped to Ollama `num_ctx`; plus `ChatOptions.maxTokens` → Ollama `num_predict`, and a per-call model override via `ChatOptions.model`.
+- **Model-metadata caching + accurate context length** — `getModelInfo()` caches per-model metadata and reports the endpoint's real window (vLLM `max_model_len` / llama.cpp `n_ctx_train`), falling back to a conservative 8192 only for budgeting. New `inferOpenAICompatCapabilities()` and Gemma dual-mode helpers (`isGemmaModelId`, `applyGemmaDualModeRequestDefaults`).
+- **Cerebras OpenAI-compatible gateway support.**
+- **Small-model tool-argument coercion + self-correction** — tolerates and repairs malformed / loosely-typed tool arguments emitted by smaller models.
+- **DiffusionGemma native protocol + `<think>` tags** ported into `StandardChatDecoder`.
+- **`omitResponseFormat` option** for OpenAI-compatible backends that reject `response_format`.
+
+### Changed
+
+- **Transparent-failover hardening** — connection-failure detection now works across both Bun and Node runtimes, the streaming failover boundary is handled correctly, and dead nodes are skipped fast.
+
+### Fixed
+
+- **Cloud APIs are no longer given an unintended `max_tokens`** — `getModelInfo()`'s conservative 8192 budgeting default had leaked into output-bounding, so every server-managed cloud endpoint received a derived `max_tokens` (~7672). Output-bounding now uses only a *real* advertised window (`resolveKnownContextLength()` never applies the fallback); unknown-window endpoints stay unbounded, per the documented `applyDefaultOutputBound` contract.
+- **OpenAI reasoning models on strict hosts** — send `max_completion_tokens` instead of `max_tokens`, omit `temperature`, and force `reasoning_effort: 'none'` when tools are present (strict OpenAI-compatible hosts reject the alternatives).
+- **Malformed tool calls** — never surface or re-send tool calls with invalid JSON arguments, and survive malformed tool calls emitted by server-side parsers (OpenAI / Gemma).
+- **Gemma channel leakage** — strip leaked channel markers from both thinking and content.
+- **Streamed usage** — request `stream_options.include_usage` so token usage is reported on streamed OpenAI-compatible chats.
+- **Ollama `keep_alive`** — hoisted out of `options` to the request top level (it was silently ignored while nested).
+
 ## [4.5.2] - 2026-06-28
 
 ### Fixed
