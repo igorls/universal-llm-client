@@ -1369,15 +1369,43 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     private async resolveKnownContextLength(model: string): Promise<number | undefined> {
         const cached = this.knownWindowCache.get(model);
         if (cached !== undefined) return cached ?? undefined;
-        const known = knownOpenAICompatModelInfo(this.options.url, model);
-        if (known?.contextLength) {
-            this.knownWindowCache.set(model, known.contextLength);
-            return known.contextLength;
-        }
-        await this.getModelInfo(model).catch(() => undefined);
-        const probed = this.modelInfoCache.get(model)?.contextLength ?? null;
-        this.knownWindowCache.set(model, probed);
+        // Only a REAL advertised window counts here. getModelInfo()'s conservative
+        // 8192 default is for budgeting callers — feeding it into output-bounding
+        // would make every server-managed cloud API look like an 8K-window backend
+        // and silently cap max_tokens, breaking applyDefaultOutputBound's "cloud
+        // APIs keep today's behavior" contract.
+        const probed = await this.probeContextLength(model);
+        this.knownWindowCache.set(model, probed ?? null);
         return probed ?? undefined;
+    }
+
+    /**
+     * Probe the endpoint's REAL context window for a model: the known-model map
+     * first, then the live `/models` card (vLLM `max_model_len` / llama.cpp
+     * `meta.n_ctx_train`). Returns `undefined` when the endpoint advertises no
+     * window — callers decide whether to apply a default (budgeting) or leave
+     * the request unbounded (output-bounding).
+     */
+    private async probeContextLength(model: string): Promise<number | undefined> {
+        const known = knownOpenAICompatModelInfo(this.options.url, model);
+        if (known?.contextLength) return known.contextLength;
+        try {
+            const response = await httpRequest<{
+                data?: Array<{ id: string; max_model_len?: number; meta?: { n_ctx_train?: number } }>;
+            }>(this.buildUrl('/models'), {
+                headers: buildHeaders(this.options),
+                timeout: 5000,
+            });
+            if (response.ok) {
+                const cards = response.data.data ?? [];
+                const card = cards.find(m => m.id === model) ?? cards[0];
+                const ctx = card?.max_model_len ?? card?.meta?.n_ctx_train;
+                if (typeof ctx === 'number' && ctx > 0) return ctx;
+            }
+        } catch {
+            // Endpoint variant without metadata — unknown window.
+        }
+        return undefined;
     }
 
     /**
@@ -1442,41 +1470,23 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const cached = this.modelInfoCache.get(model);
         if (cached) return cached;
 
-        // Ask the endpoint itself before falling back to the conservative
-        // 8192 default: vLLM reports `max_model_len` per model card and
-        // llama.cpp exposes `meta.n_ctx_train`. Without this, every local
-        // vLLM/llama.cpp server is treated as an 8K-context model and
-        // callers budget/truncate against the wrong window.
+        // Ask the endpoint for its real window (vLLM reports `max_model_len` per
+        // model card, llama.cpp exposes `meta.n_ctx_train`) before falling back
+        // to the conservative 8192 default — otherwise every local vLLM/llama.cpp
+        // server is treated as an 8K-context model and callers budget/truncate
+        // against the wrong window. The fallback keeps this method total so
+        // budgeting callers always get a number; output-bounding instead uses
+        // resolveKnownContextLength(), which never applies the fallback.
         //
         // Capabilities are almost never on the card — attach family inference
         // so multimodal models (Gemma-4, etc.) are not treated as text-only.
-        try {
-            const response = await httpRequest<{
-                data?: Array<{ id: string; max_model_len?: number; meta?: { n_ctx_train?: number } }>;
-            }>(this.buildUrl('/models'), {
-                headers: buildHeaders(this.options),
-                timeout: 5000,
-            });
-            if (response.ok) {
-                const cards = response.data.data ?? [];
-                const card = cards.find(m => m.id === model) ?? cards[0];
-                const ctx = card?.max_model_len ?? card?.meta?.n_ctx_train;
-                if (typeof ctx === 'number' && ctx > 0) {
-                    const info = withInferredCapabilities(model, { model, contextLength: ctx });
-                    this.modelInfoCache.set(model, info);
-                    return info;
-                }
-            }
-        } catch {
-            // Endpoint variant without metadata — fall through to default
-        }
-
-        const fallback = withInferredCapabilities(model, {
+        const probed = await this.probeContextLength(model);
+        const info = withInferredCapabilities(model, {
             model,
-            contextLength: 8192,
+            contextLength: probed ?? 8192,
         });
-        this.modelInfoCache.set(model, fallback);
-        return fallback;
+        this.modelInfoCache.set(model, info);
+        return info;
     }
 
     private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {
