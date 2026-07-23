@@ -140,15 +140,37 @@ function suffixThatPrefixes(value: string, prefix: string): string {
     return '';
 }
 
+function resolveKnownToolName(name: string, knownToolNames: Set<string>): string | null {
+    if (knownToolNames.has(name)) return name;
+    const stripped = name.replace(/^@[^:]+:/, '');
+    if (stripped !== name && knownToolNames.has(stripped)) return stripped;
+    const sanitized = stripped
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '');
+    if (sanitized && knownToolNames.has(sanitized)) return sanitized;
+    const tail = name.includes(':')
+        ? name.slice(name.lastIndexOf(':') + 1)
+        : name.includes('/')
+          ? name.slice(name.lastIndexOf('/') + 1)
+          : '';
+    if (tail && knownToolNames.has(tail)) return tail;
+    return null;
+}
+
 function parseBareCallAtStart(text: string): BareCallParseResult {
     if (!text.startsWith('call:')) return { status: 'invalid' };
-    const nameStart = 'call:'.length;
-    if (text.length <= nameStart) return { status: 'incomplete' };
-    const first = text[nameStart]!;
+    let pos = 'call:'.length;
+    // Optional whitespace: Cerebras gemma-4 often emits `call: @module/path:tool {}`
+    while (pos < text.length && /\s/u.test(text[pos]!)) pos++;
+    if (pos >= text.length) return { status: 'incomplete' };
+    const first = text[pos]!;
     if (!/[@A-Za-z_]/u.test(first)) return { status: 'invalid' };
 
-    let pos = nameStart + 1;
-    while (pos < text.length && /[@A-Za-z0-9_.:-]/u.test(text[pos]!)) pos++;
+    const nameStart = pos;
+    pos++;
+    // Allow `/` in module-qualified names (`@community/comfyui:comfy_list_models`)
+    while (pos < text.length && /[@A-Za-z0-9_./:-]/u.test(text[pos]!)) pos++;
     const name = text.slice(nameStart, pos);
     while (pos < text.length && /\s/u.test(text[pos]!)) pos++;
     if (pos >= text.length) return { status: 'incomplete' };
@@ -583,8 +605,9 @@ export class StandardChatDecoder implements StreamDecoder {
                 continue;
             }
 
-            if (knownToolNames.has(parsed.name)) {
-                this.emitRecoveredBareCall(parsed.name, parsed.argumentsJson);
+            const resolvedName = resolveKnownToolName(parsed.name, knownToolNames);
+            if (resolvedName) {
+                this.emitRecoveredBareCall(resolvedName, parsed.argumentsJson);
             } else {
                 emit(parsed.segment);
             }

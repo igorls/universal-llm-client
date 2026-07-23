@@ -314,6 +314,23 @@ describe('StandardChatDecoder — reasoning tags + DiffusionGemma native protoco
         expect(decoder.getCleanContent()).toBe('');
     });
 
+    it('recovers Cerebras gemma bare call with space and module-qualified name', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e), {
+            knownToolNames: new Set(['comfy_list_models']),
+        });
+        decoder.push('call: @community/comfyui:comfy_list_models {}');
+        decoder.flush();
+        const calls = events
+            .filter(e => e.type === 'tool_call')
+            .flatMap(e => (e as { calls: Array<{ function: { name: string; arguments: string } }> }).calls);
+        expect(events.filter(e => e.type === 'text')).toEqual([]);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.function.name).toBe('comfy_list_models');
+        expect(JSON.parse(calls[0]!.function.arguments)).toEqual({});
+        expect(decoder.getCleanContent()).toBe('');
+    });
+
     it('parses a native DiffusionGemma tool call split across chunks', () => {
         const events: DecodedEvent[] = [];
         const decoder = new StandardChatDecoder(e => events.push(e));
