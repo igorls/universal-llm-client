@@ -275,13 +275,54 @@ function sanitizeOutboundToolCalls(
     );
 }
 
+/**
+ * Wire shape for OpenAI-compat multimodal parts. Our internal audio type is
+ * `type: "audio"` + `{ data, mimeType }`; OpenAI / vLLM expect either
+ * `audio_url` (data URL — used by vLLM Gemma audio) or `input_audio`.
+ * Convert at the boundary so Google/Anthropic keep the internal shape.
+ */
+type OpenAIWireContentPart =
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+    | { type: 'audio_url'; audio_url: { url: string } };
+
+/**
+ * Map internal {@link LLMContentPart}s to OpenAI-compat wire parts.
+ * Internal `type: "audio"` → `audio_url` with a `data:{mime};base64,…` URL
+ * (the format proven against vLLM Gemma multimodal; see audio-lab).
+ */
+export function toOpenAIWireContent(
+    content: LLMChatMessage['content'],
+): string | OpenAIWireContentPart[] {
+    if (typeof content === 'string' || content == null) {
+        return content ?? '';
+    }
+    return content.map((part): OpenAIWireContentPart => {
+        if (part.type === 'text') {
+            return { type: 'text', text: part.text };
+        }
+        if (part.type === 'image_url') {
+            return { type: 'image_url', image_url: part.image_url };
+        }
+        // Internal audio → audio_url data URI for vLLM / OpenAI-compat servers.
+        const mime = (part.audio.mimeType || 'audio/ogg').split(';')[0]!.trim() || 'audio/ogg';
+        const data = part.audio.data;
+        const url = data.startsWith('data:')
+            ? data
+            : `data:${mime};base64,${data}`;
+        return { type: 'audio_url', audio_url: { url } };
+    });
+}
+
 function toOpenAICompatMessage(
     message: LLMChatMessage,
     content: LLMChatMessage['content'] = message.content,
 ): LLMChatMessage {
+    // Cast: wire content may include `audio_url` parts not in the internal
+    // LLMContentPart union (internal keeps `type: "audio"` for Google/etc.).
     const normalized: LLMChatMessage = {
         role: message.role,
-        content: content ?? '',
+        content: toOpenAIWireContent(content ?? '') as LLMChatMessage['content'],
     };
 
     if (message.role === 'assistant' && message.tool_calls) {

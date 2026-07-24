@@ -10,9 +10,14 @@ import { fromZod } from '../../zod-adapter.js';
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { z } from 'zod';
-import { OpenAICompatibleClient, sanitizeToolCallName, recoverLooseToolArguments } from '../../providers/openai.js';
+import {
+    OpenAICompatibleClient,
+    sanitizeToolCallName,
+    recoverLooseToolArguments,
+    toOpenAIWireContent,
+} from '../../providers/openai.js';
 import type { LLMClientOptions, ChatOptions, LLMChatMessage, LLMToolDefinition } from '../../interfaces.js';
-import { AIModelApiType } from '../../interfaces.js';
+import { AIModelApiType, audioContent, textContent } from '../../interfaces.js';
 import type { DecodedEvent } from '../../stream-decoder.js';
 
 // ============================================================================
@@ -1816,6 +1821,73 @@ describe('OpenAICompatibleClient Structured Output', () => {
             // Provider should NOT throw — validation is done at Router level
             const result = await client.chat(messages, options);
             expect(result.message.content).toBe('{"count": "not a number"}');
+        });
+    });
+
+    // ========================================================================
+    // Audio wire format (internal type:audio → OpenAI-compat audio_url)
+    // ========================================================================
+
+    describe('audio content parts', () => {
+        test('toOpenAIWireContent converts internal audio to audio_url data URI', () => {
+            const wire = toOpenAIWireContent([
+                audioContent('AAAA', 'audio/ogg'),
+                textContent('[Voice message]'),
+            ]);
+            expect(Array.isArray(wire)).toBe(true);
+            const parts = wire as Array<Record<string, unknown>>;
+            expect(parts).toHaveLength(2);
+            expect(parts[0]).toEqual({
+                type: 'audio_url',
+                audio_url: { url: 'data:audio/ogg;base64,AAAA' },
+            });
+            expect(parts[1]).toEqual({ type: 'text', text: '[Voice message]' });
+        });
+
+        test('toOpenAIWireContent strips mime parameters and preserves existing data URIs', () => {
+            const wire = toOpenAIWireContent([
+                audioContent('BBBB', 'audio/ogg; codecs=opus'),
+                audioContent('data:audio/wav;base64,CCCC', 'audio/wav'),
+            ]) as Array<Record<string, unknown>>;
+            expect(wire[0]).toEqual({
+                type: 'audio_url',
+                audio_url: { url: 'data:audio/ogg;base64,BBBB' },
+            });
+            expect(wire[1]).toEqual({
+                type: 'audio_url',
+                audio_url: { url: 'data:audio/wav;base64,CCCC' },
+            });
+        });
+
+        test('chat() sends audio_url (not type:audio) on the wire', async () => {
+            const getBody = mockFetchAndCapture({
+                ...OPENAI_RESPONSE,
+                choices: [{
+                    index: 0,
+                    message: { role: 'assistant', content: 'I heard you.' },
+                    finish_reason: 'stop',
+                }],
+            });
+            const client = createClient({ model: 'gemma-4-12b-it-nvfp4' });
+
+            await client.chat([
+                {
+                    role: 'user',
+                    content: [
+                        { type: 'audio', audio: { data: 'OGGDATA', mimeType: 'audio/ogg' } },
+                        { type: 'text', text: '[Voice message]' },
+                    ],
+                },
+            ]);
+
+            const body = getBody()!;
+            const sentMessages = body['messages'] as Array<Record<string, unknown>>;
+            const content = sentMessages[0]!['content'] as Array<Record<string, unknown>>;
+            expect(content[0]!['type']).toBe('audio_url');
+            expect(content[0]!['audio_url']).toEqual({ url: 'data:audio/ogg;base64,OGGDATA' });
+            // Must never ship the internal type — vLLM 400s on type:audio.
+            expect(content.some((p) => p['type'] === 'audio')).toBe(false);
+            expect(content[1]).toEqual({ type: 'text', text: '[Voice message]' });
         });
     });
 
