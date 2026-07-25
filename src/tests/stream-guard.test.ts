@@ -3,9 +3,26 @@
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { StreamLoopGuard, collapseRepeatedRuns, collapseRepeatsInToolArguments } from '../stream-guard.js';
+import {
+    StreamLoopGuard,
+    collapseRepeatedRuns,
+    collapseRepeatsInToolArguments,
+    stripRepeatedTail,
+} from '../stream-guard.js';
 import { OpenAICompatibleClient } from '../providers/openai.js';
 import { AIModelApiType } from '../interfaces.js';
+
+/**
+ * The verbatim 5-paragraph, ~875-char cycle from the threejs-game session
+ * (conv_ms02efk4_bf0w), which looped 18× past every guard in the stack.
+ */
+const INCIDENT_CYCLE = [
+    'Actually, I think the issue might be that the `browser_evaluate` runs in an isolated context. The events dispatched in the `browser_evaluate` context might not be received by the page\'s JavaScript.',
+    'Let me try a different approach. Let me use the `browser_key` tool to press keys, which should simulate real key presses.',
+    "Actually, I already tried using `browser_key` to press ArrowRight and ArrowUp, and the timer started counting down. So the game is in the PLAYING state. But the score is still 0, which means the player hasn't collected a gem.",
+    'The issue might be that the player is not moving to a collectible\'s position. The player moves 0.1 units per key press, and the collectibles are at random positions. I need to press many keys to move the player to a collectible.',
+    "Let me try pressing more keys. I'll press ArrowUp 20 times to move the player from y=-2 to y=0.",
+];
 
 describe('StreamLoopGuard', () => {
     test('triggers on a sustained short-pattern loop', () => {
@@ -49,6 +66,61 @@ describe('StreamLoopGuard', () => {
         expect(['paragraph_loop', 'repetition']).toContain(detection!.reason);
     });
 
+    test('catches a MULTI-paragraph cycle where no two consecutive paragraphs match (threejs-game incident)', () => {
+        // The live loop: 5 different paragraphs repeating as a block, 18×.
+        // Char-level missed it (875-char period > the 192 cap) and the
+        // run detector missed it (max consecutive identical paragraphs = 1).
+        const guard = new StreamLoopGuard({ checkIntervalPushes: 5 });
+        let detection = null;
+        for (let i = 0; i < 12 && !detection; i++) {
+            for (const paragraph of INCIDENT_CYCLE) {
+                detection = guard.push(paragraph + '\n\n');
+                if (detection) break;
+            }
+        }
+        expect(detection).not.toBeNull();
+        expect(detection!.reason).toBe('cycle_loop');
+        expect(detection!.period).toBe(INCIDENT_CYCLE.length);
+        expect(detection!.repeats!).toBeGreaterThanOrEqual(3);
+    });
+
+    test('default tailWindow holds enough cycles for a ~875-char loop', () => {
+        // The pre-fix 2048-char window could not have held 3 cycles even with a
+        // correct detector — pin that the default is wide enough.
+        expect(INCIDENT_CYCLE.join('\n\n').length).toBeGreaterThan(800);
+        const guard = new StreamLoopGuard({ checkIntervalPushes: 5 });
+        let detection = null;
+        for (let i = 0; i < 10 && !detection; i++) {
+            detection = guard.push(INCIDENT_CYCLE.join('\n\n') + '\n\n');
+        }
+        expect(detection).not.toBeNull();
+        expect(detection!.reason).toBe('cycle_loop');
+    });
+
+    test('catches a multi-LINE cycle separated by single newlines', () => {
+        const guard = new StreamLoopGuard({ checkIntervalPushes: 5 });
+        const unitA = 'Checking whether the module resolved correctly before the retry.';
+        const unitB = 'It did not resolve, so I will attempt the alternate import path again.';
+        const unitC = 'The alternate import path is the same one I already attempted above.';
+        let detection = null;
+        for (let i = 0; i < 12 && !detection; i++) {
+            detection = guard.push(`${unitA}\n${unitB}\n${unitC}\n`);
+        }
+        expect(detection).not.toBeNull();
+        expect(detection!.reason).toBe('cycle_loop');
+        expect(detection!.period).toBe(3);
+    });
+
+    test('does NOT trigger on a short repeated code block below the span floor', () => {
+        // Legitimately repetitive structured output (assertions, table rows).
+        // A 2-line block ×3 covers ~120 chars — far under the 600-char floor.
+        const guard = new StreamLoopGuard({ checkIntervalPushes: 1 });
+        for (let i = 0; i < 3; i++) {
+            expect(guard.push('  expect(result.ok).toBe(true);\n  expect(result.id).toBe(7);\n')).toBeNull();
+        }
+        expect(guard.detection).toBeNull();
+    });
+
     test('triggers the absolute max_chars ceiling on non-repetitive runaways', () => {
         const guard = new StreamLoopGuard({ maxChars: 5_000 });
         let detection = null;
@@ -69,6 +141,17 @@ describe('collapseRepeatedRuns', () => {
         expect(result.text).toContain(unit);
         expect(result.text).toContain('repeated 20×');
         expect(result.text.length).toBeLessThan(text.length / 5);
+    });
+
+    test('collapses a multi-paragraph cycle to one copy + marker', () => {
+        const text = Array.from({ length: 4 }, () => INCIDENT_CYCLE.join('\n\n')).join('\n\n');
+        const result = collapseRepeatedRuns(text);
+        // 20 paragraphs in, one 5-paragraph copy out → 15 removed
+        expect(result.collapsed).toBe(15);
+        expect(result.text).toContain('5-part cycle repeated 4×');
+        expect(result.text).toContain(INCIDENT_CYCLE[0]);
+        // Each paragraph of the cycle survives exactly once
+        expect(result.text.split(INCIDENT_CYCLE[2]!).length - 1).toBe(1);
     });
 
     test('leaves varied text untouched', () => {
@@ -92,6 +175,37 @@ describe('collapseRepeatedRuns', () => {
         const result = collapseRepeatsInToolArguments('not json at all');
         expect(result.argsJson).toBe('not json at all');
         expect(result.collapsed).toBe(0);
+    });
+});
+
+describe('stripRepeatedTail', () => {
+    const PREFIX =
+        'I installed vite and the module specifier now resolves, so the dev server is serving the game on port 3001.\n\n' +
+        'The start overlay disappears on the first key press and the countdown begins.';
+
+    test('cuts a multi-paragraph cycle and keeps the healthy prefix', () => {
+        const text = `${PREFIX}\n\n${Array.from({ length: 5 }, () => INCIDENT_CYCLE.join('\n\n')).join('\n\n')}`;
+        const stripped = stripRepeatedTail(text);
+        expect(stripped).toBe(PREFIX);
+        expect(stripped).not.toContain('browser_evaluate');
+    });
+
+    test('cuts a plain repeated-paragraph run', () => {
+        const unit = "I'll try to use `std.os.args` but I'll check if it's `std.os.args`.";
+        const text = `${PREFIX}\n\n${Array.from({ length: 12 }, () => unit).join('\n\n')}`;
+        expect(stripRepeatedTail(text)).toBe(PREFIX);
+    });
+
+    test('cuts a newline-free char-level loop', () => {
+        const text = `${PREFIX} ${"I'm sorry. ".repeat(80)}`;
+        const stripped = stripRepeatedTail(text);
+        expect(stripped.startsWith(PREFIX)).toBe(true);
+        expect(stripped.length).toBeLessThan(PREFIX.length + 24);
+    });
+
+    test('leaves healthy output untouched', () => {
+        const text = `${PREFIX}\n\nThe score increments when the player reaches a gem, and the win overlay renders at 50 points.`;
+        expect(stripRepeatedTail(text)).toBe(text);
     });
 });
 

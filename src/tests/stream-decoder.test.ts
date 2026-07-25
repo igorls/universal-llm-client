@@ -293,6 +293,38 @@ describe('StandardChatDecoder — reasoning tags + DiffusionGemma native protoco
         expect(decoder.getCleanContent()).toBe('Correct.');
     });
 
+    it('handles orphan </think> (Poolside/R1) without leaking the closer into text', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+        decoder.push('The user said hey - keep it brief.</think>Hey Igor. What\'s on your mind?');
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe('The user said hey - keep it brief.');
+        expect(decoder.getCleanContent()).toBe("Hey Igor. What's on your mind?");
+        const text = events.filter(e => e.type === 'text').map(e => e.content).join('');
+        expect(text).not.toContain('</think>');
+        expect(text).toContain('Hey Igor');
+    });
+
+    it('handles orphan </think> split across chunks', () => {
+        const decoder = new StandardChatDecoder(() => {});
+        decoder.push('monologue here.');
+        decoder.push('</th');
+        decoder.push('ink>');
+        decoder.push('Final answer.');
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe('monologue here.');
+        expect(decoder.getCleanContent()).toBe('Final answer.');
+    });
+
+    it('strips think tags from pushReasoning', () => {
+        const events: DecodedEvent[] = [];
+        const decoder = new StandardChatDecoder(e => events.push(e));
+        decoder.pushReasoning('plan A</think>');
+        decoder.flush();
+        expect(decoder.getReasoning()).toBe('plan A');
+        expect(events.some(e => e.type === 'thinking' && e.content.includes('</think>'))).toBe(false);
+    });
+
     it('parses Gemma thought channel with whitespace variants into reasoning', () => {
         const decoder = new StandardChatDecoder(() => {});
         decoder.push('<|channel>   thought\nNeed Portuguese.<channel|>Olá!');

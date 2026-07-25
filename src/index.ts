@@ -19,6 +19,17 @@ export {
     applyGemmaDualModeRequestDefaults,
 } from './providers/openai.js';
 
+// Responses API transport (ChatGPT backend / api.openai.com /responses).
+// Separate from the chat/completions client above — different wire format.
+export { ResponsesClient, parseModelVariant } from './providers/openai-responses.js';
+export type {
+    ResponsesAuth,
+    ResponsesClientOptions,
+    ReasoningEffort,
+    ReasoningSummary,
+    TextVerbosity,
+} from './providers/openai-responses.js';
+
 // Router status/telemetry types (returned by AIModel.getProviderStatus/getPoolStatus)
 export type { ProviderStatus, PoolStatus, RouteOptions } from './router.js';
 
@@ -111,6 +122,7 @@ export {
     StreamLoopGuard,
     collapseRepeatedRuns,
     collapseRepeatsInToolArguments,
+    stripRepeatedTail,
     type StreamLoopGuardOptions,
     type LoopDetection,
 } from './stream-guard.js';

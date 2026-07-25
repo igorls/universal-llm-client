@@ -226,6 +226,50 @@ interface OpenerMatch {
 }
 
 /**
+ * Closing-tag match for markup that can arrive WITHOUT a matching opener.
+ * Poolside / DeepSeek-R1 / Kimi often emit monologue terminated by a lone
+ * `</think>` (no `<think>` open). Without this, `</think>` fails opener
+ * matching after the second char (`</`) and leaks into visible text.
+ */
+type CloserKind = 'orphan-think-close' | 'orphan-progress-close' | 'discard-close';
+
+function checkCloserMatch(candidate: string): {
+    readonly matches: boolean;
+    readonly fullMatch?: { readonly type: CloserKind };
+} {
+    // </think> or </think > (whitespace-tolerant)
+    if (candidate === '<' || candidate === '</' || candidate.startsWith('</')) {
+        if ('</think>'.startsWith(candidate) || candidate.startsWith('</think')) {
+            const full = /^<\/think\s*>$/i.test(candidate);
+            if (full) return { matches: true, fullMatch: { type: 'orphan-think-close' } };
+            // Still a viable prefix of </think…> or already past and invalid
+            if (candidate.length <= '</think>'.length || /^<\/think\s*$/i.test(candidate)) {
+                return { matches: true };
+            }
+        }
+        if ('</thinking>'.startsWith(candidate) || candidate.startsWith('</thinking')) {
+            const full = /^<\/thinking\s*>$/i.test(candidate);
+            if (full) return { matches: true, fullMatch: { type: 'orphan-think-close' } };
+            if (candidate.length <= '</thinking>'.length || /^<\/thinking\s*$/i.test(candidate)) {
+                return { matches: true };
+            }
+        }
+        if ('</progress>'.startsWith(candidate) || candidate.startsWith('</progress')) {
+            const full = /^<\/progress\s*>$/i.test(candidate);
+            if (full) return { matches: true, fullMatch: { type: 'orphan-progress-close' } };
+            if (candidate.length <= '</progress>'.length || /^<\/progress\s*$/i.test(candidate)) {
+                return { matches: true };
+            }
+        }
+        // `</` alone is always a closer-prefix (never an opener)
+        if (candidate === '<' || candidate === '</') {
+            return { matches: true };
+        }
+    }
+    return { matches: false };
+}
+
+/**
  * Match a partial `<…`-prefixed buffer against every structural opener the
  * decoder understands. Returns `matches: true` while the buffer is still a
  * viable prefix of some opener, and a `fullMatch` (with its closing token)
@@ -506,8 +550,18 @@ export class StandardChatDecoder implements StreamDecoder {
                     }
                     // else keep buffering (still a viable opener prefix)
                 } else {
-                    this.pushDecodedText(this.tagBuffer);
-                    this.tagBuffer = '';
+                    // Not an opener — try orphan closer (Poolside/R1/Kimi).
+                    const closer = checkCloserMatch(this.tagBuffer);
+                    if (closer.matches) {
+                        if (closer.fullMatch) {
+                            this.handleOrphanCloser(closer.fullMatch.type);
+                            this.tagBuffer = '';
+                        }
+                        // else keep buffering closer prefix
+                    } else {
+                        this.pushDecodedText(this.tagBuffer);
+                        this.tagBuffer = '';
+                    }
                 }
                 continue;
             }
@@ -546,6 +600,36 @@ export class StandardChatDecoder implements StreamDecoder {
         if (!content) return;
         this.reasoning += content;
         this.callback({ type: 'thinking', content });
+    }
+
+    /**
+     * Handle a lone closing think/progress tag with no matching open.
+     * R1 / Poolside / Laguna often end reasoning with `</think>` only.
+     * Reclassify accumulated visible text + pending buffer as reasoning so
+     * subsequent tokens become the answer. Note: text events already
+     * yielded to the consumer stay as-is; Canvas seals re-parse raw text.
+     */
+    private handleOrphanCloser(kind: CloserKind): void {
+        if (kind === 'orphan-think-close') {
+            // Flush pending text into the reasoning channel (not visible text).
+            if (this.pendingText) {
+                const pending = this.pendingText;
+                this.pendingText = '';
+                this.emitReasoningText(pending);
+            }
+            // Move already-committed content into reasoning for getCleanContent().
+            if (this.content) {
+                const prior = this.content;
+                this.content = '';
+                // Prefer a single reasoning accumulation without re-emitting
+                // prior content as a new thinking event (would duplicate UI
+                // when the monologue was already streamed as text). Final
+                // getReasoning() still needs the text for non-stream consumers.
+                this.reasoning = this.reasoning ? `${this.reasoning}${prior}` : prior;
+            }
+            return;
+        }
+        // Stray </progress> or other discard closers — swallow silently.
     }
 
     private emitRecoveredBareCall(name: string, argumentsJson: string): void {
@@ -620,7 +704,12 @@ export class StandardChatDecoder implements StreamDecoder {
 
     /** Feed native reasoning tokens from the provider */
     pushReasoning(content: string): void {
-        this.pushDecodedReasoning(content);
+        // Strip think tags some servers leave inside the dedicated reasoning
+        // channel (Poolside NVFP4 / vLLM occasionally still emits </think>).
+        const cleaned = content
+            .replace(/<\/?(?:think|thinking)(?:\s[^>]*)?>/gi, '')
+            .replace(/<\/?(?:redacted_reasoning)(?:\s[^>]*)?>/gi, '');
+        if (cleaned) this.pushDecodedReasoning(cleaned);
     }
 
     /** Feed structured tool calls from the provider API response */
@@ -766,6 +855,25 @@ export class InterleavedReasoningDecoder implements StreamDecoder {
                 this.buffer = this.buffer.slice(closeIdx + 11); // '</progress>'.length
                 this.inProgress = false;
                 continue;
+            }
+
+            // Orphan closing think tag (R1 / Poolside / Laguna) — reclassify
+            // prior text as reasoning and drop the closer so it never reaches UI.
+            // Only when there is NO matching opener in the buffer (paired tags
+            // are handled below via inThink).
+            const orphanClose = this.buffer.match(/<\/(?:think|thinking)\s*>/i);
+            if (orphanClose && orphanClose.index !== undefined) {
+                const idx = orphanClose.index;
+                const before = this.buffer.slice(0, idx);
+                if (!/<think(?:ing)?(?:\s[^>]*)?>/i.test(before)) {
+                    const after = this.buffer.slice(idx + orphanClose[0].length);
+                    if (before) {
+                        this.reasoning += before;
+                        this.callback({ type: 'thinking', content: before });
+                    }
+                    this.buffer = after;
+                    continue;
+                }
             }
 
             // Look for opening tags
