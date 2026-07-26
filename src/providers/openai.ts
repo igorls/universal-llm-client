@@ -1432,7 +1432,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         if (known?.contextLength) return known.contextLength;
         try {
             const response = await httpRequest<{
-                data?: Array<{ id: string; max_model_len?: number; meta?: { n_ctx_train?: number } }>;
+                data?: Array<{
+                    id: string;
+                    max_model_len?: number;
+                    /** xAI and some OpenAI-compat hosts advertise this field. */
+                    context_length?: number;
+                    meta?: { n_ctx_train?: number };
+                }>;
             }>(this.buildUrl('/models'), {
                 headers: buildHeaders(this.options),
                 timeout: 5000,
@@ -1440,7 +1446,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (response.ok) {
                 const cards = response.data.data ?? [];
                 const card = cards.find(m => m.id === model) ?? cards[0];
-                const ctx = card?.max_model_len ?? card?.meta?.n_ctx_train;
+                const ctx = card?.max_model_len ?? card?.context_length ?? card?.meta?.n_ctx_train;
                 if (typeof ctx === 'number' && ctx > 0) return ctx;
             }
         } catch {

@@ -91,6 +91,15 @@ describe('OpenAICompatibleClient getModelInfo', () => {
         expect(info.capabilities).toContain('vision');
     });
 
+    test('reads xAI-style context_length when max_model_len is absent', async () => {
+        // SuperGrok / api.x.ai advertise context_length (500k–1M). Missing this
+        // field left every Grok model at the 8192 fallback in the Canvas meter.
+        mockModels([{ id: 'grok-4.5', object: 'model', context_length: 500_000 }]);
+        const client = createClient({ model: 'grok-4.5', url: 'https://api.x.ai/v1' });
+        const info = await client.getModelInfo();
+        expect(info.contextLength).toBe(500_000);
+    });
+
     test('caches the probe per model id', async () => {
         const probe = mockModels([{ id: 'gemma-4-26b-a4b-nvfp4', object: 'model', max_model_len: 32768 }]);
         const client = createClient();
