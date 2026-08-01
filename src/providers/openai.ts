@@ -1165,6 +1165,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                                     break;
                                 }
                             }
+                            // Incremental tool-call progress: emit accumulated
+                            // arguments as they stream in, matching the
+                            // Google/Anthropic/Ollama providers.
+                            if (toolCallAccum.size > 0) {
+                                const calls = Array.from(toolCallAccum.values())
+                                    .map((tc) => this.normalizeToolCall(tc));
+                                yield { type: 'tool_call', calls };
+                            }
                             if (loopGuard.detection) break;
                         }
 
