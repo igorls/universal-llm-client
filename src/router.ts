@@ -95,6 +95,13 @@ export interface RouteOptions {
     sessionKey?: string;
 }
 
+/**
+ * A tier that has healthy nodes, all of them at their concurrency cap.
+ * Distinct from `null` ("this tier has no usable node at all") so the dispatch
+ * loop can tell backpressure from failure.
+ */
+const SATURATED = Symbol('pool-saturated');
+
 export interface RouterConfig {
     /** Max retries per provider before failover (default: 2) */
     retriesPerProvider?: number;
@@ -107,6 +114,26 @@ export interface RouterConfig {
      * `maxConcurrent` cap before spilling to the next tier (default: 750).
      */
     spillAfterMs?: number;
+    /**
+     * Last-resort wait (ms) when EVERY tier is saturated and nothing has
+     * actually failed (default: 30000; 0 disables).
+     *
+     * `spillAfterMs` assumes there is somewhere to spill TO. With a
+     * single-tier pool — or when every tier is busy at once — the request ran
+     * out of tiers and was rejected with `All providers failed`, which is
+     * simply untrue: no provider failed, they were BUSY. That turned a
+     * concurrency cap into a hard outage (a caller with `maxConcurrent: 6` and
+     * no cloud fallback lost the 7th request after 750ms, even though a slot
+     * usually frees in well under a second) and, worse, the message maps to
+     * "no provider is configured" in host error copy — sending operators to
+     * debug a healthy deployment.
+     *
+     * Saturation is BACKPRESSURE, not failure: the right answer is to wait for
+     * a slot. Only if none frees inside this budget does the request fail, and
+     * then with an honest saturation error. Failures are unaffected — this
+     * path is entered only when no provider errored.
+     */
+    saturationWaitMs?: number;
     /**
      * Time-box for the cold-node liveness preflight (default: 2500; 0
      * disables). A node with no recent success gets a cheap `getModels()`
@@ -182,6 +209,7 @@ export class Router {
             maxFailures: config.maxFailures ?? 3,
             cooldownMs: config.cooldownMs ?? 30000,
             spillAfterMs: config.spillAfterMs ?? 750,
+            saturationWaitMs: config.saturationWaitMs ?? 30000,
             coldProbeTimeoutMs: config.coldProbeTimeoutMs ?? 2500,
             coldProbeAfterMs: config.coldProbeAfterMs ?? 60000,
         };
@@ -290,12 +318,17 @@ export class Router {
         }
 
         let lastError: Error | undefined;
+        let sawSaturation = false;
         const tried = new Set<string>();
 
         for (const priority of this.poolPriorities()) {
             while (true) {
                 const provider = await this.pickFromPool(priority, route?.sessionKey, tried);
-                if (!provider) break; // pool exhausted or saturated past the queue window — spill
+                if (provider === SATURATED) {
+                    sawSaturation = true;
+                    break; // busy, not broken — spill to the next tier
+                }
+                if (!provider) break; // pool exhausted — spill
 
                 tried.add(provider.id);
                 if (this.needsColdProbe(provider) && !(await this.coldNodeAlive(provider, context))) {
@@ -364,7 +397,74 @@ export class Router {
             }
         }
 
+        // Ran out of tiers with nothing having FAILED — every candidate was
+        // merely busy. Wait for a slot instead of rejecting a request the pool
+        // can serve; only give up once the budget is spent, and then say so
+        // honestly rather than blaming a provider that never failed.
+        if (!lastError && sawSaturation && this.config.saturationWaitMs > 0) {
+            const provider = await this.waitForSaturatedSlot(route?.sessionKey, context);
+            if (provider) return await this.dispatchTo(provider, fn, context);
+            throw new Error(
+                `All providers saturated: every node is at its concurrency cap and no slot freed within ${this.config.saturationWaitMs}ms`,
+            );
+        }
+
         throw lastError ?? new Error('All providers failed');
+    }
+
+    /**
+     * Last-resort wait for a concurrency slot ANYWHERE, in tier order.
+     * Returns the node that freed up, or null when the budget expires.
+     */
+    private async waitForSaturatedSlot(
+        sessionKey: string | undefined,
+        context: string,
+    ): Promise<ProviderEntry | null> {
+        const deadline = Date.now() + this.config.saturationWaitMs;
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'failover',
+            provider: 'pool:all',
+            metadata: { phase: 'saturation-wait', reason: 'every tier saturated', context },
+        });
+        while (Date.now() < deadline) {
+            for (const priority of this.poolPriorities()) {
+                const candidates = this.poolCandidates(priority, sessionKey, new Set());
+                const freed = candidates.find(p => this.hasCapacity(p));
+                if (freed) return freed;
+            }
+            if (!(await this.waitForSlot(deadline - Date.now()))) break;
+        }
+        return null;
+    }
+
+    /** Run `fn` on one node with this router's retry/cooldown accounting. */
+    private async dispatchTo<T>(
+        provider: ProviderEntry,
+        fn: (client: BaseLLMClient) => Promise<T>,
+        context: string,
+    ): Promise<T> {
+        this.acquireSlot(provider.id);
+        const started = Date.now();
+        try {
+            const result = await fn(provider.client);
+            this.recordSuccess(provider.id, Date.now() - started);
+            return result;
+        } catch (error) {
+            const failure = error instanceof Error ? error : new Error(String(error));
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'error',
+                provider: provider.id,
+                model: provider.modelOverride ?? provider.client.model,
+                error: failure.message,
+                metadata: { context, phase: 'saturation-retry' },
+            });
+            this.recordFailure(provider.id, { cooldown: classifyFailure(failure).cooldown });
+            throw failure;
+        } finally {
+            this.releaseSlot(provider.id);
+        }
     }
 
     /**
@@ -387,12 +487,17 @@ export class Router {
         }
 
         let lastError: Error | undefined;
+        let sawSaturation = false;
         const tried = new Set<string>();
 
         for (const priority of this.poolPriorities()) {
             while (true) {
                 const provider = await this.pickFromPool(priority, route?.sessionKey, tried);
-                if (!provider) break; // pool exhausted or saturated — spill to next tier
+                if (provider === SATURATED) {
+                    sawSaturation = true;
+                    break; // busy, not broken — spill to the next tier
+                }
+                if (!provider) break; // pool exhausted — spill to next tier
 
                 tried.add(provider.id);
                 if (this.needsColdProbe(provider) && !(await this.coldNodeAlive(provider, context))) {
@@ -452,6 +557,32 @@ export class Router {
                     this.releaseSlot(provider.id);
                 }
             }
+        }
+
+        // Nothing failed — every tier was merely busy. Same reasoning as
+        // `execute`: wait for a slot rather than reject a servable request.
+        // Safe to (re)dispatch here because no event has reached the consumer
+        // yet, which is the same boundary streaming failover already respects.
+        if (!lastError && sawSaturation && this.config.saturationWaitMs > 0) {
+            const provider = await this.waitForSaturatedSlot(route?.sessionKey, context);
+            if (provider) {
+                this.acquireSlot(provider.id);
+                const started = Date.now();
+                try {
+                    const result = yield* fn(provider.client);
+                    this.recordSuccess(provider.id, Date.now() - started);
+                    return result;
+                } catch (error) {
+                    const failure = error instanceof Error ? error : new Error(String(error));
+                    this.recordFailure(provider.id, { cooldown: classifyFailure(failure).cooldown });
+                    throw failure;
+                } finally {
+                    this.releaseSlot(provider.id);
+                }
+            }
+            throw new Error(
+                `All providers saturated: every node is at its concurrency cap and no slot freed within ${this.config.saturationWaitMs}ms`,
+            );
         }
 
         throw lastError ?? new Error('All providers failed for streaming');
@@ -1015,7 +1146,8 @@ export class Router {
         priority: number,
         sessionKey: string | undefined,
         tried: Set<string>,
-    ): Promise<ProviderEntry | null> {
+        waitMs: number = this.config.spillAfterMs,
+    ): Promise<ProviderEntry | typeof SATURATED | null> {
         let candidates = this.poolCandidates(priority, sessionKey, tried);
         if (candidates.length === 0) return null;
 
@@ -1024,7 +1156,7 @@ export class Router {
 
         // Whole tier is at its concurrency caps — bounded queue, then spill.
         this.bumpPool(priority, 'queueWaits');
-        const deadline = Date.now() + this.config.spillAfterMs;
+        const deadline = Date.now() + waitMs;
         while (Date.now() < deadline) {
             const woke = await this.waitForSlot(deadline - Date.now());
             if (!woke) break;
@@ -1040,11 +1172,15 @@ export class Router {
             provider: `pool:${priority}`,
             metadata: {
                 phase: 'spill',
-                reason: `pool saturated for ${this.config.spillAfterMs}ms`,
+                reason: `pool saturated for ${waitMs}ms`,
                 nodes: candidates.map(p => p.id),
             },
         });
-        return null;
+        // SATURATED, not empty: this tier has healthy nodes that are merely
+        // busy. The caller needs the distinction — spilling past a busy tier is
+        // normal, but running out of tiers because everything was busy must not
+        // be reported as "all providers failed" when nothing failed.
+        return SATURATED;
     }
 
     /** Cheap lookahead for failover audit events — next untried healthy node. */

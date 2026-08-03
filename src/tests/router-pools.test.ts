@@ -85,6 +85,15 @@ function deferredClient(id: string): { client: MockClient; release: () => void; 
     };
 }
 
+/** A chat that always throws — a genuinely broken node. */
+function failingClient(id: string): MockClient {
+    return new MockClient(id, {
+        chatFn: async () => {
+            throw new Error(`boom from ${id}`);
+        },
+    });
+}
+
 function countingClient(id: string): { client: MockClient; calls: () => number } {
     let calls = 0;
     const client = new MockClient(id, {
@@ -195,6 +204,80 @@ describe('Router pools', () => {
 
             a.release();
             await first;
+        });
+    });
+
+    // Saturation is BACKPRESSURE, not failure. `spillAfterMs` assumes there is
+    // somewhere to spill TO; with a single tier (or when every tier is busy at
+    // once) the request used to be rejected with `All providers failed` — while
+    // nothing had failed. That turned a concurrency cap into a hard outage, and
+    // the message sends operators to debug a healthy deployment.
+    describe('saturation with nowhere to spill', () => {
+        it('waits for a slot instead of failing when there is no next tier', async () => {
+            const solo = new Router({ auditor, retriesPerProvider: 0, spillAfterMs: 20, saturationWaitMs: 2000 });
+            const a = deferredClient('a');
+            solo.addProvider({ id: 'a', client: a.client, priority: 0, maxConcurrent: 1 });
+
+            const first = solo.chat(MSG);
+            await tick();
+            const second = solo.chat(MSG); // saturated, and there is no tier 1
+
+            // Past spillAfterMs the old code had already rejected this.
+            await new Promise(resolve => setTimeout(resolve, 60));
+            a.release();
+            expect((await first).provider).toBe('a');
+
+            a.release();
+            expect((await second).provider).toBe('a'); // served, not failed
+        });
+
+        it('fails HONESTLY when no slot frees inside the budget', async () => {
+            const solo = new Router({ auditor, retriesPerProvider: 0, spillAfterMs: 10, saturationWaitMs: 40 });
+            const a = deferredClient('a');
+            solo.addProvider({ id: 'a', client: a.client, priority: 0, maxConcurrent: 1 });
+
+            const first = solo.chat(MSG);
+            await tick();
+            // "All providers failed" maps to "no provider is configured" in host
+            // error copy — exactly the wrong thing to tell an operator whose
+            // provider is healthy and busy.
+            await expect(solo.chat(MSG)).rejects.toThrow(/saturated/i);
+
+            a.release();
+            await first;
+        });
+
+        it('still reports a real FAILURE as a failure, never as saturation', async () => {
+            // The saturation path must be entered only when nothing errored,
+            // or a genuine outage would be reported as backpressure.
+            const solo = new Router({ auditor, retriesPerProvider: 0, spillAfterMs: 10, saturationWaitMs: 1000 });
+            solo.addProvider({ id: 'broken', client: failingClient('broken'), priority: 0, maxConcurrent: 1 });
+
+            await expect(solo.chat(MSG)).rejects.toThrow(/boom/i);
+        });
+
+        it('waits across tiers when EVERY tier is saturated at once', async () => {
+            const both = new Router({ auditor, retriesPerProvider: 0, spillAfterMs: 20, saturationWaitMs: 2000 });
+            const a = deferredClient('a');
+            const b = deferredClient('b');
+            both.addProvider({ id: 'a', client: a.client, priority: 0, maxConcurrent: 1 });
+            both.addProvider({ id: 'b', client: b.client, priority: 1, maxConcurrent: 1 });
+
+            const first = both.chat(MSG);
+            await tick();
+            const second = both.chat(MSG); // takes tier 1
+            await tick();
+            const third = both.chat(MSG); // both tiers full → must wait, not fail
+
+            await new Promise(resolve => setTimeout(resolve, 60));
+            a.release();
+            b.release();
+            await first;
+            await second;
+            a.release();
+            b.release();
+            const r3 = await third;
+            expect(['a', 'b']).toContain(r3.provider);
         });
     });
 
