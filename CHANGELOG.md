@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`tool_call_delta` stream events (OpenAI-compatible)** — while tool-call argument tokens stream in, `chatStream` now yields `{ type: 'tool_call_delta', calls }` with a full snapshot of the raw accumulation (arguments may be empty, partial, or invalid JSON). Use these only for live UI previews. The existing `{ type: 'tool_call' }` event still fires once at finish with normalized, execute-ready calls. Consumers that only handle `tool_call` are unchanged.
+
 ## [4.6.0] - 2026-07-22
 
 ### Added

@@ -427,7 +427,10 @@ const decoder = createDecoder('interleaved-reasoning', (event) => {
         case 'text': console.log(event.content); break;
         case 'thinking': console.log('[think]', event.content); break;
         case 'progress': console.log('[progress]', event.content); break;
+        // Execute only on `tool_call` (complete). OpenAI-compatible streams may
+        // also emit `tool_call_delta` for live argument previews — never execute those.
         case 'tool_call': console.log('[tool]', event.calls); break;
+        case 'tool_call_delta': console.log('[tool preview]', event.calls); break;
     }
 });
 

@@ -1165,6 +1165,26 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                                     break;
                                 }
                             }
+                            // Live progress for UIs (e.g. streaming JSON argument
+                            // previews). Distinct from `tool_call`, which means
+                            // "complete / safe to execute". Snapshots use raw
+                            // accumulated strings — no empty→`{}` coercion and no
+                            // name sanitize — so partials never look executable.
+                            // Each event is a full snapshot of current accumulation.
+                            // (OpenAI streams arg tokens; Anthropic/Google emit
+                            // complete tool_call only — this is not cross-provider
+                            // parity, just progress for OpenAI-style deltas.)
+                            if (toolCallAccum.size > 0) {
+                                const calls = Array.from(toolCallAccum.values()).map(tc => ({
+                                    id: tc.id,
+                                    type: 'function' as const,
+                                    function: {
+                                        name: tc.function.name,
+                                        arguments: tc.function.arguments,
+                                    },
+                                }));
+                                yield { type: 'tool_call_delta', calls };
+                            }
                             if (loopGuard.detection) break;
                         }
 
@@ -1172,7 +1192,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                             lastFinishReason = parsed.choices[0].finish_reason;
                         }
 
-                        // Emit tool calls when stream finishes
+                        // Emit complete tool calls when stream finishes (execute-ready).
+                        // Kept separate from tool_call_delta so for-await consumers that
+                        // run tools on `tool_call` only fire once with normalized args.
                         if (parsed.choices?.[0]?.finish_reason === 'tool_calls' || parsed.choices?.[0]?.finish_reason === 'stop') {
                             if (toolCallAccum.size > 0) {
                                 const calls = Array.from(toolCallAccum.values())

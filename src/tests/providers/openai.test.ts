@@ -2136,13 +2136,188 @@ describe('OpenAICompatibleClient Structured Output', () => {
                 events.push(next.value);
             }
 
-            const toolEvent = events.find(event => event.type === 'tool_call');
-            expect(toolEvent?.type).toBe('tool_call');
-            if (toolEvent?.type !== 'tool_call') {
+            // Progress keeps raw whitespace; only the final tool_call coerces to '{}'.
+            const deltaEvents = events.filter(event => event.type === 'tool_call_delta');
+            expect(deltaEvents.length).toBeGreaterThanOrEqual(1);
+            if (deltaEvents[0]?.type === 'tool_call_delta') {
+                expect(deltaEvents[0].calls[0]!.function.arguments).toBe(' \n');
+            }
+
+            const toolEvents = events.filter(event => event.type === 'tool_call');
+            expect(toolEvents).toHaveLength(1);
+            const toolEvent = toolEvents[0]!;
+            expect(toolEvent.type).toBe('tool_call');
+            if (toolEvent.type !== 'tool_call') {
                 throw new Error('Expected a tool_call stream event');
             }
             expect(toolEvent.calls[0]!.function.arguments).toBe('{}');
             expect(finalResult?.message.tool_calls![0]!.function.arguments).toBe('{}');
+        });
+
+        test('emits progressive tool_call_delta then a single final tool_call', async () => {
+            // Realistic OpenAI multi-chunk tool-call stream: name first with empty
+            // args, then argument fragments, then finish_reason.
+            const chunks = [
+                {
+                    choices: [{
+                        delta: {
+                            tool_calls: [{
+                                index: 0,
+                                id: 'call_stream',
+                                type: 'function',
+                                function: { name: 'get_weather', arguments: '' },
+                            }],
+                        },
+                    }],
+                },
+                {
+                    choices: [{
+                        delta: {
+                            tool_calls: [{
+                                index: 0,
+                                function: { arguments: '{"loc' },
+                            }],
+                        },
+                    }],
+                },
+                {
+                    choices: [{
+                        delta: {
+                            tool_calls: [{
+                                index: 0,
+                                function: { arguments: 'ation":"Paris"}' },
+                            }],
+                        },
+                    }],
+                },
+                {
+                    choices: [{
+                        delta: {},
+                        finish_reason: 'tool_calls',
+                    }],
+                },
+            ];
+
+            globalThis.fetch = mock(async () => new Response(
+                chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join(''),
+                {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                },
+            )) as typeof fetch;
+            const client = createClient();
+
+            const events: DecodedEvent[] = [];
+            const stream = client.chatStream([{ role: 'user', content: 'Weather?' }]);
+            let finalResult: Awaited<ReturnType<typeof client.chat>> | undefined;
+            while (true) {
+                const next = await stream.next();
+                if (next.done) {
+                    finalResult = next.value || undefined;
+                    break;
+                }
+                events.push(next.value);
+            }
+
+            const deltas = events.filter(e => e.type === 'tool_call_delta');
+            const finals = events.filter(e => e.type === 'tool_call');
+
+            // One progress event per delta.tool_calls chunk
+            expect(deltas).toHaveLength(3);
+            expect(deltas.map(e => e.type === 'tool_call_delta' ? e.calls[0]!.function.arguments : ''))
+                .toEqual(['', '{"loc', '{"location":"Paris"}']);
+            // First progress must NOT look like a complete empty-object call
+            if (deltas[0]?.type === 'tool_call_delta') {
+                expect(deltas[0].calls[0]!.function.name).toBe('get_weather');
+                expect(deltas[0].calls[0]!.function.arguments).toBe('');
+                expect(deltas[0].calls[0]!.id).toBe('call_stream');
+            }
+
+            // Exactly one execute-ready event at finish
+            expect(finals).toHaveLength(1);
+            if (finals[0]?.type !== 'tool_call') {
+                throw new Error('Expected final tool_call');
+            }
+            expect(finals[0].calls[0]!.function.arguments).toBe('{"location":"Paris"}');
+            expect(finalResult?.message.tool_calls).toHaveLength(1);
+            expect(finalResult?.message.tool_calls![0]!.function.arguments)
+                .toBe('{"location":"Paris"}');
+            expect(finalResult?.message.tool_calls![0]!.function.name).toBe('get_weather');
+        });
+
+        test('tool_call_delta re-emits full multi-tool snapshot on each update', async () => {
+            const chunks = [
+                {
+                    choices: [{
+                        delta: {
+                            tool_calls: [{
+                                index: 0,
+                                id: 'call_a',
+                                type: 'function',
+                                function: { name: 'alpha', arguments: '{"a":' },
+                            }],
+                        },
+                    }],
+                },
+                {
+                    choices: [{
+                        delta: {
+                            tool_calls: [
+                                {
+                                    index: 0,
+                                    function: { arguments: '1}' },
+                                },
+                                {
+                                    index: 1,
+                                    id: 'call_b',
+                                    type: 'function',
+                                    function: { name: 'beta', arguments: '{}' },
+                                },
+                            ],
+                        },
+                    }],
+                },
+                {
+                    choices: [{
+                        delta: {},
+                        finish_reason: 'tool_calls',
+                    }],
+                },
+            ];
+
+            globalThis.fetch = mock(async () => new Response(
+                chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join(''),
+                {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                },
+            )) as typeof fetch;
+            const client = createClient();
+
+            const events: DecodedEvent[] = [];
+            const stream = client.chatStream([{ role: 'user', content: 'Multi' }]);
+            for await (const event of stream) {
+                events.push(event);
+            }
+
+            const deltas = events.filter(e => e.type === 'tool_call_delta');
+            expect(deltas).toHaveLength(2);
+            if (deltas[0]?.type === 'tool_call_delta') {
+                expect(deltas[0].calls).toHaveLength(1);
+                expect(deltas[0].calls[0]!.function.arguments).toBe('{"a":');
+            }
+            if (deltas[1]?.type === 'tool_call_delta') {
+                // Full snapshot: both tools present after second chunk
+                expect(deltas[1].calls).toHaveLength(2);
+                expect(deltas[1].calls[0]!.function.arguments).toBe('{"a":1}');
+                expect(deltas[1].calls[1]!.function.name).toBe('beta');
+            }
+
+            const finals = events.filter(e => e.type === 'tool_call');
+            expect(finals).toHaveLength(1);
+            if (finals[0]?.type === 'tool_call') {
+                expect(finals[0].calls).toHaveLength(2);
+            }
         });
 
         test('passes through non-empty malformed tool call arguments', async () => {
