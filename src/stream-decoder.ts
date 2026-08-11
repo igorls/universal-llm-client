@@ -15,12 +15,25 @@ import { gemmaArgsToJson, parseGemmaToolCallBody } from './gemma-diffusion.js';
 // Decoded Event Types
 // ============================================================================
 
-/** Clean, typed events emitted by a stream decoder */
+/**
+ * Clean, typed events emitted by stream decoders and provider `chatStream`.
+ *
+ * **Tool-call contract**
+ * - `tool_call` — complete tool call(s) ready for execution / commit. Arguments
+ *   have been normalized (empty → `'{}'`, name sanitized). Execute only on this
+ *   event (or from the generator's returned `message.tool_calls`).
+ * - `tool_call_delta` — in-progress snapshot of accumulated tool calls while
+ *   argument tokens are still streaming (OpenAI-compatible providers). Values
+ *   are raw accumulation: arguments may be empty, partial, or invalid JSON.
+ *   **Never execute** these — use them only for live UI previews. Each event is
+ *   a full snapshot of current accumulation (replace, do not append).
+ */
 export type DecodedEvent =
     | { type: 'text'; content: string }
     | { type: 'thinking'; content: string }
     | { type: 'progress'; content: string }
-    | { type: 'tool_call'; calls: LLMToolCall[] };
+    | { type: 'tool_call'; calls: LLMToolCall[] }
+    | { type: 'tool_call_delta'; calls: LLMToolCall[] };
 
 /** Callback invoked by the decoder as events become available */
 export type DecoderCallback = (event: DecodedEvent) => void;
