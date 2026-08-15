@@ -8,6 +8,9 @@ export {
     inferOpenAICompatCapabilities,
     isGemmaModelId,
     applyGemmaDualModeRequestDefaults,
+    isQwen3ModelId,
+    isQwen36PlusModelId,
+    applyQwenRequestDefaults,
 } from './openai.js';
 export { GoogleClient } from './google.js';
 export { AnthropicClient } from './anthropic.js';

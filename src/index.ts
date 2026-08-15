@@ -17,6 +17,9 @@ export {
     inferOpenAICompatCapabilities,
     isGemmaModelId,
     applyGemmaDualModeRequestDefaults,
+    isQwen3ModelId,
+    isQwen36PlusModelId,
+    applyQwenRequestDefaults,
 } from './providers/openai.js';
 
 // Responses API transport (ChatGPT backend / api.openai.com /responses).

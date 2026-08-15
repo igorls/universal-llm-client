@@ -163,6 +163,19 @@ export function isGemmaModelId(model: string): boolean {
     return /gemma/i.test(model);
 }
 
+/** True for Qwen3 family ids (`qwen3:4b`, `qwen3.8-27b-nvfp4`, `Qwen/Qwen3-32B`). */
+export function isQwen3ModelId(model: string): boolean {
+    return /qwen[-_]?3/i.test(model);
+}
+
+/**
+ * Qwen3.5 / 3.6 / 3.8 (and later 3.x) — thinking recipe is temp 1.0, not the
+ * original Qwen3 0.6. Served ids look like `qwen3.8-27b-nvfp4`.
+ */
+export function isQwen36PlusModelId(model: string): boolean {
+    return /qwen[-_]?3(?:[._-]?(?:[5-9]|1[0-9])|\.[5-9])/i.test(model);
+}
+
 /**
  * Dual-mode Gemma request defaults for OpenAI-compatible servers (vLLM).
  *
@@ -206,6 +219,58 @@ export function applyGemmaDualModeRequestDefaults(input: {
 
     // Always pin enable_thinking on vLLM/self-hosted so the template is never
     // ambiguous. User-supplied kwargs win.
+    if (supportsChatTemplateKwargs(input.url)) {
+        const existing = (body['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
+        if (existing['enable_thinking'] === undefined) {
+            body['chat_template_kwargs'] = {
+                ...existing,
+                enable_thinking: thinkingOn,
+            };
+        }
+    }
+}
+
+/**
+ * Dual-mode Qwen3 request defaults for OpenAI-compatible servers (vLLM).
+ *
+ * Official cards (Qwen3 / 3.6 / 3.8):
+ * - **Instruct / thinking OFF:** temperature 0.7, top_p 0.8, top_k 20,
+ *   presence_penalty 1.5 (stops the endless restatement loops).
+ * - **Thinking ON (3.6+ / 3.8):** temperature 1.0, top_p 0.95, top_k 20,
+ *   presence_penalty 0.
+ * - **Thinking ON (original Qwen3):** temperature 0.6, top_p 0.95, top_k 20.
+ *
+ * Always pin `enable_thinking` on vLLM — Qwen3.8 thinking checkpoints default
+ * the thought channel ON, which leaks CoT on visitor surfaces.
+ *
+ * Never overwrites caller-supplied sampling or an explicit
+ * `chat_template_kwargs.enable_thinking`. Skips Cerebras.
+ */
+export function applyQwenRequestDefaults(input: {
+    readonly model: string;
+    readonly url?: string;
+    readonly body: Record<string, unknown>;
+    readonly thinking?: { readonly enabled: boolean; readonly level?: string };
+}): void {
+    if (!isQwen3ModelId(input.model)) return;
+    if (isCerebrasEndpoint(input.url)) return;
+
+    const { body, thinking } = input;
+    const thinkingOn = thinking?.enabled === true;
+    const plus = isQwen36PlusModelId(input.model);
+
+    if (thinkingOn) {
+        if (body['temperature'] === undefined) body['temperature'] = plus ? 1.0 : 0.6;
+        if (body['top_p'] === undefined) body['top_p'] = 0.95;
+        if (body['top_k'] === undefined) body['top_k'] = 20;
+        if (plus && body['presence_penalty'] === undefined) body['presence_penalty'] = 0;
+    } else {
+        if (body['temperature'] === undefined) body['temperature'] = 0.7;
+        if (body['top_p'] === undefined) body['top_p'] = 0.8;
+        if (body['top_k'] === undefined) body['top_k'] = 20;
+        if (body['presence_penalty'] === undefined) body['presence_penalty'] = 1.5;
+    }
+
     if (supportsChatTemplateKwargs(input.url)) {
         const existing = (body['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
         if (existing['enable_thinking'] === undefined) {
@@ -1478,19 +1543,21 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     }
 
     /**
-     * Family-aware sampling + dual-mode thinking defaults (Gemma on/off).
-     * See {@link applyGemmaDualModeRequestDefaults}.
+     * Family-aware sampling + dual-mode thinking defaults (Gemma / Qwen3).
+     * See {@link applyGemmaDualModeRequestDefaults} and {@link applyQwenRequestDefaults}.
      */
     private applyFamilySamplingDefaults(
         body: Record<string, unknown>,
         thinking?: { readonly enabled: boolean; readonly level?: string },
     ): void {
-        applyGemmaDualModeRequestDefaults({
+        const family = {
             model: this.options.model,
             url: this.options.url,
             body,
             thinking,
-        });
+        };
+        applyGemmaDualModeRequestDefaults(family);
+        applyQwenRequestDefaults(family);
     }
 
     /**
