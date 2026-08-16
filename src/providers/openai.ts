@@ -103,6 +103,10 @@ export function inferOpenAICompatCapabilities(model: string): string[] {
         /claude-(3|4|sonnet|opus|haiku)/.test(m) ||
         /llava|bakllava|moondream|pixtral|molmo|internvl|minicpm-v|phi-4-multimodal|phi-3\.5-vision/.test(m) ||
         /qwen[-_.]?(2\.5-)?vl|qwen3-vl|qwen.*-vl|vl.*qwen/.test(m) ||
+        // Qwen 3.5+ is natively multimodal without a -VL suffix (proven live:
+        // qwen3.8 on vLLM answers image_url; video needs the server's
+        // --limit-mm-per-prompt raised). Original Qwen3 text models stay out.
+        isQwen36PlusModelId(m) ||
         /llama-?4/.test(m) ||
         /mistral-small.*vision|mistral-medium/.test(m) ||
         /glm-4v|glm-ocr|step-1v|aria\b|idefics|paligemma/.test(m);

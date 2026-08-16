@@ -42,6 +42,17 @@ describe('inferOpenAICompatCapabilities', () => {
         expect(inferOpenAICompatCapabilities('minimax-m3')).not.toContain('vision');
         expect(inferOpenAICompatCapabilities('deepseek-v3')).not.toContain('vision');
     });
+
+    test('tags Qwen 3.5+ (natively multimodal) as vision; original Qwen3 stays text-only', () => {
+        // qwen3.8 on vLLM answers image_url with no -VL suffix (probed live);
+        // without this tag the capability list omits vision and callers strip
+        // images before the request ever reaches the server.
+        expect(inferOpenAICompatCapabilities('qwen3.8-27b-nvfp4')).toContain('vision');
+        expect(inferOpenAICompatCapabilities('Qwen/Qwen3.8-27B-NVFP4')).toContain('vision');
+        expect(inferOpenAICompatCapabilities('qwen3.6-32b')).toContain('vision');
+        expect(inferOpenAICompatCapabilities('qwen3:4b')).not.toContain('vision');
+        expect(inferOpenAICompatCapabilities('Qwen/Qwen3-32B')).not.toContain('vision');
+    });
 });
 
 describe('OpenAICompatibleClient getModelInfo', () => {
