@@ -11,6 +11,7 @@ import {
     isOpenAIReasoningModel,
     supportsChatTemplateKwargs,
     isStrictOpenAICompatHost,
+    qwenReasoningEffort,
 } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
 import { createDecoder, StandardChatDecoder } from '../stream-decoder.js';
@@ -273,12 +274,20 @@ export function applyQwenRequestDefaults(input: {
 
     if (supportsChatTemplateKwargs(input.url)) {
         const existing = (body['chat_template_kwargs'] as Record<string, unknown> | undefined) ?? {};
-        if (existing['enable_thinking'] === undefined) {
-            body['chat_template_kwargs'] = {
-                ...existing,
-                enable_thinking: thinkingOn,
-            };
+        const kwargs: Record<string, unknown> = { ...existing };
+        if (kwargs['enable_thinking'] === undefined) {
+            kwargs['enable_thinking'] = thinkingOn;
         }
+        // Qwen3.8 effort is a separate template knob. Official values are
+        // low/medium/xhigh; omit when thinking is off (vLLM rejects `none`).
+        if (thinkingOn && plus && kwargs['reasoning_effort'] === undefined) {
+            kwargs['reasoning_effort'] = qwenReasoningEffort(thinking?.level);
+        }
+        body['chat_template_kwargs'] = kwargs;
+    }
+
+    if (thinkingOn && plus && body['reasoning_effort'] === undefined) {
+        body['reasoning_effort'] = qwenReasoningEffort(thinking?.level);
     }
 }
 

@@ -140,9 +140,12 @@ export interface ProviderConfig {
 /**
  * Unified reasoning-effort level. Mapped to each provider's native control:
  * Gemini 3.x `thinkingConfig.thinkingLevel`, OpenAI `reasoning_effort`,
- * Gemini 2.5 `thinkingBudget`, Anthropic `budget_tokens`, vLLM/Ollama on/off.
+ * Gemini 2.5 `thinkingBudget`, Anthropic `budget_tokens`, vLLM/Qwen
+ * `reasoning_effort` (`low`/`medium`/`xhigh`).
+ *
+ * `xhigh` is Qwen3.8's official top rung (there is no `high` on that card).
  */
-export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 // ============================================================================
 // AIModel Configuration (user-facing)
@@ -155,7 +158,7 @@ export interface AIModelConfig {
     providers: ProviderConfig[];
     /** Default parameters for all requests (temperature, top_p, etc.) */
     defaultParameters?: Record<string, unknown>;
-    /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high'). */
+    /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high' | 'xhigh'). */
     thinking?: boolean | ThinkingLevel;
     /**
      * Context window (tokens) requested from the serving runtime, applied to
@@ -195,7 +198,7 @@ export interface LLMClientOptions {
     modelType?: AIModelType;
     /** Default parameters for requests */
     defaultParameters?: Record<string, unknown>;
-    /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high'). */
+    /** Enable thinking/reasoning — `true`/`false` or a level ('minimal' | 'low' | 'medium' | 'high' | 'xhigh'). */
     thinking?: boolean | ThinkingLevel;
     /** Request timeout in ms */
     timeout?: number;
@@ -450,9 +453,10 @@ export interface ChatOptions {
     /**
      * Enable/disable/level model thinking for this request, overriding the
      * model-level `thinking` config. `true`/`false` or a level
-     * ('minimal' | 'low' | 'medium' | 'high'). Mapped per provider: Gemini
-     * `thinkingLevel`/`thinkingBudget`, OpenAI `reasoning_effort`, vLLM
-     * `enable_thinking`, Anthropic `budget_tokens`, Ollama `think`.
+     * ('minimal' | 'low' | 'medium' | 'high' | 'xhigh'). Mapped per provider:
+     * Gemini `thinkingLevel`/`thinkingBudget`, OpenAI `reasoning_effort`,
+     * vLLM `enable_thinking` + Qwen `reasoning_effort`, Anthropic
+     * `budget_tokens`, Ollama `think`.
      */
     thinking?: boolean | ThinkingLevel;
     /**

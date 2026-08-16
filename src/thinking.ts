@@ -2,10 +2,11 @@
  * Unified thinking/reasoning resolution shared by all providers.
  *
  * Applications set a single `thinking` value — `true`/`false` or a level
- * ('minimal' | 'low' | 'medium' | 'high') — at the model level and/or per call.
- * Each provider maps the resolved intent to its native control (Gemini
- * `thinkingLevel`/`thinkingBudget`, OpenAI `reasoning_effort`, vLLM
- * `enable_thinking`, Anthropic `budget_tokens`, Ollama `think`).
+ * ('minimal' | 'low' | 'medium' | 'high' | 'xhigh') — at the model level and/or
+ * per call. Each provider maps the resolved intent to its native control
+ * (Gemini `thinkingLevel`/`thinkingBudget`, OpenAI `reasoning_effort`, vLLM
+ * `enable_thinking` + Qwen `reasoning_effort`, Anthropic `budget_tokens`,
+ * Ollama `think`).
  */
 import type { ThinkingLevel } from './interfaces.js';
 
@@ -16,7 +17,7 @@ export interface ResolvedThinking {
     level?: ThinkingLevel;
 }
 
-const LEVELS: readonly string[] = ['minimal', 'low', 'medium', 'high'];
+const LEVELS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 
 function isLevel(v: unknown): v is ThinkingLevel {
     return typeof v === 'string' && LEVELS.includes(v);
@@ -43,6 +44,26 @@ export function resolveThinking(
 /** Heuristic: OpenAI reasoning models use `reasoning_effort` (o-series, GPT-5). */
 export function isOpenAIReasoningModel(model: string): boolean {
     return /^(o\d|gpt-5)/i.test(model);
+}
+
+/**
+ * Qwen3.8 official `reasoning_effort` values: `xhigh` (default) / `medium` / `low`.
+ * Jinja raises on anything else (`none`, `minimal`, `max`). Aliases:
+ * `high`/`max` → `xhigh`, `minimal` → `low`.
+ */
+export function qwenReasoningEffort(level: string | undefined): 'low' | 'medium' | 'xhigh' {
+    switch (level) {
+        case 'minimal':
+        case 'low':
+            return 'low';
+        case 'medium':
+            return 'medium';
+        case 'high':
+        case 'xhigh':
+            return 'xhigh';
+        default:
+            return 'xhigh';
+    }
 }
 
 /**
@@ -103,7 +124,8 @@ export function geminiThinkingBudget(level: ThinkingLevel | undefined): number {
         case 'minimal': return 512;
         case 'low': return 2048;
         case 'medium': return 8192;
-        case 'high': return 24576;
+        case 'high':
+        case 'xhigh': return 24576;
         default: return -1; // enabled without an explicit level → dynamic
     }
 }
@@ -113,7 +135,7 @@ export function geminiThinkingBudget(level: ThinkingLevel | undefined): number {
  * API minimum) and < `maxTokens` (the API requires headroom for the answer).
  */
 export function anthropicThinkingBudget(level: ThinkingLevel | undefined, maxTokens: number): number {
-    const base = level === 'high' ? 16384
+    const base = level === 'high' || level === 'xhigh' ? 16384
         : level === 'medium' ? 4096
         : level === 'low' ? 1024
         : level === 'minimal' ? 1024

@@ -56,7 +56,7 @@ describe('applyQwenRequestDefaults', () => {
         expect((body['chat_template_kwargs'] as { enable_thinking: boolean }).enable_thinking).toBe(false);
     });
 
-    test('thinking ON (3.8): official 3.6+ thinking recipe', () => {
+    test('thinking ON (3.8): official 3.6+ thinking recipe + default xhigh effort', () => {
         const body: Record<string, unknown> = {};
         applyQwenRequestDefaults({
             model: 'qwen3.8-27b-nvfp4',
@@ -68,7 +68,44 @@ describe('applyQwenRequestDefaults', () => {
         expect(body['top_p']).toBe(0.95);
         expect(body['top_k']).toBe(20);
         expect(body['presence_penalty']).toBe(0);
-        expect((body['chat_template_kwargs'] as { enable_thinking: boolean }).enable_thinking).toBe(true);
+        expect(body['reasoning_effort']).toBe('xhigh');
+        expect(body['chat_template_kwargs']).toEqual({
+            enable_thinking: true,
+            reasoning_effort: 'xhigh',
+        });
+    });
+
+    test('thinking ON (3.8) maps levels onto official Qwen efforts', () => {
+        const cases = [
+            { level: 'minimal', want: 'low' },
+            { level: 'low', want: 'low' },
+            { level: 'medium', want: 'medium' },
+            { level: 'high', want: 'xhigh' },
+            { level: 'xhigh', want: 'xhigh' },
+        ] as const;
+        for (const { level, want } of cases) {
+            const body: Record<string, unknown> = {};
+            applyQwenRequestDefaults({
+                model: 'qwen3.8-27b-nvfp4',
+                url: VLLM_URL,
+                body,
+                thinking: { enabled: true, level },
+            });
+            expect(body['reasoning_effort']).toBe(want);
+            expect((body['chat_template_kwargs'] as { reasoning_effort: string }).reasoning_effort).toBe(want);
+        }
+    });
+
+    test('thinking OFF (3.8) does not send reasoning_effort (vLLM rejects none)', () => {
+        const body: Record<string, unknown> = {};
+        applyQwenRequestDefaults({
+            model: 'qwen3.8-27b-nvfp4',
+            url: VLLM_URL,
+            body,
+            thinking: { enabled: false },
+        });
+        expect(body['reasoning_effort']).toBeUndefined();
+        expect((body['chat_template_kwargs'] as { reasoning_effort?: string }).reasoning_effort).toBeUndefined();
     });
 
     test('thinking ON (original Qwen3): temp 0.6', () => {
@@ -115,6 +152,7 @@ describe('applyQwenRequestDefaults', () => {
         expect(body['top_k']).toBe(10);
         expect(body['presence_penalty']).toBe(0.1);
         expect(body['chat_template_kwargs']).toEqual({ enable_thinking: true, other: 1 });
+        expect(body['reasoning_effort']).toBeUndefined();
     });
 
     test('no-ops for non-Qwen models', () => {
@@ -167,12 +205,20 @@ describe('OpenAICompatibleClient qwen3.8 wire body', () => {
         expect(lastBody!['presence_penalty']).toBe(1.5);
     });
 
-    test('qwen3.8 + thinking true → 3.6+ thinking recipe', async () => {
+    test('qwen3.8 + thinking true → 3.6+ thinking recipe + xhigh effort', async () => {
         const client = createClient({ thinking: true });
         await client.chat([{ role: 'user', content: 'hi' }]);
         expect((lastBody!['chat_template_kwargs'] as { enable_thinking: boolean }).enable_thinking).toBe(true);
         expect(lastBody!['temperature']).toBe(1.0);
         expect(lastBody!['top_p']).toBe(0.95);
+        expect(lastBody!['reasoning_effort']).toBe('xhigh');
+    });
+
+    test('qwen3.8 + thinking medium → reasoning_effort medium', async () => {
+        const client = createClient({ thinking: 'medium' });
+        await client.chat([{ role: 'user', content: 'hi' }]);
+        expect(lastBody!['reasoning_effort']).toBe('medium');
+        expect((lastBody!['chat_template_kwargs'] as { reasoning_effort: string }).reasoning_effort).toBe('medium');
     });
 
     test('caller defaultParameters win over family defaults', async () => {
