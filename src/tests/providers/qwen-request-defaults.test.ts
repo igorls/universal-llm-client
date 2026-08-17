@@ -53,7 +53,45 @@ describe('applyQwenRequestDefaults', () => {
         expect(body['top_p']).toBe(0.8);
         expect(body['top_k']).toBe(20);
         expect(body['presence_penalty']).toBe(1.5);
+        expect(body['repetition_penalty']).toBe(1.1);
         expect((body['chat_template_kwargs'] as { enable_thinking: boolean }).enable_thinking).toBe(false);
+    });
+
+    // presence_penalty (the official card knob) scores only the CURRENT
+    // completion, so it cannot stop the model copying its own previous reply
+    // out of the prompt. repetition_penalty scores prompt tokens too — without
+    // it, a long thread with a content-free newest turn repeats verbatim.
+    test('thinking OFF pins repetition_penalty — the cross-turn anti-copy knob', () => {
+        const body: Record<string, unknown> = {};
+        applyQwenRequestDefaults({
+            model: 'qwen3.8-27b-nvfp4',
+            url: VLLM_URL,
+            body,
+            thinking: { enabled: false },
+        });
+        expect(body['repetition_penalty']).toBe(1.1);
+    });
+
+    test('thinking ON uses a gentler repetition_penalty so CoT can restate', () => {
+        const body: Record<string, unknown> = {};
+        applyQwenRequestDefaults({
+            model: 'qwen3.8-27b-nvfp4',
+            url: VLLM_URL,
+            body,
+            thinking: { enabled: true },
+        });
+        expect(body['repetition_penalty']).toBe(1.05);
+    });
+
+    test('caller-supplied repetition_penalty always wins', () => {
+        const body: Record<string, unknown> = { repetition_penalty: 1.25 };
+        applyQwenRequestDefaults({
+            model: 'qwen3.8-27b-nvfp4',
+            url: VLLM_URL,
+            body,
+            thinking: { enabled: false },
+        });
+        expect(body['repetition_penalty']).toBe(1.25);
     });
 
     test('thinking ON (3.8): official 3.6+ thinking recipe + default xhigh effort', () => {

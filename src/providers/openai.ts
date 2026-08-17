@@ -245,6 +245,21 @@ export function applyGemmaDualModeRequestDefaults(input: {
  *   presence_penalty 0.
  * - **Thinking ON (original Qwen3):** temperature 0.6, top_p 0.95, top_k 20.
  *
+ * The card's `presence_penalty` covers restatement WITHIN one completion. It
+ * cannot reach restatement ACROSS turns: presence/frequency penalties only
+ * score tokens already emitted in the current completion, while the text being
+ * copied lives in the prompt. In a long chat thread whose newest user turn adds
+ * no new content (an emoji, a bare "ok"), the model's own previous reply is
+ * then the highest-probability continuation — and the card's narrow
+ * top_p 0.8 / top_k 20 sharpens that into a byte-identical repeat. Measured on
+ * one such turn, N=30: 9/30 byte-identical and 14/30 near-identical under card
+ * sampling alone; 0/30 and 3/30 with `repetition_penalty` 1.1 added.
+ * `repetition_penalty` is the one vLLM penalty that also scores PROMPT tokens,
+ * so it is the only knob that reaches this failure — the same reason
+ * {@link applyGemmaDualModeRequestDefaults} already carries it. It likewise
+ * stops the model echoing prefixes it saw on history lines, which is the same
+ * copy-from-prompt mechanism.
+ *
  * Always pin `enable_thinking` on vLLM — Qwen3.8 thinking checkpoints default
  * the thought channel ON, which leaks CoT on visitor surfaces.
  *
@@ -274,6 +289,12 @@ export function applyQwenRequestDefaults(input: {
         if (body['top_p'] === undefined) body['top_p'] = 0.8;
         if (body['top_k'] === undefined) body['top_k'] = 20;
         if (body['presence_penalty'] === undefined) body['presence_penalty'] = 1.5;
+    }
+
+    // Cross-turn anti-copy (see the note above). Gentler with thinking ON so
+    // intermediate reasoning can still restate premises.
+    if (body['repetition_penalty'] === undefined) {
+        body['repetition_penalty'] = thinkingOn ? 1.05 : 1.1;
     }
 
     if (supportsChatTemplateKwargs(input.url)) {
