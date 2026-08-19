@@ -161,20 +161,19 @@ const compatLow = row('compat-/v1', 'low');
 const ok =
   nativeOff.thinkChars === 0 &&
   nativeOff.contentChars > 0 &&
-  nativeOff.wire?.effort === 'none' &&
+  nativeOff.wire?.think === false &&
   nativeLow.thinkChars > 0 &&
   nativeLow.wire?.think === 'low' &&
   nativeMed.thinkChars > 0 &&
   nativeX.thinkChars > 0 &&
-  nativeX.wire?.think === true &&
-  nativeX.wire?.effort === 'xhigh' &&
+  nativeX.wire?.think === 'max' &&
   compatOff.thinkChars === 0 &&
   compatOff.wire?.effort === 'none' &&
   compatLow.thinkChars > 0;
 
 console.log(
   ok
-    ? 'PASS: ULC off has no think block; levels emit think; xhigh maps to think=true+effort=xhigh'
+    ? 'PASS: ULC off has no think block; levels emit official think; xhigh maps to think=max'
     : 'FAIL: see rows above',
 );
 process.exit(ok ? 0 : 1);

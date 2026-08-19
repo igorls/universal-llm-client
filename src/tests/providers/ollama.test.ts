@@ -518,52 +518,32 @@ describe('OllamaClient', () => {
             expect(body['reasoning_effort']).toBeUndefined();
         });
 
-        test('maps thinking levels onto Ollama think (never sends xhigh)', async () => {
+        test('maps thinking levels onto official Ollama think (never sends xhigh)', async () => {
             const cases = [
-                { thinking: false as const, think: false, effort: undefined },
-                { thinking: 'low' as const, think: 'low', effort: undefined },
-                { thinking: 'medium' as const, think: 'medium', effort: undefined },
-                { thinking: 'high' as const, think: 'high', effort: undefined },
-                { thinking: 'xhigh' as const, think: true, effort: undefined },
-                { thinking: 'minimal' as const, think: 'low', effort: undefined },
+                { thinking: false as const, think: false },
+                { thinking: 'low' as const, think: 'low' },
+                { thinking: 'medium' as const, think: 'medium' },
+                { thinking: 'high' as const, think: 'high' },
+                { thinking: 'xhigh' as const, think: 'max' },
+                { thinking: 'minimal' as const, think: 'low' },
             ];
-            for (const { thinking, think, effort } of cases) {
+            for (const { thinking, think } of cases) {
                 const getBody = mockFetchAndCapture();
                 const client = createClient({ thinking });
                 await client.chat([{ role: 'user', content: 'hi' }]);
                 expect(getBody()!['think']).toBe(think);
-                expect(getBody()!['reasoning_effort']).toBe(effort);
+                expect(getBody()!['reasoning_effort']).toBeUndefined();
             }
         });
 
-        test('qwen3.8 sends reasoning_effort including none (think:false is ignored on that card)', async () => {
-            const off = mockFetchAndCapture();
-            await createClient({ model: 'qwen3.8:27b-mtp-q4_K_M', thinking: false })
-                .chat([{ role: 'user', content: 'hi' }]);
-            expect(off()!['think']).toBe(false);
-            expect(off()!['reasoning_effort']).toBe('none');
-
-            const low = mockFetchAndCapture();
-            await createClient({ model: 'qwen3.8:27b-mtp-q4_K_M', thinking: 'low' })
-                .chat([{ role: 'user', content: 'hi' }]);
-            expect(low()!['think']).toBe('low');
-            expect(low()!['reasoning_effort']).toBe('low');
-
-            const xhigh = mockFetchAndCapture();
-            await createClient({ model: 'qwen3.8:27b-mtp-q4_K_M', thinking: 'xhigh' })
-                .chat([{ role: 'user', content: 'hi' }]);
-            expect(xhigh()!['think']).toBe(true);
-            expect(xhigh()!['reasoning_effort']).toBe('xhigh');
-        });
-
-        test('chatStream() uses the same think / effort mapping', async () => {
+        test('chatStream() uses the same think mapping', async () => {
             const getBody = mockFetchAndCapture();
-            const client = createClient({ model: 'qwen3.8:27b-mtp-q4_K_M', thinking: 'medium' });
+            const client = createClient({ model: 'qwen3.8:27b-mtp-q4_K_M', thinking: 'xhigh' });
             for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }])) {
                 /* consume */
             }
-            expect(getBody()!['think']).toBe('medium');
-            expect(getBody()!['reasoning_effort']).toBe('medium');
+            expect(getBody()!['think']).toBe('max');
+            expect(getBody()!['reasoning_effort']).toBeUndefined();
         });
     });
 

@@ -8,7 +8,7 @@
 import { OllamaClient } from '../../src/providers/ollama.js';
 import { AIModelApiType, type ThinkingLevel } from '../../src/interfaces.js';
 
-const URL = (process.env['OLLAMA_URL'] ?? 'http://z690-ex-glacial-win:11434').replace(/\/+$/, '');
+const URL = (process.env['OLLAMA_URL'] ?? 'http://127.0.0.1:11434').replace(/\/+$/, '');
 const MODEL = process.env['OLLAMA_MODEL'] ?? 'qwen3.8:27b-mtp-q4_K_M';
 const MAX = Number(process.env['MAX_TOKENS'] ?? 2048);
 const PROMPT =

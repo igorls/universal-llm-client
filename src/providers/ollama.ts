@@ -12,8 +12,7 @@
  */
 
 import { BaseLLMClient } from '../client.js';
-import { isQwen36PlusModelId } from './openai.js';
-import { ollamaThinkValue, qwenReasoningEffort, resolveThinking } from '../thinking.js';
+import { ollamaThinkValue, resolveThinking } from '../thinking.js';
 import { httpRequest, httpStream, parseNDJSON, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import {
@@ -39,22 +38,16 @@ import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 
 /**
- * Ollama 0.32 `think` accepts low|medium|high|max|true|false (not xhigh).
- * Unified `xhigh` maps to think=true (max/high are a shorter rung on qwen3.8).
- * Qwen3.6+ also gets `reasoning_effort` — `none` is the off switch.
+ * Official Ollama `/api/chat` thinking control is `think` only
+ * (boolean or low|medium|high|max). Do not send `reasoning_effort` here —
+ * that is a Qwen/vLLM template knob and is not in the Ollama chat API.
  */
 function applyOllamaThinking(
     body: Record<string, unknown>,
     thinking: ChatOptions['thinking'] | LLMClientOptions['thinking'],
     configThinking: LLMClientOptions['thinking'],
-    model: string,
 ): void {
-    const resolved = resolveThinking(thinking, configThinking);
-    body['think'] = ollamaThinkValue(resolved);
-    if (!resolved || !isQwen36PlusModelId(model)) return;
-    body['reasoning_effort'] = resolved.enabled
-        ? qwenReasoningEffort(resolved.level)
-        : 'none';
+    body['think'] = ollamaThinkValue(resolveThinking(thinking, configThinking));
 }
 
 export class OllamaClient extends BaseLLMClient {
@@ -92,7 +85,7 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        applyOllamaThinking(body, options?.thinking, this.options.thinking, model);
+        applyOllamaThinking(body, options?.thinking, this.options.thinking);
 
         // Handle structured output via format parameter
         const schemaOptions = this.extractSchemaOptions(options);
@@ -199,7 +192,7 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        applyOllamaThinking(body, options?.thinking, this.options.thinking, model);
+        applyOllamaThinking(body, options?.thinking, this.options.thinking);
 
         // Handle structured output via format parameter — same as chat(). Without
         // this, streaming structured output is unconstrained and the model can emit

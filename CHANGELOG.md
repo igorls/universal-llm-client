@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Ollama thinking levels** — `think` is no longer boolean-only. Unified levels map onto Ollama 0.32's legal values (`low`/`medium`/`high`; `minimal` → `low`). `xhigh` sends `think: true` plus Qwen `reasoning_effort: xhigh` — Ollama `max`/`high` are a shorter rung on qwen3.8 than the model's own default (`think=xhigh` 400s). Qwen3.6+ also receives `reasoning_effort` (`none` when thinking is off). OpenAI-compat requests aimed at an Ollama URL (`:11434` / ollama.com) send `reasoning_effort: none` on thinking-off; vLLM still omits `none` (it 400s).
+- **Ollama thinking levels** — native `/api/chat` now follows the official `think` field ([api.md](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion)): boolean or `low`/`medium`/`high`/`max`. Unified `xhigh` → `max`, `minimal` → `low`. `reasoning_effort` is not sent on the native chat API (that is a vLLM/Qwen template knob). OpenAI-compat requests aimed at an Ollama URL (`:11434` / ollama.com) still send `reasoning_effort: none` when thinking is off; vLLM still omits `none`.
 
 ### Added
 

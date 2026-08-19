@@ -117,9 +117,8 @@ export function isStrictOpenAICompatHost(url: string | undefined): boolean {
 
 /**
  * Whether this URL is an Ollama native or OpenAI-compat listener
- * (`:11434`, `ollama.com`). Used to send `reasoning_effort: none` — vLLM
- * rejects that value, but it is the only reliable off-switch on
- * `qwen3.8:27b` (native `think:false` is ignored).
+ * (`:11434`, `ollama.com`). Used on the OpenAI-compat `/v1` path to send
+ * `reasoning_effort: none` when thinking is off (vLLM rejects that value).
  */
 export function isOllamaEndpoint(url: string | undefined): boolean {
     const u = (url ?? '').toLowerCase();
@@ -127,15 +126,16 @@ export function isOllamaEndpoint(url: string | undefined): boolean {
 }
 
 /**
- * Values Ollama 0.32 `/api/chat` accepts for `think`. `xhigh` / `minimal` /
- * `none` 400 — the server lists `high|medium|low|max|true|false` only
- * (probed 2026-08-18 on 0.32.14).
+ * Official Ollama `/api/chat` `think` values (docs/api.md):
+ * boolean or `"low" | "medium" | "high" | "max"`. `xhigh` / `minimal` / `none`
+ * are not in that list and 400 on 0.32.
  */
 export type OllamaThinkValue = boolean | 'low' | 'medium' | 'high' | 'max';
 
 /**
- * Map unified `thinking` onto Ollama's `think` field. Unset → `true` to
- * preserve the historical default (thinking models think unless asked not to).
+ * Map unified `thinking` onto Ollama's official `think` field.
+ * Unset → `true` (historical default: thinking models think unless asked not to).
+ * `xhigh` → `max` (Ollama's documented top rung; Qwen's `xhigh` is not legal).
  */
 export function ollamaThinkValue(thinking: ResolvedThinking | undefined): OllamaThinkValue {
     if (!thinking) return true;
@@ -149,10 +149,7 @@ export function ollamaThinkValue(thinking: ResolvedThinking | undefined): Ollama
         case 'high':
             return 'high';
         case 'xhigh':
-            // Ollama `max`/`high` are a shorter rung on qwen3.8 than the
-            // model's own default. Boolean true + reasoning_effort=xhigh is
-            // the official top (think=xhigh 400s).
-            return true;
+            return 'max';
         default:
             return true;
     }

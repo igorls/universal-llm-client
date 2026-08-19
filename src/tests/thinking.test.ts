@@ -70,7 +70,7 @@ describe('ollamaThinkValue', () => {
         expect(ollamaThinkValue({ enabled: true, level: 'low' })).toBe('low');
         expect(ollamaThinkValue({ enabled: true, level: 'medium' })).toBe('medium');
         expect(ollamaThinkValue({ enabled: true, level: 'high' })).toBe('high');
-        expect(ollamaThinkValue({ enabled: true, level: 'xhigh' })).toBe(true);
+        expect(ollamaThinkValue({ enabled: true, level: 'xhigh' })).toBe('max');
     });
 });
 
