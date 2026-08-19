@@ -5,6 +5,8 @@ import { describe, test, expect } from 'bun:test';
 import {
     resolveThinking,
     isOpenAIReasoningModel,
+    isOllamaEndpoint,
+    ollamaThinkValue,
     geminiThinkingBudget,
     anthropicThinkingBudget,
 } from '../thinking.js';
@@ -44,6 +46,31 @@ describe('isOpenAIReasoningModel', () => {
         for (const m of ['gpt-4o', 'qwen3.6-nvfp4', 'gemini-3.5-flash', 'claude-sonnet-4-5']) {
             expect(isOpenAIReasoningModel(m)).toBe(false);
         }
+    });
+});
+
+describe('isOllamaEndpoint', () => {
+    test('matches local listeners and ollama.com', () => {
+        expect(isOllamaEndpoint('http://z690-ex-glacial-win:11434')).toBe(true);
+        expect(isOllamaEndpoint('http://127.0.0.1:11434/v1')).toBe(true);
+        expect(isOllamaEndpoint('https://ollama.com')).toBe(true);
+        expect(isOllamaEndpoint('http://localhost:8010/v1')).toBe(false);
+        expect(isOllamaEndpoint(undefined)).toBe(false);
+    });
+});
+
+describe('ollamaThinkValue', () => {
+    test('unset defaults to true (historical Ollama default)', () => {
+        expect(ollamaThinkValue(undefined)).toBe(true);
+    });
+    test('maps unified levels onto Ollama-legal think values', () => {
+        expect(ollamaThinkValue({ enabled: false })).toBe(false);
+        expect(ollamaThinkValue({ enabled: true })).toBe(true);
+        expect(ollamaThinkValue({ enabled: true, level: 'minimal' })).toBe('low');
+        expect(ollamaThinkValue({ enabled: true, level: 'low' })).toBe('low');
+        expect(ollamaThinkValue({ enabled: true, level: 'medium' })).toBe('medium');
+        expect(ollamaThinkValue({ enabled: true, level: 'high' })).toBe('high');
+        expect(ollamaThinkValue({ enabled: true, level: 'xhigh' })).toBe(true);
     });
 });
 

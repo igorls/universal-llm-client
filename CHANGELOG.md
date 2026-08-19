@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Ollama thinking levels** — `think` is no longer boolean-only. Unified levels map onto Ollama 0.32's legal values (`low`/`medium`/`high`; `minimal` → `low`). `xhigh` sends `think: true` plus Qwen `reasoning_effort: xhigh` — Ollama `max`/`high` are a shorter rung on qwen3.8 than the model's own default (`think=xhigh` 400s). Qwen3.6+ also receives `reasoning_effort` (`none` when thinking is off). OpenAI-compat requests aimed at an Ollama URL (`:11434` / ollama.com) send `reasoning_effort: none` on thinking-off; vLLM still omits `none` (it 400s).
+
 ### Added
 
 - **`tool_call_delta` stream events (OpenAI-compatible)** — while tool-call argument tokens stream in, `chatStream` now yields `{ type: 'tool_call_delta', calls }` with a full snapshot of the raw accumulation (arguments may be empty, partial, or invalid JSON). Use these only for live UI previews. The existing `{ type: 'tool_call' }` event still fires once at finish with normalized, execute-ready calls. Consumers that only handle `tool_call` are unchanged.

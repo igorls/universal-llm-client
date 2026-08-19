@@ -12,6 +12,7 @@ import {
     supportsChatTemplateKwargs,
     isStrictOpenAICompatHost,
     qwenReasoningEffort,
+    isOllamaEndpoint,
 } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE, buildHeaders } from '../http.js';
 import { createDecoder, StandardChatDecoder } from '../stream-decoder.js';
@@ -304,15 +305,24 @@ export function applyQwenRequestDefaults(input: {
             kwargs['enable_thinking'] = thinkingOn;
         }
         // Qwen3.8 effort is a separate template knob. Official values are
-        // low/medium/xhigh; omit when thinking is off (vLLM rejects `none`).
-        if (thinkingOn && plus && kwargs['reasoning_effort'] === undefined) {
-            kwargs['reasoning_effort'] = qwenReasoningEffort(thinking?.level);
+        // low/medium/xhigh; omit when thinking is off on vLLM (rejects `none`).
+        // Ollama /v1 is the opposite: `none` is the off switch.
+        if (plus && kwargs['reasoning_effort'] === undefined) {
+            if (thinkingOn) {
+                kwargs['reasoning_effort'] = qwenReasoningEffort(thinking?.level);
+            } else if (isOllamaEndpoint(input.url)) {
+                kwargs['reasoning_effort'] = 'none';
+            }
         }
         body['chat_template_kwargs'] = kwargs;
     }
 
-    if (thinkingOn && plus && body['reasoning_effort'] === undefined) {
-        body['reasoning_effort'] = qwenReasoningEffort(thinking?.level);
+    if (plus && body['reasoning_effort'] === undefined) {
+        if (thinkingOn) {
+            body['reasoning_effort'] = qwenReasoningEffort(thinking?.level);
+        } else if (isOllamaEndpoint(input.url)) {
+            body['reasoning_effort'] = 'none';
+        }
     }
 }
 

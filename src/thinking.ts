@@ -116,6 +116,49 @@ export function isStrictOpenAICompatHost(url: string | undefined): boolean {
 }
 
 /**
+ * Whether this URL is an Ollama native or OpenAI-compat listener
+ * (`:11434`, `ollama.com`). Used to send `reasoning_effort: none` — vLLM
+ * rejects that value, but it is the only reliable off-switch on
+ * `qwen3.8:27b` (native `think:false` is ignored).
+ */
+export function isOllamaEndpoint(url: string | undefined): boolean {
+    const u = (url ?? '').toLowerCase();
+    return u.includes(':11434') || u.includes('ollama.com') || u.includes('ollama.ai');
+}
+
+/**
+ * Values Ollama 0.32 `/api/chat` accepts for `think`. `xhigh` / `minimal` /
+ * `none` 400 — the server lists `high|medium|low|max|true|false` only
+ * (probed 2026-08-18 on 0.32.14).
+ */
+export type OllamaThinkValue = boolean | 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Map unified `thinking` onto Ollama's `think` field. Unset → `true` to
+ * preserve the historical default (thinking models think unless asked not to).
+ */
+export function ollamaThinkValue(thinking: ResolvedThinking | undefined): OllamaThinkValue {
+    if (!thinking) return true;
+    if (!thinking.enabled) return false;
+    switch (thinking.level) {
+        case 'minimal':
+        case 'low':
+            return 'low';
+        case 'medium':
+            return 'medium';
+        case 'high':
+            return 'high';
+        case 'xhigh':
+            // Ollama `max`/`high` are a shorter rung on qwen3.8 than the
+            // model's own default. Boolean true + reasoning_effort=xhigh is
+            // the official top (think=xhigh 400s).
+            return true;
+        default:
+            return true;
+    }
+}
+
+/**
  * Gemini 2.5 `thinkingBudget` for a level. 0 disables, -1 is dynamic, and the
  * Flash range is 0–24576. A bare `true` (no level) maps to dynamic (-1).
  */

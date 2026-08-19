@@ -36,7 +36,7 @@ unaffected by default.
 | **OpenAI-compatible** (vLLM/Qwen) | `chat_template_kwargs.enable_thinking` (on/off). |
 | **Google / Gemini** | `thinkingConfig.thinkingLevel` (Gemini 3.x) or `thinkingBudget` (Gemini 2.5/2.0), with `includeThoughts` on. |
 | **Anthropic** | extended thinking `budget_tokens` derived from the level (kept `< max_tokens`; `temperature` omitted, per the API). |
-| **Ollama** | `think` on/off (no native levels). |
+| **Ollama** | `think` `false` / `true` / `low` / `medium` / `high` (`minimal` → `low`; `xhigh` → `true` + Qwen `reasoning_effort: xhigh` — Ollama `max`/`high` are a shorter rung on qwen3.8; `think=xhigh` 400s). Qwen3.6+ also gets `reasoning_effort` (`none` when off). |
 
 ## Getting the reasoning back
 

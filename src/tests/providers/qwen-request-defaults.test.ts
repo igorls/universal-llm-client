@@ -146,6 +146,19 @@ describe('applyQwenRequestDefaults', () => {
         expect((body['chat_template_kwargs'] as { reasoning_effort?: string }).reasoning_effort).toBeUndefined();
     });
 
+    test('thinking OFF (3.8) on Ollama /v1 sends reasoning_effort none', () => {
+        const body: Record<string, unknown> = {};
+        applyQwenRequestDefaults({
+            model: 'qwen3.8:27b-mtp-q4_K_M',
+            url: 'http://z690-ex-glacial-win:11434/v1',
+            body,
+            thinking: { enabled: false },
+        });
+        expect(body['reasoning_effort']).toBe('none');
+        expect((body['chat_template_kwargs'] as { reasoning_effort: string }).reasoning_effort).toBe('none');
+        expect((body['chat_template_kwargs'] as { enable_thinking: boolean }).enable_thinking).toBe(false);
+    });
+
     test('thinking ON (original Qwen3): temp 0.6', () => {
         const body: Record<string, unknown> = {};
         applyQwenRequestDefaults({

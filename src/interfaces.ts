@@ -141,7 +141,8 @@ export interface ProviderConfig {
  * Unified reasoning-effort level. Mapped to each provider's native control:
  * Gemini 3.x `thinkingConfig.thinkingLevel`, OpenAI `reasoning_effort`,
  * Gemini 2.5 `thinkingBudget`, Anthropic `budget_tokens`, vLLM/Qwen
- * `reasoning_effort` (`low`/`medium`/`xhigh`).
+ * `reasoning_effort` (`low`/`medium`/`xhigh`), Ollama `think`
+ * (`low`/`medium`/`high`/`max`).
  *
  * `xhigh` is Qwen3.8's official top rung (there is no `high` on that card).
  */
@@ -455,7 +456,7 @@ export interface ChatOptions {
      * model-level `thinking` config. `true`/`false` or a level
      * ('minimal' | 'low' | 'medium' | 'high' | 'xhigh'). Mapped per provider:
      * Gemini `thinkingLevel`/`thinkingBudget`, OpenAI `reasoning_effort`,
-     * vLLM `enable_thinking` + Qwen `reasoning_effort`, Anthropic
+     * vLLM `enable_thinking` + Qwen `reasoning_effort`, Ollama `think`, Anthropic
      * `budget_tokens`, Ollama `think`.
      */
     thinking?: boolean | ThinkingLevel;
