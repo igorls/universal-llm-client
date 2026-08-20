@@ -20,6 +20,77 @@ export interface HttpRequestOptions {
     signal?: AbortSignal;
 }
 
+/**
+ * Observer for every HTTP call this module makes (`httpRequest` + `httpStream`).
+ * Used by the host (Concierge / CP request log) to capture the exact outbound
+ * wire payload. Default is unset — zero cost. The tap must never throw.
+ */
+export type LlmHttpTapPhase = 'start' | 'end' | 'error';
+
+export interface LlmHttpTapEvent {
+    readonly id: string;
+    readonly at: number;
+    readonly phase: LlmHttpTapPhase;
+    readonly stream: boolean;
+    readonly method: string;
+    readonly url: string;
+    readonly headers: Readonly<Record<string, string>>;
+    readonly body?: unknown;
+    readonly status?: number;
+    readonly durationMs?: number;
+    readonly error?: string;
+}
+
+export type LlmHttpTap = (event: LlmHttpTapEvent) => void;
+
+let llmHttpTap: LlmHttpTap | null = null;
+let llmHttpTapSeq = 0;
+
+export function setLlmHttpTap(next: LlmHttpTap | null): void {
+    llmHttpTap = next;
+}
+
+export function getLlmHttpTap(): LlmHttpTap | null {
+    return llmHttpTap;
+}
+
+const REDACT_HEADER = /^(authorization|api-key|x-api-key|cookie|set-cookie|x-goog-api-key)$/i;
+const REDACT_QUERY = /^(api[_-]?key|key|token|access_token|authorization)$/i;
+
+function redactUrl(url: string): string {
+    try {
+        const parsed = new URL(url);
+        for (const name of [...parsed.searchParams.keys()]) {
+            if (REDACT_QUERY.test(name)) parsed.searchParams.set(name, '[redacted]');
+        }
+        return parsed.toString();
+    } catch {
+        return url;
+    }
+}
+
+function redactHeaders(headers: Record<string, string>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+        out[key] = REDACT_HEADER.test(key) ? '[redacted]' : value;
+    }
+    return out;
+}
+
+function emitTap(event: LlmHttpTapEvent): void {
+    if (!llmHttpTap) return;
+    try {
+        llmHttpTap(event);
+    } catch {
+        /* observability must never fail the model call */
+    }
+}
+
+function newTapId(): string {
+    llmHttpTapSeq += 1;
+    return `llmhttp_${Date.now().toString(36)}_${llmHttpTapSeq.toString(36)}`;
+}
+
 export interface HttpResponse<T = unknown> {
     ok: boolean;
     status: number;
@@ -41,6 +112,18 @@ export async function httpRequest<T = unknown>(
     options: HttpRequestOptions = {},
 ): Promise<HttpResponse<T>> {
     const { method = 'GET', headers = {}, body, timeout = 30000, signal } = options;
+    const tapId = newTapId();
+    const started = Date.now();
+    emitTap({
+        id: tapId,
+        at: started,
+        phase: 'start',
+        stream: false,
+        method,
+        url: redactUrl(url),
+        headers: redactHeaders(headers),
+        body,
+    });
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -65,10 +148,33 @@ export async function httpRequest<T = unknown>(
 
         if (!response.ok) {
             const errorText = await response.text().catch(() => 'Unknown error');
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'error',
+                stream: false,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                status: response.status,
+                durationMs: Date.now() - started,
+                error: errorText.slice(0, 2000),
+            });
             throw new LLMHttpError(response.status, errorText, url);
         }
 
         const data = (await response.json()) as T;
+        emitTap({
+            id: tapId,
+            at: Date.now(),
+            phase: 'end',
+            stream: false,
+            method,
+            url: redactUrl(url),
+            headers: redactHeaders(headers),
+            status: response.status,
+            durationMs: Date.now() - started,
+        });
 
         return {
             ok: response.ok,
@@ -80,7 +186,32 @@ export async function httpRequest<T = unknown>(
         clearTimeout(timeoutId);
 
         if (error instanceof Error && error.name === 'AbortError') {
-            throw new Error(`Request timeout after ${timeout}ms: ${url}`);
+            const message = `Request timeout after ${timeout}ms: ${url}`;
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'error',
+                stream: false,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                durationMs: Date.now() - started,
+                error: message,
+            });
+            throw new Error(message);
+        }
+        if (!(error instanceof LLMHttpError)) {
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'error',
+                stream: false,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                durationMs: Date.now() - started,
+                error: error instanceof Error ? error.message : String(error),
+            });
         }
         throw error;
     }
@@ -99,6 +230,18 @@ export async function* httpStream(
     options: HttpRequestOptions = {},
 ): AsyncGenerator<string, void, unknown> {
     const { method = 'POST', headers = {}, body, timeout = 120000, signal } = options;
+    const tapId = newTapId();
+    const started = Date.now();
+    emitTap({
+        id: tapId,
+        at: started,
+        phase: 'start',
+        stream: true,
+        method,
+        url: redactUrl(url),
+        headers: redactHeaders(headers),
+        body,
+    });
 
     const controller = new AbortController();
 
@@ -137,6 +280,18 @@ export async function* httpStream(
         if (!response.ok) {
             clearIdleTimeout();
             const errorText = await response.text().catch(() => 'Unknown error');
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'error',
+                stream: true,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                status: response.status,
+                durationMs: Date.now() - started,
+                error: errorText.slice(0, 2000),
+            });
             throw new LLMHttpError(response.status, errorText, url);
         }
 
@@ -155,6 +310,17 @@ export async function* httpStream(
                 if (done) break;
                 yield decoder.decode(value, { stream: true });
             }
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'end',
+                stream: true,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                status: response.status,
+                durationMs: Date.now() - started,
+            });
         } finally {
             clearIdleTimeout();
             reader.releaseLock();
@@ -165,8 +331,46 @@ export async function* httpStream(
         if (error instanceof Error && error.name === 'AbortError') {
             // Distinguish caller-initiated aborts from the idle watchdog so
             // cancellations don't masquerade as timeouts.
-            if (signal?.aborted) throw error;
-            throw new Error(`Stream idle timeout after ${timeout}ms: ${url}`);
+            if (signal?.aborted) {
+                emitTap({
+                    id: tapId,
+                    at: Date.now(),
+                    phase: 'error',
+                    stream: true,
+                    method,
+                    url: redactUrl(url),
+                    headers: redactHeaders(headers),
+                    durationMs: Date.now() - started,
+                    error: 'aborted',
+                });
+                throw error;
+            }
+            const message = `Stream idle timeout after ${timeout}ms: ${url}`;
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'error',
+                stream: true,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                durationMs: Date.now() - started,
+                error: message,
+            });
+            throw new Error(message);
+        }
+        if (!(error instanceof LLMHttpError)) {
+            emitTap({
+                id: tapId,
+                at: Date.now(),
+                phase: 'error',
+                stream: true,
+                method,
+                url: redactUrl(url),
+                headers: redactHeaders(headers),
+                durationMs: Date.now() - started,
+                error: error instanceof Error ? error.message : String(error),
+            });
         }
         throw error;
     }

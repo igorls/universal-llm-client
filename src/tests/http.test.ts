@@ -2,7 +2,7 @@
  * Tests for http.ts — Universal HTTP utilities
  */
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { httpRequest, parseNDJSON, parseSSE, buildHeaders } from '../http.js';
+import { httpRequest, httpStream, parseNDJSON, parseSSE, buildHeaders, setLlmHttpTap, type LlmHttpTapEvent } from '../http.js';
 import { AIModelApiType } from '../interfaces.js';
 
 describe('httpRequest', () => {
@@ -10,6 +10,7 @@ describe('httpRequest', () => {
 
     afterEach(() => {
         globalThis.fetch = originalFetch;
+        setLlmHttpTap(null);
     });
 
     it('makes a GET request and parses JSON', async () => {
@@ -64,6 +65,51 @@ describe('httpRequest', () => {
         });
 
         expect(capturedHeaders).toHaveProperty('X-Custom', 'value');
+    });
+
+    it('taps the outbound request including body and redacts Authorization', async () => {
+        const events: LlmHttpTapEvent[] = [];
+        setLlmHttpTap((event) => events.push(event));
+        globalThis.fetch = mock(async () =>
+            new Response(JSON.stringify({ ok: true }), { status: 200 }),
+        ) as typeof fetch;
+
+        await httpRequest('http://gpu.local/v1/chat/completions?api_key=secret', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer sk-live' },
+            body: { model: 'qwen', messages: [{ role: 'user', content: 'oi' }] },
+        });
+
+        expect(events[0]?.phase).toBe('start');
+        expect(events[0]?.body).toEqual({ model: 'qwen', messages: [{ role: 'user', content: 'oi' }] });
+        expect(events[0]?.headers.Authorization).toBe('[redacted]');
+        expect(events[0]?.url).toContain('api_key=%5Bredacted%5D');
+        expect(events[1]?.phase).toBe('end');
+        expect(events[1]?.status).toBe(200);
+        expect(typeof events[1]?.durationMs).toBe('number');
+    });
+
+    it('taps streaming requests once at start and once at end', async () => {
+        const events: LlmHttpTapEvent[] = [];
+        setLlmHttpTap((event) => events.push(event));
+        globalThis.fetch = mock(async () =>
+            new Response('data: {"ok":true}\n\n', {
+                status: 200,
+                headers: { 'Content-Type': 'text/event-stream' },
+            }),
+        ) as typeof fetch;
+
+        const chunks: string[] = [];
+        for await (const chunk of httpStream('http://gpu.local/v1/chat/completions', {
+            body: { stream: true, messages: [] },
+        })) {
+            chunks.push(chunk);
+        }
+
+        expect(chunks.join('')).toContain('ok');
+        expect(events.map((e) => e.phase)).toEqual(['start', 'end']);
+        expect(events[0]?.stream).toBe(true);
+        expect(events[0]?.body).toEqual({ stream: true, messages: [] });
     });
 });
 

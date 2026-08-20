@@ -158,8 +158,13 @@ export {
     parseNDJSON,
     parseSSE,
     buildHeaders,
+    setLlmHttpTap,
+    getLlmHttpTap,
     type HttpRequestOptions,
     type HttpResponse,
+    type LlmHttpTap,
+    type LlmHttpTapEvent,
+    type LlmHttpTapPhase,
 } from './http.js';
 
 // ============================================================================
