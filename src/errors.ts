@@ -147,6 +147,13 @@ function errorCode(error: unknown): string {
  * Bun throws 'Unable to connect. Is the computer able to access the url?'.
  */
 export function isConnectivityFailure(error: unknown): boolean {
+    // Any HTTP response proves the transport endpoint is reachable. Statuses
+    // (including 408/5xx bodies containing "timeout") remain request-scoped.
+    if (error instanceof LLMHttpError) return false;
+    const name = error && typeof error === 'object' && typeof (error as { name?: unknown }).name === 'string'
+        ? (error as { name: string }).name
+        : '';
+    if (name === 'TimeoutError') return true;
     const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
     if (/timeout|fetch failed|failed to fetch|network|socket|unreachable|unable to connect|connection (refused|reset|closed|timed out|error)|econnrefused|econnreset|econnaborted|enotfound|ehostunreach|enetunreach|etimedout/.test(message)) {
         return true;
