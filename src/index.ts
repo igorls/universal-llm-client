@@ -36,6 +36,11 @@ export type {
 
 // Router status/telemetry types (returned by AIModel.getProviderStatus/getPoolStatus)
 export type { ProviderStatus, PoolStatus, RouteOptions } from './router.js';
+export {
+    resetEndpointHealth,
+    type ConnectivityProbe,
+    type EndpointAvailability,
+} from './endpoint-health.js';
 
 // ============================================================================
 // Types & Interfaces
@@ -221,6 +226,7 @@ export {
     looksLikeErrorPayload,
     classifyFailure,
     isConnectivityFailure,
+    isEndpointUnreachable,
     type FailureDisposition,
 } from './errors.js';
 

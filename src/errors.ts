@@ -172,3 +172,22 @@ export function isConnectivityFailure(error: unknown): boolean {
     const code = errorCode(error).toUpperCase();
     return /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR)$/.test(code);
 }
+
+/**
+ * True when the endpoint itself could not be reached: refused, reset or
+ * aborted connection, DNS failure, no route. Narrower than
+ * {@link isConnectivityFailure}: an HTTP response of any status proves the
+ * host is reachable, and a timeout is excluded because a healthy server can be
+ * slow (a long generation, a model loading). This is the signal that is safe
+ * to share between callers of the same host.
+ */
+export function isEndpointUnreachable(error: unknown): boolean {
+    if (error instanceof LLMHttpError) return false;
+    const code = errorCode(error).toUpperCase();
+    if (/^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR|FAILEDTOOPENSOCKET)$/.test(code)) {
+        return true;
+    }
+    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+    if (/timeout|timed out/.test(message)) return false;
+    return /unable to connect|connection (refused|reset|closed|error)|econnrefused|econnreset|econnaborted|enotfound|eai_again|ehostunreach|enetunreach|getaddrinfo|fetch failed|failed to fetch|socket hang up/.test(message);
+}

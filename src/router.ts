@@ -14,7 +14,16 @@
 import { BaseLLMClient } from './client.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
-import { classifyFailure, type FailureDisposition } from './errors.js';
+import { classifyFailure, isEndpointUnreachable, type FailureDisposition } from './errors.js';
+import {
+    applyEndpointAvailability,
+    defaultConnectivityProbe,
+    isEndpointDown,
+    markEndpointDown,
+    markEndpointUp,
+    type ConnectivityProbe,
+    type EndpointAvailability,
+} from './endpoint-health.js';
 import {
     DecisionContextLimitError,
     assertDecisionQuestions,
@@ -59,6 +68,12 @@ export interface ProviderEntry {
     priority: number;
     /** Override model name for this provider */
     modelOverride?: string;
+    /**
+     * External signal that this endpoint is unreachable (for example from a
+     * control plane). Shared with every router in the process; see
+     * `endpoint-health.ts`.
+     */
+    availability?: EndpointAvailability;
     /**
      * Max concurrent in-flight requests on this node (default: unlimited).
      * At the cap the node is skipped; when a whole pool is capped the request
@@ -160,6 +175,12 @@ export interface RouterConfig {
     coldProbeTimeoutMs?: number;
     /** Success-freshness window that skips the preflight (default: 60000). */
     coldProbeAfterMs?: number;
+    /** Delay between background recovery probes of an unreachable endpoint (default: 30000). */
+    endpointRecoveryAfterMs?: number;
+    /** Timeout of one recovery probe (default: 2500). */
+    endpointRecoveryProbeTimeoutMs?: number;
+    /** Recovery probe: true when anything answers. Default: a HEAD request to the endpoint URL. */
+    connectivityProbe?: ConnectivityProbe;
     /** Auditor for observability */
     auditor?: Auditor;
 }
@@ -187,6 +208,8 @@ export interface ProviderStatus {
     avgLatencyMs?: number;
     /** Latency of the most recent successful call in ms. */
     lastLatencyMs?: number;
+    /** The endpoint is known to be unreachable across the process (deferred, not removed). */
+    endpointDown: boolean;
 }
 
 /** Pool-level view for telemetry (one entry per priority tier). */
@@ -226,6 +249,9 @@ export class Router {
             saturationWaitMs: config.saturationWaitMs ?? 30000,
             coldProbeTimeoutMs: config.coldProbeTimeoutMs ?? 2500,
             coldProbeAfterMs: config.coldProbeAfterMs ?? 60000,
+            endpointRecoveryAfterMs: config.endpointRecoveryAfterMs ?? 30000,
+            endpointRecoveryProbeTimeoutMs: config.endpointRecoveryProbeTimeoutMs ?? 2500,
+            connectivityProbe: config.connectivityProbe ?? defaultConnectivityProbe,
         };
     }
 
@@ -235,6 +261,9 @@ export class Router {
 
     addProvider(entry: ProviderEntry): void {
         this.providers.push(entry);
+        if (entry.availability) {
+            applyEndpointAvailability(entry.client.url, entry.availability, this.config.endpointRecoveryAfterMs);
+        }
         this.health.set(entry.id, {
             healthy: true,
             consecutiveFailures: 0,
@@ -269,6 +298,7 @@ export class Router {
             return {
                 id: p.id,
                 healthy: this.isAvailable(p.id),
+                endpointDown: this.endpointDown(p),
                 active: true,
                 consecutiveFailures: this.health.get(p.id)?.consecutiveFailures ?? 0,
                 cooldownUntil: this.health.get(p.id)?.cooldownUntil,
@@ -370,6 +400,7 @@ export class Router {
                             return result;
                         } catch (error) {
                             lastError = error instanceof Error ? error : new Error(String(error));
+                            this.noteUnreachable(provider, lastError);
                             if (route?.signal?.aborted) throw lastError;
                             disposition = classifyFailure(lastError);
                             this.auditor.record({
@@ -476,6 +507,7 @@ export class Router {
                 error: failure.message,
                 metadata: { context, phase: 'saturation-retry' },
             });
+            this.noteUnreachable(provider, failure);
             this.recordFailure(provider.id, { cooldown: classifyFailure(failure).cooldown });
             throw failure;
         } finally {
@@ -543,6 +575,9 @@ export class Router {
                     return returnValue;
                 } catch (error) {
                     lastError = error instanceof Error ? error : new Error(String(error));
+                    // A node that already streamed events was reachable: only a failure
+                    // before the first event says anything about the endpoint.
+                    if (!emitted) this.noteUnreachable(provider, lastError);
                     // A node that already streamed events is alive — the connection
                     // dropped, the node did not. Cooling it would take the only node
                     // of a single-node chain out for cooldownMs over one blip.
@@ -1146,6 +1181,25 @@ export class Router {
         return false;
     }
 
+    /** Whether the node's endpoint is known unreachable; may start a background recovery probe. */
+    private endpointDown(provider: ProviderEntry): boolean {
+        return isEndpointDown(provider.client.url, {
+            probe: this.config.connectivityProbe,
+            timeoutMs: this.config.endpointRecoveryProbeTimeoutMs,
+            retryAfterMs: this.config.endpointRecoveryAfterMs,
+        });
+    }
+
+    /** An untried, healthy node whose endpoint is not known to be down, in any tier. */
+    private hasReachableAlternative(tried: Set<string>): boolean {
+        return this.providers.some(p => !tried.has(p.id) && this.isAvailable(p.id) && !this.endpointDown(p));
+    }
+
+    /** Share an unreachable endpoint with every router; timeouts and HTTP errors stay local. */
+    private noteUnreachable(provider: ProviderEntry, error: unknown): void {
+        if (isEndpointUnreachable(error)) markEndpointDown(provider.client.url, this.config.endpointRecoveryAfterMs);
+    }
+
     private getAvailableProviders(): ProviderEntry[] {
         return this.providers.filter(p => this.isAvailable(p.id));
     }
@@ -1216,9 +1270,14 @@ export class Router {
      * (ties broken by declaration order, already priority-sorted).
      */
     private poolCandidates(priority: number, sessionKey: string | undefined, tried: Set<string>): ProviderEntry[] {
-        const nodes = this.providers.filter(
+        const healthy = this.providers.filter(
             p => p.priority === priority && !tried.has(p.id) && this.isAvailable(p.id),
         );
+        // Defer nodes whose endpoint is known unreachable while any other node,
+        // in this tier or a later one, can take the request. When none can, they
+        // stay in: the request itself is then the probe, and nothing fails fast.
+        const reachable = healthy.filter(p => !this.endpointDown(p));
+        const nodes = reachable.length > 0 || !this.hasReachableAlternative(tried) ? (reachable.length > 0 ? reachable : healthy) : [];
         if (sessionKey && nodes.length > 1) {
             return [...nodes].sort(
                 (a, b) => Router.affinityScore(sessionKey, b.id) - Router.affinityScore(sessionKey, a.id),
@@ -1366,6 +1425,8 @@ export class Router {
     }
 
     private recordSuccess(id: string, latencyMs?: number): void {
+        const succeeded = this.providers.find(p => p.id === id);
+        if (succeeded) markEndpointUp(succeeded.client.url);
         const h = this.health.get(id);
         if (h) {
             h.healthy = true;

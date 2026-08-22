@@ -6,6 +6,7 @@ import {
     extractProviderErrorMessage,
     looksLikeErrorPayload,
     classifyFailure,
+    isEndpointUnreachable,
 } from '../errors.js';
 
 describe('error helpers', () => {
@@ -81,5 +82,22 @@ describe('classifyFailure', () => {
 
     test('unknown errors preserve retry-then-failover', () => {
         expect(classifyFailure(new Error('something weird'))).toEqual({ retry: true, cooldown: false });
+    });
+});
+
+describe('isEndpointUnreachable', () => {
+    test('refused, reset and DNS failures are unreachable, by code or message', () => {
+        expect(isEndpointUnreachable(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(true);
+        expect(isEndpointUnreachable(new Error('Unable to connect. Is the computer able to access the url?'))).toBe(true);
+        expect(isEndpointUnreachable(new Error('getaddrinfo ENOTFOUND host.test'))).toBe(true);
+        expect(isEndpointUnreachable(new Error('socket hang up'))).toBe(true);
+    });
+
+    test('timeouts and HTTP responses are not', () => {
+        expect(isEndpointUnreachable(new Error('Request timeout after 30000ms: http://host.test/v1'))).toBe(false);
+        expect(isEndpointUnreachable(Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' }))).toBe(false);
+        expect(isEndpointUnreachable(new LLMHttpError(504, 'Gateway Timeout'))).toBe(false);
+        expect(isEndpointUnreachable(new LLMHttpError(401, 'connection refused by policy'))).toBe(false);
+        expect(isEndpointUnreachable(new Error('something else'))).toBe(false);
     });
 });

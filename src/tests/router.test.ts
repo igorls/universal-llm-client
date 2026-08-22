@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { Router, type ProviderEntry } from '../router.js';
+import { resetEndpointHealth } from '../endpoint-health.js';
 import { BaseLLMClient } from '../client.js';
 import { BufferedAuditor } from '../auditor.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
@@ -63,6 +64,8 @@ class MockClient extends BaseLLMClient {
         return this.embedFn(text);
     }
 }
+
+beforeEach(() => resetEndpointHealth());
 
 // ============================================================================
 // Tests
@@ -509,5 +512,241 @@ describe("cold-node preflight", () => {
         router.addProvider({ id: "noprobe", client: node, priority: 0 } as ProviderEntry);
         await router.execute((c) => c.chat([{ role: "user", content: "hi" }]));
         expect(probes).toBe(0);
+    });
+});
+
+describe("shared endpoint circuit breaker", () => {
+    it("skips an externally known-down endpoint without a foreground probe or chat attempt", async () => {
+        let primaryChats = 0;
+        let primaryModels = 0;
+        const primary = new MockClient("cp-down", {
+            chatFn: async () => {
+                primaryChats++;
+                throw new Error("should not run");
+            },
+        });
+        primary.modelsFn = async () => {
+            primaryModels++;
+            return [];
+        };
+        const fallback = new MockClient("cp-fallback");
+        const router = new Router({ coldProbeTimeoutMs: 100, retriesPerProvider: 0 });
+        router.addProvider({
+            id: "cp-down",
+            client: primary,
+            priority: 0,
+            availability: { status: "down", checkedAt: new Date().toISOString(), retryAfterMs: 60_000 },
+        });
+        router.addProvider({ id: "cp-fallback", client: fallback, priority: 1 });
+
+        const response = await router.chat([{ role: "user", content: "hi" }]);
+        expect(response.provider).toBe("cp-fallback");
+        expect(primaryChats).toBe(0);
+        expect(primaryModels).toBe(0);
+    });
+
+    it("shares request-path connectivity failures across routers for the same endpoint", async () => {
+        let secondPrimaryCalls = 0;
+        const firstPrimary = new MockClient("shared-connectivity", {
+            chatFn: async () => {
+                throw new Error("fetch failed");
+            },
+        });
+        const secondPrimary = new MockClient("shared-connectivity", {
+            chatFn: async () => {
+                secondPrimaryCalls++;
+                return { message: { role: "assistant", content: "unexpected" }, provider: "shared-connectivity" };
+            },
+        });
+        const first = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        first.addProvider({ id: "shared-a", client: firstPrimary, priority: 0 });
+        first.addProvider({ id: "shared-a-fallback", client: new MockClient("shared-a-fallback"), priority: 1 });
+        await first.chat([{ role: "user", content: "one" }]);
+
+        const second = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        second.addProvider({ id: "shared-b", client: secondPrimary, priority: 0 });
+        second.addProvider({ id: "shared-b-fallback", client: new MockClient("shared-b-fallback"), priority: 1 });
+        const response = await second.chat([{ role: "user", content: "two" }]);
+        expect(response.provider).toBe("shared-b-fallback");
+        expect(secondPrimaryCalls).toBe(0);
+    });
+
+    it("does not share credential failures across routers", async () => {
+        const badCredential = new MockClient("shared-auth", {
+            chatFn: async () => {
+                throw new LLMHttpError(401, "bad key");
+            },
+        });
+        const validCredential = new MockClient("shared-auth");
+        const first = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        first.addProvider({ id: "auth-a", client: badCredential, priority: 0 });
+        first.addProvider({ id: "auth-a-fallback", client: new MockClient("auth-a-fallback"), priority: 1 });
+        await first.chat([{ role: "user", content: "one" }]);
+
+        const second = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        second.addProvider({ id: "auth-b", client: validCredential, priority: 0 });
+        const response = await second.chat([{ role: "user", content: "two" }]);
+        expect(response.provider).toBe("shared-auth");
+    });
+
+    it("does not share HTTP failures that prove transport reachability", async () => {
+        const failingRequest = new MockClient("shared-http", {
+            chatFn: async () => {
+                throw new LLMHttpError(504, "Gateway Timeout");
+            },
+        });
+        const healthyRequest = new MockClient("shared-http");
+        const first = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        first.addProvider({ id: "http-a", client: failingRequest, priority: 0 });
+        first.addProvider({ id: "http-a-fallback", client: new MockClient("http-a-fallback"), priority: 1 });
+        await first.chat([{ role: "user", content: "one" }]);
+
+        const second = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        second.addProvider({ id: "http-b", client: healthyRequest, priority: 0 });
+        const response = await second.chat([{ role: "user", content: "two" }]);
+        expect(response.provider).toBe("shared-http");
+    });
+
+    it("runs recovery in the background and only restores the endpoint after it succeeds", async () => {
+        let finishProbe!: (reachable: boolean) => void;
+        const probe = new Promise<boolean>((resolve) => {
+            finishProbe = resolve;
+        });
+        const router = new Router({
+            coldProbeTimeoutMs: 0,
+            retriesPerProvider: 0,
+            connectivityProbe: async () => await probe,
+        });
+        router.addProvider({
+            id: "recovering",
+            client: new MockClient("recovering"),
+            priority: 0,
+            availability: { status: "down", checkedAt: "1970-01-01T00:00:00.000Z", retryAfterMs: 0 },
+        });
+        router.addProvider({ id: "recovering-fallback", client: new MockClient("recovering-fallback"), priority: 1 });
+
+        const first = await router.chat([{ role: "user", content: "one" }]);
+        expect(first.provider).toBe("recovering-fallback");
+        finishProbe(true);
+        await new Promise((resolve) => setTimeout(resolve, 0)); // let the probe result land
+        const second = await router.chat([{ role: "user", content: "two" }]);
+        expect(second.provider).toBe("recovering");
+    });
+    it("does not share a timeout: a healthy server can be slow", async () => {
+        let secondCalls = 0;
+        const slow = new MockClient("shared-slow", {
+            chatFn: async () => {
+                throw new Error("Request timeout after 30000ms: http://mock-shared-slow/v1/chat/completions");
+            },
+        });
+        const first = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        first.addProvider({ id: "slow-a", client: slow, priority: 0 });
+        first.addProvider({ id: "slow-a-fallback", client: new MockClient("slow-a-fallback"), priority: 1 });
+        await first.chat([{ role: "user", content: "one" }]);
+
+        const second = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        second.addProvider({
+            id: "slow-b",
+            client: new MockClient("shared-slow", {
+                chatFn: async () => {
+                    secondCalls++;
+                    return { message: { role: "assistant", content: "ok" }, provider: "shared-slow" };
+                },
+            }),
+            priority: 0,
+        });
+        second.addProvider({ id: "slow-b-fallback", client: new MockClient("slow-b-fallback"), priority: 1 });
+        const response = await second.chat([{ role: "user", content: "two" }]);
+        expect(response.provider).toBe("shared-slow");
+        expect(secondCalls).toBe(1);
+    });
+
+    it("does not share a cold-probe timeout: the model may be loading", async () => {
+        const loading = new MockClient("shared-loading");
+        loading.modelsFn = () => new Promise(() => undefined);
+        const first = new Router({ coldProbeTimeoutMs: 50, retriesPerProvider: 0 });
+        first.addProvider({ id: "loading-a", client: loading, priority: 0 });
+        first.addProvider({ id: "loading-a-fallback", client: new MockClient("loading-a-fallback"), priority: 1 });
+        const fellBack = await first.chat([{ role: "user", content: "one" }]);
+        expect(fellBack.provider).toBe("loading-a-fallback");
+
+        const second = new Router({ coldProbeTimeoutMs: 50, retriesPerProvider: 0 });
+        second.addProvider({ id: "loading-b", client: new MockClient("shared-loading"), priority: 0 });
+        second.addProvider({ id: "loading-b-fallback", client: new MockClient("loading-b-fallback"), priority: 1 });
+        const response = await second.chat([{ role: "user", content: "two" }]);
+        expect(response.provider).toBe("shared-loading");
+    });
+
+    it("still sends to a down endpoint when no other node can take the request", async () => {
+        const probe = mock(async () => false);
+        const router = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0, connectivityProbe: probe });
+        router.addProvider({
+            id: "only",
+            client: new MockClient("only"),
+            priority: 0,
+            availability: { status: "down", checkedAt: new Date().toISOString(), retryAfterMs: 60_000 },
+        });
+
+        const response = await router.chat([{ role: "user", content: "hi" }]);
+        expect(response.provider).toBe("only");
+        // The answer itself restores the endpoint for every router.
+        expect(router.getStatus()[0]!.endpointDown).toBe(false);
+    });
+
+    it("prefers a reachable node in a later tier over a down one in the first", async () => {
+        let downCalls = 0;
+        const router = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0, connectivityProbe: async () => false });
+        router.addProvider({
+            id: "tier0-down",
+            client: new MockClient("tier0-down", {
+                chatFn: async () => {
+                    downCalls++;
+                    return { message: { role: "assistant", content: "x" }, provider: "tier0-down" };
+                },
+            }),
+            priority: 0,
+            availability: { status: "down", retryAfterMs: 60_000 },
+        });
+        router.addProvider({ id: "tier1-up", client: new MockClient("tier1-up"), priority: 1 });
+
+        const response = await router.chat([{ role: "user", content: "hi" }]);
+        expect(response.provider).toBe("tier1-up");
+        expect(downCalls).toBe(0);
+        expect(router.getStatus().find(s => s.id === "tier0-down")!.endpointDown).toBe(true);
+    });
+
+    it("an older external signal does not override a newer success", async () => {
+        const first = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        first.addProvider({ id: "fresh", client: new MockClient("shared-fresh"), priority: 0 });
+        await first.chat([{ role: "user", content: "one" }]);
+
+        const second = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        second.addProvider({
+            id: "stale",
+            client: new MockClient("shared-fresh"),
+            priority: 0,
+            availability: { status: "down", checkedAt: "2020-01-01T00:00:00.000Z" },
+        });
+        expect(second.getStatus()[0]!.endpointDown).toBe(false);
+    });
+
+    it("a stream that fails after its first event does not mark the endpoint down", async () => {
+        const dropping = new MockClient("shared-stream", {
+            streamFn: async function* () {
+                yield { type: "text", content: "partial" };
+                throw new Error("connection reset by peer");
+            },
+        });
+        const router = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        router.addProvider({ id: "stream-a", client: dropping, priority: 0 });
+        await expect(async () => {
+            for await (const _event of router.chatStream([{ role: "user", content: "hi" }])) {
+                // drain
+            }
+        }).toThrow("connection reset");
+
+        const other = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });
+        other.addProvider({ id: "stream-b", client: new MockClient("shared-stream"), priority: 0 });
+        expect(other.getStatus()[0]!.endpointDown).toBe(false);
     });
 });
