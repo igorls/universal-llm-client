@@ -14,7 +14,7 @@
 import { BaseLLMClient } from './client.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
-import { classifyFailure, type FailureDisposition } from './errors.js';
+import { classifyFailure, isConnectivityFailure, type FailureDisposition } from './errors.js';
 import type {
     LLMChatMessage,
     LLMChatResponse,
@@ -50,6 +50,12 @@ export interface ProviderEntry {
     priority: number;
     /** Override model name for this provider */
     modelOverride?: string;
+    /** Initial external endpoint reachability signal (for example, from a control plane). */
+    availability?: {
+        readonly status: 'down';
+        readonly checkedAt?: string;
+        readonly retryAfterMs?: number;
+    };
     /**
      * Max concurrent in-flight requests on this node (default: unlimited).
      * At the cap the node is skipped; when a whole pool is capped the request
@@ -146,8 +152,49 @@ export interface RouterConfig {
     coldProbeTimeoutMs?: number;
     /** Success-freshness window that skips the preflight (default: 60000). */
     coldProbeAfterMs?: number;
+    /** Delay between non-blocking recovery probes for a shared down endpoint. */
+    endpointRecoveryAfterMs?: number;
+    /** Timeout for the background transport-only recovery probe. */
+    endpointRecoveryProbeTimeoutMs?: number;
+    /** Test seam / runtime override for the transport-only recovery probe. */
+    connectivityProbe?: (url: string, timeoutMs: number) => Promise<boolean>;
     /** Auditor for observability */
     auditor?: Auditor;
+}
+
+interface SharedEndpointHealth {
+    down: boolean;
+    observedAt: number;
+    nextProbeAt: number;
+    probing: boolean;
+}
+
+/** Shared across every Router in the process, so per-tenant models agree on host reachability. */
+const sharedEndpointHealth = new Map<string, SharedEndpointHealth>();
+
+/** Test-only reset for the process-wide registry. */
+export function clearSharedEndpointHealthForTests(): void {
+    sharedEndpointHealth.clear();
+}
+
+function endpointKey(raw: string): string {
+    try {
+        const url = new URL(raw);
+        return url.origin.toLowerCase();
+    } catch {
+        return raw.trim().replace(/\/+$/, '').toLowerCase();
+    }
+}
+
+async function defaultConnectivityProbe(url: string, timeoutMs: number): Promise<boolean> {
+    try {
+        // Any HTTP response proves transport reachability. Authentication and
+        // quota are intentionally irrelevant to the shared endpoint breaker.
+        await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(timeoutMs) });
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 export interface ProviderStatus {
@@ -212,6 +259,9 @@ export class Router {
             saturationWaitMs: config.saturationWaitMs ?? 30000,
             coldProbeTimeoutMs: config.coldProbeTimeoutMs ?? 2500,
             coldProbeAfterMs: config.coldProbeAfterMs ?? 60000,
+            endpointRecoveryAfterMs: config.endpointRecoveryAfterMs ?? 30000,
+            endpointRecoveryProbeTimeoutMs: config.endpointRecoveryProbeTimeoutMs ?? 2500,
+            connectivityProbe: config.connectivityProbe ?? defaultConnectivityProbe,
         };
     }
 
@@ -225,6 +275,14 @@ export class Router {
             healthy: true,
             consecutiveFailures: 0,
         });
+        if (entry.availability?.status === 'down') {
+            const checkedAt = Date.parse(entry.availability.checkedAt ?? '');
+            this.markSharedEndpointDown(
+                entry,
+                Number.isFinite(checkedAt) ? checkedAt : Date.now(),
+                entry.availability.retryAfterMs ?? this.config.endpointRecoveryAfterMs,
+            );
+        }
         this.metrics.set(entry.id, {
             inflight: 0,
             requests: 0,
@@ -356,6 +414,7 @@ export class Router {
                             return result;
                         } catch (error) {
                             lastError = error instanceof Error ? error : new Error(String(error));
+                            if (isConnectivityFailure(lastError)) this.markSharedEndpointDown(provider);
                             disposition = classifyFailure(lastError);
                             this.auditor.record({
                                 timestamp: Date.now(),
@@ -460,6 +519,7 @@ export class Router {
                 error: failure.message,
                 metadata: { context, phase: 'saturation-retry' },
             });
+            if (isConnectivityFailure(failure)) this.markSharedEndpointDown(provider);
             this.recordFailure(provider.id, { cooldown: classifyFailure(failure).cooldown });
             throw failure;
         } finally {
@@ -527,6 +587,7 @@ export class Router {
                     return returnValue;
                 } catch (error) {
                     lastError = error instanceof Error ? error : new Error(String(error));
+                    if (isConnectivityFailure(lastError)) this.markSharedEndpointDown(provider);
                     this.recordFailure(provider.id, { cooldown: classifyFailure(lastError).cooldown });
 
                     if (emitted) {
@@ -1071,6 +1132,8 @@ export class Router {
     private isAvailable(id: string): boolean {
         const h = this.health.get(id);
         if (!h) return false;
+        const provider = this.providers.find(p => p.id === id);
+        if (!provider || !this.isSharedEndpointAvailable(provider)) return false;
         if (h.healthy) return true;
         // Check if cooldown has expired
         if (h.cooldownUntil && Date.now() >= h.cooldownUntil) {
@@ -1085,6 +1148,72 @@ export class Router {
 
     private getAvailableProviders(): ProviderEntry[] {
         return this.providers.filter(p => this.isAvailable(p.id));
+    }
+
+    private isSharedEndpointAvailable(provider: ProviderEntry): boolean {
+        const key = endpointKey(provider.client.url);
+        if (!key) return true;
+        const state = sharedEndpointHealth.get(key);
+        if (!state?.down) return true;
+        if (!state.probing && Date.now() >= state.nextProbeAt) {
+            this.startBackgroundRecoveryProbe(provider, key, state);
+        }
+        return false;
+    }
+
+    private startBackgroundRecoveryProbe(
+        provider: ProviderEntry,
+        key: string,
+        state: SharedEndpointHealth,
+    ): void {
+        state.probing = true;
+        void this.config.connectivityProbe(provider.client.url, this.config.endpointRecoveryProbeTimeoutMs)
+            .then((reachable) => {
+                const current = sharedEndpointHealth.get(key);
+                if (!current || current !== state) return;
+                current.probing = false;
+                current.observedAt = Date.now();
+                if (reachable) {
+                    current.down = false;
+                    current.nextProbeAt = 0;
+                    return;
+                }
+                current.nextProbeAt = Date.now() + this.config.endpointRecoveryAfterMs;
+            })
+            .catch(() => {
+                const current = sharedEndpointHealth.get(key);
+                if (!current || current !== state) return;
+                current.probing = false;
+                current.nextProbeAt = Date.now() + this.config.endpointRecoveryAfterMs;
+            });
+    }
+
+    private markSharedEndpointDown(
+        provider: ProviderEntry,
+        observedAt: number = Date.now(),
+        retryAfterMs: number = this.config.endpointRecoveryAfterMs,
+    ): void {
+        const key = endpointKey(provider.client.url);
+        if (!key) return;
+        const current = sharedEndpointHealth.get(key);
+        if (current && current.observedAt > observedAt) return;
+        sharedEndpointHealth.set(key, {
+            down: true,
+            observedAt,
+            nextProbeAt: observedAt + Math.max(0, retryAfterMs),
+            probing: false,
+        });
+    }
+
+    private markSharedEndpointUp(provider: ProviderEntry): void {
+        const key = endpointKey(provider.client.url);
+        if (!key) return;
+        sharedEndpointHealth.set(key, {
+            down: false,
+            observedAt: Date.now(),
+            nextProbeAt: 0,
+            probing: false,
+        });
     }
 
     // ========================================================================
@@ -1270,11 +1399,14 @@ export class Router {
             error: `cold-node liveness probe timed out after ${this.config.coldProbeTimeoutMs}ms`,
             metadata: { context, probe: true, retryable: false },
         });
+        this.markSharedEndpointDown(provider);
         this.recordFailure(provider.id, { cooldown: true });
         return false;
     }
 
     private recordSuccess(id: string, latencyMs?: number): void {
+        const provider = this.providers.find(p => p.id === id);
+        if (provider) this.markSharedEndpointUp(provider);
         const h = this.health.get(id);
         if (h) {
             h.healthy = true;
