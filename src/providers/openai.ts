@@ -476,6 +476,37 @@ function hasToolDefinitions(body: Record<string, unknown>): boolean {
  */
 const UNSUPPORTED_TEMPLATE_OPTIONS = new Map<string, Set<string>>();
 
+/**
+ * Server identity per endpoint, from the `owned_by` field of the `/v1/models`
+ * card. That probe already happens (context-window resolution) and is awaited
+ * before the first body is sent, so this costs nothing and is known in time to
+ * shape the FIRST request — no failed turn required to discover it.
+ */
+const ENDPOINT_SERVER = new Map<string, string>();
+
+/** `chat_template_kwargs` options a given server is known to reject outright. */
+const SERVER_TEMPLATE_OPTION_BLOCKLIST: Readonly<Record<string, readonly string[]>> = {
+    // Honours the TOP-LEVEL `reasoning_effort` and 400s on the nested copy.
+    ninfer: ['reasoning_effort'],
+};
+
+function noteEndpointServer(url: string, ownedBy: string): void {
+    const server = ownedBy.trim().toLowerCase();
+    if (server) ENDPOINT_SERVER.set(templateOptionEndpointKey(url), server);
+}
+
+/** Options to omit for this endpoint: known-server rules plus anything learned. */
+function blockedTemplateOptions(url: string): ReadonlySet<string> {
+    const key = templateOptionEndpointKey(url);
+    const learned = UNSUPPORTED_TEMPLATE_OPTIONS.get(key);
+    const server = ENDPOINT_SERVER.get(key);
+    const byServer = server ? SERVER_TEMPLATE_OPTION_BLOCKLIST[server] : undefined;
+    if (!learned?.size && !byServer?.length) return EMPTY_OPTION_SET;
+    return new Set<string>([...(byServer ?? []), ...(learned ?? [])]);
+}
+
+const EMPTY_OPTION_SET: ReadonlySet<string> = new Set<string>();
+
 function templateOptionEndpointKey(url: string): string {
     try {
         const parsed = new URL(url);
@@ -513,8 +544,8 @@ function withoutUnsupportedTemplateOptions(
     url: string,
     body: Record<string, unknown>,
 ): Record<string, unknown> {
-    const known = UNSUPPORTED_TEMPLATE_OPTIONS.get(templateOptionEndpointKey(url));
-    if (!known?.size) return body;
+    const known = blockedTemplateOptions(url);
+    if (!known.size) return body;
     const kwargs = body['chat_template_kwargs'] as Record<string, unknown> | undefined;
     if (!kwargs) return body;
     const kept: Record<string, unknown> = {};
@@ -1661,6 +1692,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                     max_model_len?: number;
                     /** xAI and some OpenAI-compat hosts advertise this field. */
                     context_length?: number;
+                    /** Server identity: 'vllm', 'ninfer', 'library' (ollama), … */
+                    owned_by?: string;
                     meta?: { n_ctx_train?: number };
                 }>;
             }>(this.buildUrl('/models'), {
@@ -1670,6 +1703,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (response.ok) {
                 const cards = response.data.data ?? [];
                 const card = cards.find(m => m.id === model) ?? cards[0];
+                // Free side-effect of a probe we already make: the card says
+                // which server this is, which decides request shape below.
+                if (card?.owned_by) noteEndpointServer(this.options.url ?? '', card.owned_by);
                 const ctx = card?.max_model_len ?? card?.context_length ?? card?.meta?.n_ctx_train;
                 if (typeof ctx === 'number' && ctx > 0) return ctx;
             }

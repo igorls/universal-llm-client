@@ -116,6 +116,40 @@ describe('chat_template_kwargs option rejection', () => {
         expect(later?.['reasoning_effort']).toBeUndefined();
     });
 
+    test('a server that identifies itself is never sent the option at all', async () => {
+        // The /v1/models probe already runs (context-window resolution) and is
+        // awaited before the first body is sent, so a self-identifying server
+        // costs ZERO failed turns — no 400 is ever produced here.
+        const bodies: Record<string, unknown>[] = [];
+        let rejections = 0;
+        globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+            if (!String(input).includes('/chat/completions')) {
+                return new Response(
+                    JSON.stringify({ data: [{ id: 'qwen3.8-27b-nvfp4', owned_by: 'ninfer', max_model_len: 262144 }] }),
+                    { status: 200, headers: { 'content-type': 'application/json' } },
+                );
+            }
+            const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+            bodies.push(body);
+            const kwargs = body['chat_template_kwargs'] as Record<string, unknown> | undefined;
+            if (kwargs?.['reasoning_effort'] !== undefined) {
+                rejections += 1;
+                return new Response(REJECTION, { status: 400, headers: { 'content-type': 'application/json' } });
+            }
+            return okCompletion();
+        }) as unknown as typeof globalThis.fetch;
+
+        const res = await client('http://ninfer-identified.test:8010/v1').chat([{ role: 'user', content: 'oi' }]);
+        expect(res.message.content).toBe('pronto');
+        expect(rejections).toBe(0);
+        expect(bodies).toHaveLength(1);
+        const kwargs = bodies[0]!['chat_template_kwargs'] as Record<string, unknown> | undefined;
+        expect(kwargs?.['reasoning_effort']).toBeUndefined();
+        // enable_thinking and the top-level effort still go out untouched.
+        expect(kwargs?.['enable_thinking']).toBe(true);
+        expect(bodies[0]!['reasoning_effort']).toBeDefined();
+    });
+
     test('an endpoint that accepts the option keeps receiving it', async () => {
         const bodies: Record<string, unknown>[] = [];
         globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
