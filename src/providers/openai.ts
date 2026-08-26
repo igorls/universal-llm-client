@@ -462,6 +462,72 @@ function hasToolDefinitions(body: Record<string, unknown>): boolean {
     return Array.isArray(tools) && tools.length > 0;
 }
 
+/**
+ * `chat_template_kwargs` options an endpoint has rejected, keyed by origin.
+ *
+ * vLLM consumes `chat_template_kwargs.reasoning_effort`; ninfer answers it with
+ * HTTP 400 `chat_template_option_not_supported` and honours the TOP-LEVEL
+ * `reasoning_effort` instead. The two are indistinguishable by URL — both are a
+ * bare host:port — so unlike the strict-host cases this capability cannot be
+ * guessed from a hostname list. It is learned once per endpoint and remembered.
+ *
+ * Dropping the nested copy is never load-bearing: the top-level field is always
+ * set alongside it.
+ */
+const UNSUPPORTED_TEMPLATE_OPTIONS = new Map<string, Set<string>>();
+
+function templateOptionEndpointKey(url: string): string {
+    try {
+        const parsed = new URL(url);
+        return `${parsed.protocol}//${parsed.host}`;
+    } catch {
+        return url;
+    }
+}
+
+/**
+ * The offending option name when `value` is a chat-template-option 400, else
+ * null. Falls back to `reasoning_effort` when the server flags the param
+ * without naming the key.
+ */
+function unsupportedChatTemplateOption(value: unknown): string | null {
+    const text = value instanceof Error
+        ? value.message
+        : typeof value === 'string'
+            ? value
+            : JSON.stringify(value ?? '');
+    if (!text.includes('chat_template_option_not_supported')) return null;
+    const named = /chat_template_kwargs\.([A-Za-z0-9_]+)/.exec(text);
+    return named?.[1] ?? 'reasoning_effort';
+}
+
+function noteUnsupportedTemplateOption(url: string, option: string): void {
+    const key = templateOptionEndpointKey(url);
+    const known = UNSUPPORTED_TEMPLATE_OPTIONS.get(key) ?? new Set<string>();
+    known.add(option);
+    UNSUPPORTED_TEMPLATE_OPTIONS.set(key, known);
+}
+
+/** Body without the `chat_template_kwargs` options this endpoint has rejected. */
+function withoutUnsupportedTemplateOptions(
+    url: string,
+    body: Record<string, unknown>,
+): Record<string, unknown> {
+    const known = UNSUPPORTED_TEMPLATE_OPTIONS.get(templateOptionEndpointKey(url));
+    if (!known?.size) return body;
+    const kwargs = body['chat_template_kwargs'] as Record<string, unknown> | undefined;
+    if (!kwargs) return body;
+    const kept: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(kwargs)) {
+        if (!known.has(name)) kept[name] = value;
+    }
+    if (Object.keys(kept).length === Object.keys(kwargs).length) return body;
+    const next = { ...body };
+    if (Object.keys(kept).length > 0) next['chat_template_kwargs'] = kept;
+    else delete next['chat_template_kwargs'];
+    return next;
+}
+
 function isVllmAutoToolChoiceError(value: unknown): boolean {
     const text = value instanceof Error
         ? value.message
@@ -486,24 +552,37 @@ async function requestWithVllmToolFallback<T>(
     tools: LLMToolDefinition[] | undefined,
     onFallback: () => void,
 ): Promise<import('../http.js').HttpResponse<T>> {
+    // Options this endpoint already rejected are dropped before we spend a
+    // request on them, so the 400 below is paid once per endpoint, not per turn.
+    const body = withoutUnsupportedTemplateOptions(url, request.body);
     try {
         return await httpRequest<T>(url, {
             method: 'POST',
             headers: request.headers,
-            body: request.body,
+            body,
             timeout: request.timeout,
         });
     } catch (error) {
+        const rejectedOption = unsupportedChatTemplateOption(error);
+        if (rejectedOption) {
+            noteUnsupportedTemplateOption(url, rejectedOption);
+            return httpRequest<T>(url, {
+                method: 'POST',
+                headers: request.headers,
+                body: withoutUnsupportedTemplateOptions(url, body),
+                timeout: request.timeout,
+            });
+        }
         if (
             tools?.length
-            && hasToolDefinitions(request.body)
+            && hasToolDefinitions(body)
             && isVllmAutoToolChoiceError(error)
         ) {
             onFallback();
             return httpRequest<T>(url, {
                 method: 'POST',
                 headers: request.headers,
-                body: withoutNativeTools(request.body, tools),
+                body: withoutNativeTools(body, tools),
                 timeout: request.timeout,
             });
         }
@@ -1125,7 +1204,9 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             function: { name: string; arguments: string };
         }> = new Map();
 
-        let activeBody = body;
+        // Pre-strip what this endpoint has already rejected, so a known-bad
+        // option costs one 400 for the process rather than one per stream.
+        let activeBody = withoutUnsupportedTemplateOptions(url, body);
         let retriedWithTextTools = false;
         // Deltas already yielded to the consumer. The vLLM tool-choice 400
         // fires pre-stream, so a retry after ANY emitted delta would replay
@@ -1320,6 +1401,18 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 // Loop-guard abort races the in-flight read — the stream was
                 // intentionally killed; salvage what streamed as a clean end.
                 if (loopGuard.detection) break;
+                // Same pre-stream shape as the tool-choice retry below: the
+                // chat-template 400 is rejected before any token is produced, so
+                // retrying cannot replay content the caller already saw.
+                const rejectedOption = unsupportedChatTemplateOption(error);
+                if (rejectedOption && emittedDeltas === 0) {
+                    noteUnsupportedTemplateOption(url, rejectedOption);
+                    const stripped = withoutUnsupportedTemplateOptions(url, activeBody);
+                    if (stripped !== activeBody) {
+                        activeBody = stripped;
+                        continue;
+                    }
+                }
                 if (
                     !retriedWithTextTools
                     && emittedDeltas === 0
