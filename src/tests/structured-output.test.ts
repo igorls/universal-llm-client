@@ -695,11 +695,9 @@ describe('Primitive Schemas', () => {
     it('converts Zod union schema', () => {
         const schema = z.union([z.string(), z.number()]);
         const jsonSchema = fromZod(schema).jsonSchema;
-        // Zod 4 native z.toJSONSchema uses anyOf for unions
-        expect(jsonSchema.anyOf).toEqual([
-            { type: 'string' },
-            { type: 'number' },
-        ]);
+        // Zod 4 native z.toJSONSchema uses anyOf or type array for primitive unions
+        const types = jsonSchema.anyOf ? (jsonSchema.anyOf as Array<{ type: string }>).map((s) => s.type) : jsonSchema.type;
+        expect(types).toEqual(['string', 'number']);
     });
 
     it('converts Zod record schema', () => {
