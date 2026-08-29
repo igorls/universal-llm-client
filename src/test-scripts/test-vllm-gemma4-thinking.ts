@@ -341,7 +341,7 @@ async function main() {
     }
 
     // -------------------------------------------------------------------------
-    section('9. Support-style turn (Concierge-ish) — thinking on vs off latency');
+    section('9. Support-style turn — thinking on vs off latency');
     const supportPrompt =
         'Visitor: How long does shipping take to São Paulo?\n' +
         'Knowledge: Standard shipping is 5-8 business days to Brazil capital cities; express is 2-3 days.\n' +

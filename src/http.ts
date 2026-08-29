@@ -22,7 +22,7 @@ export interface HttpRequestOptions {
 
 /**
  * Observer for every HTTP call this module makes (`httpRequest` + `httpStream`).
- * Used by the host (Concierge / CP request log) to capture the exact outbound
+ * Used by the host (request log) to capture the exact outbound
  * wire payload. Default is unset — zero cost. The tap must never throw.
  */
 export type LlmHttpTapPhase = 'start' | 'end' | 'error';

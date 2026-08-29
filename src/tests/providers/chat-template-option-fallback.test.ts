@@ -60,7 +60,7 @@ describe('chat_template_kwargs option rejection', () => {
             apiType: AIModelApiType.OpenAI,
             // Thinking ON is what adds the nested option in the first place —
             // the thinking-OFF path never sends it, which is exactly why the
-            // ciclo gate (thinking off) missed this and Talho (thinking on) hit it.
+            // thinking off missed this and thinking on hit it.
             thinking: 'low',
         });
     }
