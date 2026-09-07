@@ -153,6 +153,15 @@ describe('ResponsesClient', () => {
     // ========================================================================
 
     describe('model variants', () => {
+        test('legacy Ultra selections send Max without implying delegation', async () => {
+            for (const options of [{ model: 'gpt-6-astra:ultra' }, { model: 'gpt-6-astra', reasoningEffort: 'ultra' }]) {
+                const cap = mockSSE(TEXT_STREAM);
+                await createClient(options).chat([{ role: 'user', content: 'hi' }]);
+                expect(cap.body['model']).toBe('gpt-6-astra');
+                expect(cap.body['reasoning']).toMatchObject({ effort: 'max' });
+            }
+        });
+
         test('parses an effort suffix', () => {
             expect(parseModelVariant('gpt-5.2-codex:xhigh')).toEqual({ model: 'gpt-5.2-codex', effort: 'xhigh' });
         });
@@ -548,5 +557,47 @@ describe('ResponsesClient', () => {
             expect((await createClient().getModelInfo('gpt-5.2-codex')).contextLength).toBe(272000);
             expect((await createClient().getModelInfo('gpt-5.1-codex-mini')).contextLength).toBe(128000);
         });
+    });
+});
+
+describe('hosted capabilities', () => {
+    test('uses Responses auth and collects real image output without replaying function tools', async () => {
+        const cap = mockSSE([
+            { type: 'response.output_item.done', item: { id: 'img', type: 'image_generation_call', status: 'completed', result: 'image-fixture' } },
+            { type: 'response.completed', response: { status: 'completed', output: [
+                { id: 'img', type: 'image_generation_call', status: 'completed', result: 'image-fixture', size: '1254x1254' },
+            ] } },
+        ]);
+        const result = await createClient({ model: 'gpt-5.6-luna:low' }).runHostedTool('A blue circle', { type: 'image_generation', quality: 'low', size: '1024x1024', output_format: 'png' });
+        expect(cap.body['model']).toBe('gpt-5.6-luna');
+        expect(cap.body['tool_choice']).toEqual({ type: 'image_generation' });
+        expect(cap.body['store']).toBe(false);
+        expect(cap.headers['chatgpt-account-id']).toBe('acct_abc');
+        expect(result.images).toHaveLength(1);
+        expect(result.images[0]?.base64).toBe('image-fixture');
+    });
+
+    test('returns sourced search text and rejects non-web citation URLs', async () => {
+        const cap = mockSSE([
+            { type: 'response.output_item.done', item: { type: 'web_search_call', status: 'completed', action: { sources: [{ url: 'https://example.org', title: 'Example' }] } } },
+            { type: 'response.output_item.done', item: { type: 'message', content: [{ type: 'output_text', text: 'A sourced answer', annotations: [{ url: 'javascript:evil()' }] }] } },
+            { type: 'response.completed', response: { status: 'completed' } },
+        ]);
+        const result = await createClient().runHostedTool('Example', { type: 'web_search', filters: { allowed_domains: ['example.org'] } });
+        expect(cap.body['include']).toEqual(['web_search_call.action.sources']);
+        expect(result.text).toBe('A sourced answer');
+        expect(result.sources).toEqual([{ url: 'https://example.org/', title: 'Example' }]);
+    });
+
+    test('text-only completion is not successful generation', async () => {
+        mockSSE([{ type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ text: 'Here is an SVG' }] }] } }]);
+        await expect(createClient().runHostedTool('Draw', { type: 'image_generation', quality: 'low', size: '1024x1024', output_format: 'png' })).rejects.toThrow('no completed image');
+    });
+
+    test('truncated streams and quota errors remain failures', async () => {
+        mockSSE([{ type: 'response.output_item.done', item: { type: 'web_search_call', status: 'completed' } }]);
+        await expect(createClient().runHostedTool('Search', { type: 'web_search' })).rejects.toThrow('before completion');
+        mockSSE([{ type: 'response.failed', response: { error: { code: 'usage_limit_reached', message: 'quota' } } }]);
+        await expect(createClient().runHostedTool('Search', { type: 'web_search' })).rejects.toBeInstanceOf(LLMHttpError);
     });
 });

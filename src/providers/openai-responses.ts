@@ -23,6 +23,7 @@
  * It also works against `api.openai.com/v1/responses` with a plain API key.
  */
 
+import { collectHostedResult, type HostedTool, type HostedToolResult } from './responses-hosted-tools.js';
 import { BaseLLMClient } from '../client.js';
 import { httpStream, parseSSE } from '../http.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
@@ -129,7 +130,8 @@ export function parseModelVariant(model: string): { model: string; effort?: Reas
     const suffix = model.slice(idx + 1).toLowerCase();
     const efforts: readonly string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
     if (!efforts.includes(suffix)) return { model };
-    return { model: base, effort: suffix as ReasoningEffort };
+    // Ultra is a Codex orchestration preset, not a model reasoning level.
+    return { model: base, effort: suffix === 'ultra' ? 'max' : suffix as ReasoningEffort };
 }
 
 // ============================================================================
@@ -347,7 +349,7 @@ export class ResponsesClient extends BaseLLMClient {
 
         if (resolvedEffort !== 'none') {
             body['reasoning'] = {
-                effort: resolvedEffort,
+                effort: resolvedEffort === 'ultra' ? 'max' : resolvedEffort,
                 summary: this.responsesOptions.reasoningSummary ?? 'auto',
             };
         }
@@ -363,6 +365,22 @@ export class ResponsesClient extends BaseLLMClient {
         // backend rejects sampling overrides on these reasoning models, and
         // `max_output_tokens` truncates mid-tool-call rather than degrading.
         return body;
+    }
+
+    /** Execute one hosted capability without adding tools or image bytes to chat history. */
+    async runHostedTool(prompt: string, tool: HostedTool, options?: { signal?: AbortSignal }): Promise<HostedToolResult> {
+        const body = this.buildBody([
+            { role: 'system', content: 'Use the requested hosted tool. Keep your answer concise and cite web sources. Never substitute code or an SVG for image generation.' },
+            { role: 'user', content: prompt },
+        ]);
+        body['tools'] = [tool];
+        body['tool_choice'] = { type: tool.type };
+        if (tool.type === 'web_search') body['include'] = ['web_search_call.action.sources'];
+        const signal = AbortSignal.any([AbortSignal.timeout(180_000), ...(options?.signal ? [options.signal] : [])]);
+        const stream = httpStream(`${this.responsesOptions.url}/responses`, {
+            method: 'POST', headers: await this.buildHeaders(), body, timeout: 180_000, signal,
+        });
+        return collectHostedResult(parseSSE(stream), tool.type, (payload) => this.toError(payload));
     }
 
     // ========================================================================
