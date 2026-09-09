@@ -87,6 +87,7 @@ describe('httpRequest', () => {
         expect(events[1]?.phase).toBe('end');
         expect(events[1]?.status).toBe(200);
         expect(typeof events[1]?.durationMs).toBe('number');
+        expect(events[1]?.responseBody).toEqual({ ok: true });
     });
 
     it('taps streaming requests once at start and once at end', async () => {
@@ -110,6 +111,18 @@ describe('httpRequest', () => {
         expect(events.map((e) => e.phase)).toEqual(['start', 'end']);
         expect(events[0]?.stream).toBe(true);
         expect(events[0]?.body).toEqual({ stream: true, messages: [] });
+        expect(events[1]?.responseText).toBe('data: {"ok":true}\n\n');
+        expect(events[1]?.responseTruncated).toBe(false);
+    });
+
+    it('does not accumulate stream text when no tap is set', async () => {
+        setLlmHttpTap(null);
+        globalThis.fetch = mock(async () =>
+            new Response('data: {"ok":true}\n\n', { status: 200 }),
+        ) as typeof fetch;
+        const chunks: string[] = [];
+        for await (const chunk of httpStream('http://gpu.local/v1/chat/completions', { body: {} })) chunks.push(chunk);
+        expect(chunks.join('')).toContain('ok');
     });
 });
 

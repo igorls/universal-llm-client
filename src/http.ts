@@ -39,7 +39,19 @@ export interface LlmHttpTapEvent {
     readonly status?: number;
     readonly durationMs?: number;
     readonly error?: string;
+    /** Parsed JSON response of a non-streaming call; only on `end`. */
+    readonly responseBody?: unknown;
+    /** Raw accumulated wire text of a streaming call; only on `end`. */
+    readonly responseText?: string;
+    /** The streamed text exceeded the tap cap and was cut. */
+    readonly responseTruncated?: boolean;
 }
+
+/**
+ * Cap on raw streamed text kept for the tap. A 1k-token SSE reply is ~250 KB;
+ * this bounds a runaway stream so observability never becomes the leak.
+ */
+export const LLM_HTTP_TAP_STREAM_CAP = 4_000_000;
 
 export type LlmHttpTap = (event: LlmHttpTapEvent) => void;
 
@@ -174,6 +186,7 @@ export async function httpRequest<T = unknown>(
             headers: redactHeaders(headers),
             status: response.status,
             durationMs: Date.now() - started,
+            responseBody: data,
         });
 
         return {
@@ -302,13 +315,24 @@ export async function* httpStream(
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
+        // Only pay for the copy when someone is listening.
+        const capture = llmHttpTap ? { text: '', truncated: false } : null;
 
         try {
             while (true) {
                 resetIdleTimeout();
                 const { done, value } = await reader.read();
                 if (done) break;
-                yield decoder.decode(value, { stream: true });
+                const chunk = decoder.decode(value, { stream: true });
+                if (capture && !capture.truncated) {
+                    if (capture.text.length + chunk.length > LLM_HTTP_TAP_STREAM_CAP) {
+                        capture.text += chunk.slice(0, LLM_HTTP_TAP_STREAM_CAP - capture.text.length);
+                        capture.truncated = true;
+                    } else {
+                        capture.text += chunk;
+                    }
+                }
+                yield chunk;
             }
             emitTap({
                 id: tapId,
@@ -320,6 +344,7 @@ export async function* httpStream(
                 headers: redactHeaders(headers),
                 status: response.status,
                 durationMs: Date.now() - started,
+                ...(capture ? { responseText: capture.text, responseTruncated: capture.truncated } : {}),
             });
         } finally {
             clearIdleTimeout();
