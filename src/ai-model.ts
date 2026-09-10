@@ -79,6 +79,7 @@ export class AIModel {
                 client,
                 priority: providerConfig.priority ?? i,
                 modelOverride: providerConfig.model,
+                ...(providerConfig.availability ? { availability: providerConfig.availability } : {}),
                 ...(providerConfig.maxConcurrent !== undefined
                     ? { maxConcurrent: providerConfig.maxConcurrent }
                     : {}),

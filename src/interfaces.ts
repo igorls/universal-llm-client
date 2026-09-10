@@ -54,6 +54,20 @@ export interface ProviderConfig {
     /** Override model name for this specific provider */
     model?: string;
     /**
+     * External reachability signal for this endpoint. A `down` hint causes the
+     * process-wide endpoint breaker to skip foreground probes/requests until a
+     * bounded background connectivity probe succeeds. This is deliberately
+     * connectivity-only: credential, quota, and model errors must not be
+     * shared across callers that use different keys or model names.
+     */
+    availability?: {
+        readonly status: 'down';
+        /** When the external observer recorded the failure (ISO timestamp). */
+        readonly checkedAt?: string;
+        /** Delay before the first background recovery probe (default: 30000). */
+        readonly retryAfterMs?: number;
+    };
+    /**
      * Per-provider context-window override (tokens). Falls back to
      * {@link AIModelConfig.contextLength}. See
      * {@link LLMClientOptions.contextLength} for the mapping (Ollama num_ctx).
