@@ -219,7 +219,7 @@ export function applyGemmaDualModeRequestDefaults(input: {
     // Anti-runaway without killing CoT diversity.
     // OFF: slightly stronger (stops freestyle "thoughtthought…" spam).
     // ON: gentler so intermediate reasoning can restate premises.
-    if (body['repetition_penalty'] === undefined) {
+    if (body['repetition_penalty'] === undefined && endpointAcceptsRepetitionPenalty(input.url)) {
         body['repetition_penalty'] = thinkingOn ? 1.05 : 1.1;
     }
 
@@ -294,7 +294,7 @@ export function applyQwenRequestDefaults(input: {
 
     // Cross-turn anti-copy (see the note above). Gentler with thinking ON so
     // intermediate reasoning can still restate premises.
-    if (body['repetition_penalty'] === undefined) {
+    if (body['repetition_penalty'] === undefined && endpointAcceptsRepetitionPenalty(input.url)) {
         body['repetition_penalty'] = thinkingOn ? 1.05 : 1.1;
     }
 
@@ -490,6 +490,42 @@ const SERVER_TEMPLATE_OPTION_BLOCKLIST: Readonly<Record<string, readonly string[
     ninfer: ['reasoning_effort'],
 };
 
+/**
+ * Servers that reject a non-neutral `repetition_penalty` with HTTP 400 (ninfer
+ * has no sampler transform for it and accepts only 1). The family defaults
+ * below add one when the caller did not, so on these servers every such
+ * request failed and a failover chain silently moved the load elsewhere.
+ */
+const SERVERS_WITHOUT_REPETITION_PENALTY: ReadonlySet<string> = new Set(['ninfer']);
+
+/** Endpoints that answered a `repetition_penalty` with a 400, learned once and remembered. */
+const ENDPOINTS_WITHOUT_REPETITION_PENALTY = new Set<string>();
+
+/**
+ * False when the endpoint identified itself as, or already proved to be, a
+ * server that rejects `repetition_penalty`.
+ */
+function endpointAcceptsRepetitionPenalty(url: string | undefined): boolean {
+    if (!url) return true;
+    const key = templateOptionEndpointKey(url);
+    if (ENDPOINTS_WITHOUT_REPETITION_PENALTY.has(key)) return false;
+    const server = ENDPOINT_SERVER.get(key);
+    return !(server && SERVERS_WITHOUT_REPETITION_PENALTY.has(server));
+}
+
+/** True when `value` is a server's 400 refusing `repetition_penalty`. */
+function isRepetitionPenaltyRejection(value: unknown): boolean {
+    const text = value instanceof Error ? value.message : typeof value === 'string' ? value : JSON.stringify(value ?? '');
+    return /repetition_penalty_not_supported|"param"\s*:\s*"repetition_penalty"/.test(text);
+}
+
+/** `body` without `repetition_penalty` when this endpoint cannot take one; the same object otherwise. */
+function withoutRejectedSampling(url: string, body: Record<string, unknown>): Record<string, unknown> {
+    if (body['repetition_penalty'] === undefined || endpointAcceptsRepetitionPenalty(url)) return body;
+    const { repetition_penalty: _dropped, ...rest } = body;
+    return rest;
+}
+
 function noteEndpointServer(url: string, ownedBy: string): void {
     const server = ownedBy.trim().toLowerCase();
     if (server) ENDPOINT_SERVER.set(templateOptionEndpointKey(url), server);
@@ -585,7 +621,7 @@ async function requestWithVllmToolFallback<T>(
 ): Promise<import('../http.js').HttpResponse<T>> {
     // Options this endpoint already rejected are dropped before we spend a
     // request on them, so the 400 below is paid once per endpoint, not per turn.
-    const body = withoutUnsupportedTemplateOptions(url, request.body);
+    const body = withoutRejectedSampling(url, withoutUnsupportedTemplateOptions(url, request.body));
     try {
         return await httpRequest<T>(url, {
             method: 'POST',
@@ -601,6 +637,15 @@ async function requestWithVllmToolFallback<T>(
                 method: 'POST',
                 headers: request.headers,
                 body: withoutUnsupportedTemplateOptions(url, body),
+                timeout: request.timeout,
+            });
+        }
+        if (body['repetition_penalty'] !== undefined && isRepetitionPenaltyRejection(error)) {
+            ENDPOINTS_WITHOUT_REPETITION_PENALTY.add(templateOptionEndpointKey(url));
+            return httpRequest<T>(url, {
+                method: 'POST',
+                headers: request.headers,
+                body: withoutRejectedSampling(url, body),
                 timeout: request.timeout,
             });
         }
@@ -1237,7 +1282,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         // Pre-strip what this endpoint has already rejected, so a known-bad
         // option costs one 400 for the process rather than one per stream.
-        let activeBody = withoutUnsupportedTemplateOptions(url, body);
+        let activeBody = withoutRejectedSampling(url, withoutUnsupportedTemplateOptions(url, body));
         let retriedWithTextTools = false;
         // Deltas already yielded to the consumer. The vLLM tool-choice 400
         // fires pre-stream, so a retry after ANY emitted delta would replay
@@ -1443,6 +1488,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                         activeBody = stripped;
                         continue;
                     }
+                }
+                if (emittedDeltas === 0 && activeBody['repetition_penalty'] !== undefined && isRepetitionPenaltyRejection(error)) {
+                    ENDPOINTS_WITHOUT_REPETITION_PENALTY.add(templateOptionEndpointKey(url));
+                    activeBody = withoutRejectedSampling(url, activeBody);
+                    continue;
                 }
                 if (
                     !retriedWithTextTools
