@@ -173,6 +173,66 @@ describe('Router', () => {
         });
     });
 
+    describe('single-node chains survive a dropped connection', () => {
+        // A headless agent on one self-hosted node lost its socket mid-turn; the
+        // node was cooled for cooldownMs and every retry inside that window threw
+        // "No available LLM providers" — one blip became an outage of the only node.
+        it('does not cool down a node that already streamed events', async () => {
+            let calls = 0;
+            const client = new MockClient('solo', {
+                async *streamFn() {
+                    calls++;
+                    yield { type: 'text', content: 'partial' } as DecodedEvent;
+                    if (calls === 1) throw new Error('The socket connection was closed unexpectedly');
+                    return { message: { role: 'assistant' as const, content: 'ok' }, provider: 'solo' };
+                },
+            });
+            const r = new Router({ retriesPerProvider: 1, maxFailures: 5, cooldownMs: 60_000 });
+            r.addProvider({ id: 'solo', client, priority: 0 });
+
+            const first = r.chatStream([{ role: 'user', content: 'x' }]);
+            await expect((async () => { for await (const _ of first) { /* drain */ } })()).rejects.toThrow('socket');
+            expect(r.getStatus()[0]!.healthy).toBe(true); // it was alive: it streamed
+
+            const events: DecodedEvent[] = [];
+            for await (const e of r.chatStream([{ role: 'user', content: 'y' }])) events.push(e);
+            expect(events).toHaveLength(1);
+        });
+
+        it('panic-routes to the soonest-recovering node when every node is cooling down', async () => {
+            let calls = 0;
+            const client = new MockClient('solo', {
+                chatFn: async () => {
+                    calls++;
+                    if (calls === 1) throw new Error('fetch failed'); // connectivity → cooldown
+                    return { message: { role: 'assistant' as const, content: 'back' }, provider: 'solo' };
+                },
+            });
+            const r = new Router({ auditor, retriesPerProvider: 0, maxFailures: 5, cooldownMs: 60_000 });
+            r.addProvider({ id: 'solo', client, priority: 0 });
+
+            await expect(r.chat([{ role: 'user', content: '1' }])).rejects.toThrow('fetch failed');
+            expect(r.getStatus()[0]!.healthy).toBe(false);
+
+            const res = await r.chat([{ role: 'user', content: '2' }]);
+            expect(res.message.content).toBe('back');
+            expect(auditor.getEvents().some(e => e.metadata?.['phase'] === 'panic')).toBe(true);
+        });
+
+        it('still prefers a healthy node over a cooling one', async () => {
+            let aCalls = 0;
+            const a = new MockClient('a', { chatFn: async () => { aCalls++; throw new Error('fetch failed'); } });
+            const b = new MockClient('b');
+            const r = new Router({ retriesPerProvider: 0, maxFailures: 5, cooldownMs: 60_000 });
+            r.addProvider({ id: 'a', client: a, priority: 0 });
+            r.addProvider({ id: 'b', client: b, priority: 1 });
+
+            await r.chat([{ role: 'user', content: '1' }]); // a → cooldown, b serves
+            await r.chat([{ role: 'user', content: '2' }]); // a skipped, no panic
+            expect(aCalls).toBe(1);
+        });
+    });
+
     describe('health tracking', () => {
         it('marks unhealthy after max failures', async () => {
             const failing = new MockClient('fail', {

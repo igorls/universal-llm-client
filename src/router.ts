@@ -313,7 +313,7 @@ export class Router {
         context: string = 'execute',
         route?: RouteOptions,
     ): Promise<T> {
-        if (this.getAvailableProviders().length === 0) {
+        if (!this.ensureAnyAvailable(context)) {
             throw new Error('No available LLM providers. All providers are unhealthy or in cooldown.');
         }
 
@@ -482,7 +482,7 @@ export class Router {
         context: string = 'stream',
         route?: RouteOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
-        if (this.getAvailableProviders().length === 0) {
+        if (!this.ensureAnyAvailable(context)) {
             throw new Error('No available LLM providers for streaming.');
         }
 
@@ -527,7 +527,10 @@ export class Router {
                     return returnValue;
                 } catch (error) {
                     lastError = error instanceof Error ? error : new Error(String(error));
-                    this.recordFailure(provider.id, { cooldown: classifyFailure(lastError).cooldown });
+                    // A node that already streamed events is alive — the connection
+                    // dropped, the node did not. Cooling it would take the only node
+                    // of a single-node chain out for cooldownMs over one blip.
+                    this.recordFailure(provider.id, { cooldown: !emitted && classifyFailure(lastError).cooldown });
 
                     if (emitted) {
                         // Past the first-token boundary — re-streaming elsewhere would
@@ -1085,6 +1088,34 @@ export class Router {
 
     private getAvailableProviders(): ProviderEntry[] {
         return this.providers.filter(p => this.isAvailable(p.id));
+    }
+
+    /**
+     * Panic routing. Cooldown exists to skip a broken node in favor of a healthy
+     * one; when EVERY node is cooling there is no healthy one to prefer, and
+     * rejecting outright turns a single blip on a single-node chain into an
+     * outage for the whole cooldown. Re-admit the node whose cooldown ends
+     * soonest instead. Returns false only when no providers are configured.
+     */
+    private ensureAnyAvailable(context: string): boolean {
+        if (this.getAvailableProviders().length > 0) return true;
+        let soonest: { id: string; until: number } | undefined;
+        for (const p of this.providers) {
+            const until = this.health.get(p.id)?.cooldownUntil ?? 0;
+            if (!soonest || until < soonest.until) soonest = { id: p.id, until };
+        }
+        if (!soonest) return false;
+        const h = this.health.get(soonest.id)!;
+        h.healthy = true;
+        h.consecutiveFailures = 0;
+        h.cooldownUntil = undefined;
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'failover',
+            provider: soonest.id,
+            metadata: { context, phase: 'panic', cooldownRemainingMs: Math.max(0, soonest.until - Date.now()) },
+        });
+        return true;
     }
 
     // ========================================================================
