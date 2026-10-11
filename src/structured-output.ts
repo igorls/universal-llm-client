@@ -171,10 +171,13 @@ export class StructuredOutputError extends Error {
         this.rawOutput = options.rawOutput;
         this.cause = options.cause;
 
-        // Maintains proper stack trace for where error was thrown (only available in V8)
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, StructuredOutputError);
-        }
+        // Maintains proper stack trace for where error was thrown (only available in V8).
+        // Typed locally: it is a V8 extension, not part of the ES lib, and this package
+        // does not load Node's ambient types.
+        const V8Error = Error as ErrorConstructor & {
+            captureStackTrace?: (target: object, constructorOpt?: abstract new (...args: never[]) => unknown) => void;
+        };
+        V8Error.captureStackTrace?.(this, StructuredOutputError);
     }
 }
 
