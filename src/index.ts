@@ -19,6 +19,7 @@ export {
     applyGemmaDualModeRequestDefaults,
     isQwen3ModelId,
     isQwen36PlusModelId,
+    isServedModelAlias,
     applyQwenRequestDefaults,
 } from './providers/openai.js';
 

@@ -635,6 +635,12 @@ export interface LLMChatResponse<T = unknown> {
     /** Which provider served this response */
     provider?: string;
     /**
+     * The model id the server reported for this call, when it reports one.
+     * Differs from the requested name when that name is an alias such as
+     * `default`, which a server answers with whichever model it loaded.
+     */
+    model?: string;
+    /**
      * Validated structured output when `output` parameter is provided to chat().
      * This is the same type as inferred from the schema provided in `output.schema`.
      * 

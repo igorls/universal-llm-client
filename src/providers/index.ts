@@ -10,6 +10,7 @@ export {
     applyGemmaDualModeRequestDefaults,
     isQwen3ModelId,
     isQwen36PlusModelId,
+    isServedModelAlias,
     applyQwenRequestDefaults,
 } from './openai.js';
 export { GoogleClient } from './google.js';

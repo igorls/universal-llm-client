@@ -183,6 +183,18 @@ export function isQwen36PlusModelId(model: string): boolean {
 }
 
 /**
+ * True for the reserved request name `default`, which NInfer accepts for
+ * whichever model the server loaded. The name says nothing about the model
+ * family, so family rules must key off the id the server reports instead.
+ */
+export function isServedModelAlias(model: string | undefined): boolean {
+    return model?.trim().toLowerCase() === 'default';
+}
+
+/** How long a failed served-model lookup is trusted before the next call asks again. */
+const SERVED_MODEL_RETRY_MS = 30_000;
+
+/**
  * Dual-mode Gemma request defaults for OpenAI-compatible servers (vLLM).
  *
  * Goals (live Canvas incident + Google/vLLM docs):
@@ -927,7 +939,54 @@ export class OpenAICompatibleClient extends BaseLLMClient {
      * with `gemmaNativeProtocol` in LLMClientOptions.
      */
     private get gemmaNative(): boolean {
-        return this.options.gemmaNativeProtocol ?? isGemmaDiffusionModel(this.options.model);
+        return this.options.gemmaNativeProtocol ?? isGemmaDiffusionModel(this.familyModel);
+    }
+
+    /** The id the server reported behind `default`: first from `/models`, then from each response. */
+    private servedModelId: string | undefined;
+    private servedModelLookup: Promise<void> | undefined;
+    private servedModelLookupFailedAt = 0;
+
+    /**
+     * The model id that family rules (sampling, thinking, vision, Gemma
+     * parsing, output bounds) key off. For `default` that is the served id;
+     * until it is known, the configured name, which matches no family.
+     */
+    private get familyModel(): string {
+        return isServedModelAlias(this.options.model)
+            ? this.servedModelId ?? this.options.model
+            : this.options.model;
+    }
+
+    /**
+     * Learn the served id behind `default` from `/models` (`data[0]` is the
+     * served model). One lookup in flight per client; a failed lookup is not
+     * repeated for {@link SERVED_MODEL_RETRY_MS}.
+     */
+    private async resolveServedModel(): Promise<void> {
+        if (!isServedModelAlias(this.options.model) || this.servedModelId) return;
+        if (Date.now() - this.servedModelLookupFailedAt < SERVED_MODEL_RETRY_MS) return;
+        this.servedModelLookup ??= this.getModels()
+            .then(ids => {
+                const id = ids.find(candidate => !isServedModelAlias(candidate));
+                if (id) this.servedModelId = id;
+                else this.servedModelLookupFailedAt = Date.now();
+            })
+            .finally(() => {
+                this.servedModelLookup = undefined;
+            });
+        await this.servedModelLookup;
+    }
+
+    /**
+     * Track the id a response reports for `default`, so swapping the model on
+     * the server takes effect from the next call without a restart.
+     */
+    private noteServedModel(reported: unknown): void {
+        if (!isServedModelAlias(this.options.model)) return;
+        if (typeof reported !== 'string') return;
+        const id = reported.trim();
+        if (id && !isServedModelAlias(id)) this.servedModelId = id;
     }
 
     /**
@@ -993,6 +1052,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         const url = this.buildUrl('/chat/completions');
         const tools = options?.tools;
+        await this.resolveServedModel();
 
         const body: Record<string, unknown> = {
             model: this.options.model,
@@ -1005,7 +1065,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const omitWireFormat = shouldOmitResponseFormatWire({
             omitResponseFormat: this.options.omitResponseFormat,
             url: this.options.url,
-            model: this.options.model,
+            model: this.familyModel,
         });
         if (!omitWireFormat) {
             const schemaOptions = this.extractSchemaOptions(options);
@@ -1042,7 +1102,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             timestamp: start,
             type: 'request',
             provider: 'openai',
-            model: this.options.model,
+            model: this.familyModel,
         });
 
         const response = await requestWithVllmToolFallback<OpenAIResponse>(
@@ -1060,6 +1120,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
 
         const data = response.data;
         const choice = data.choices[0];
+        this.noteServedModel(data.model);
 
         if (!choice) {
             throw new Error('No choices returned from OpenAI API');
@@ -1114,7 +1175,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                     function: { name: tc.name, arguments: tc.argumentsJson },
                 }));
             }
-        } else if (isGemmaModelId(this.options.model) && content) {
+        } else if (isGemmaModelId(this.familyModel) && content) {
             // Autoregressive Gemma-4 on vLLM without `--reasoning-parser gemma4`
             // embeds the thought channel in `content`. Split it so callers get
             // clean answers + reasoning (same contract as the stream path).
@@ -1165,13 +1226,14 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             usage,
             finishReason: choice.finish_reason,
             provider: 'openai',
+            ...(typeof data.model === 'string' && data.model && { model: data.model }),
         };
 
         this.auditor.record({
             timestamp: Date.now(),
             type: 'response',
             provider: 'openai',
-            model: this.options.model,
+            model: this.familyModel,
             duration: Date.now() - start,
             usage,
         });
@@ -1190,6 +1252,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const url = this.buildUrl('/chat/completions');
         const tools = options?.tools;
         const knownToolNames = new Set(tools?.map(tool => tool.function.name) ?? []);
+        await this.resolveServedModel();
 
         const body: Record<string, unknown> = {
             model: this.options.model,
@@ -1226,7 +1289,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             timestamp: start,
             type: 'stream_start',
             provider: 'openai',
-            model: this.options.model,
+            model: this.familyModel,
         });
 
         // Client-side runaway protection: feed every streamed delta (content
@@ -1294,6 +1357,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         let lastFinishReason: string | undefined;
 
         let usage: TokenUsageInfo | undefined;
+        // The model id the server reports on its chunks (the served id behind `default`).
+        let reportedModel: string | undefined;
         // Accumulates reasoning deltas from servers that stream a dedicated
         // `reasoning` / `reasoning_content` field (vLLM, DeepSeek-R1, etc.).
         let reasoningBuffer = '';
@@ -1347,7 +1412,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                                     cached_tokens?: number;
                                 };
                             };
+                            model?: string;
                         };
+
+                        if (typeof parsed.model === 'string' && parsed.model) {
+                            reportedModel = parsed.model;
+                            this.noteServedModel(parsed.model);
+                        }
 
                         if (parsed.usage) {
                             usage = {
@@ -1538,7 +1609,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             timestamp: Date.now(),
             type: 'stream_end',
             provider: 'openai',
-            model: this.options.model,
+            model: this.familyModel,
             duration: Date.now() - start,
             usage,
         });
@@ -1610,6 +1681,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             reasoning,
             usage,
             provider: 'openai',
+            ...(reportedModel && { model: reportedModel }),
             // Consumers can tell a guard-aborted turn from a natural stop and
             // e.g. nudge the model instead of trusting the truncated output.
             // The natural finish_reason ('length' etc.) flows through so the
@@ -1774,7 +1846,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         thinking?: { readonly enabled: boolean; readonly level?: string },
     ): void {
         const family = {
-            model: this.options.model,
+            model: this.familyModel,
             url: this.options.url,
             body,
             thinking,
@@ -1800,7 +1872,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         tools: LLMToolDefinition[] | undefined,
     ): Promise<void> {
         if (body['max_tokens'] != null || body['max_completion_tokens'] != null) return;
-        const window = await this.resolveKnownContextLength(this.options.model);
+        const window = await this.resolveKnownContextLength(this.familyModel);
         if (!window) return;
         const promptChars = JSON.stringify(messages).length + (tools?.length ? JSON.stringify(tools).length : 0);
         const promptEstimate = Math.ceil(promptChars / 4);
@@ -1814,7 +1886,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         const FLOOR = thinkingOn ? 2_048 : 256;
         const bound = Math.max(FLOOR, Math.min(CAP, window - promptEstimate - MARGIN));
         // OpenAI reasoning models reject `max_tokens` — use `max_completion_tokens`.
-        if (isOpenAIReasoningModel(this.options.model) && isStrictOpenAICompatHost(this.options.url)) {
+        if (isOpenAIReasoningModel(this.familyModel) && isStrictOpenAICompatHost(this.options.url)) {
             body['max_completion_tokens'] = bound;
         } else {
             body['max_tokens'] = bound;
@@ -1822,7 +1894,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     }
 
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
-        const model = modelName ?? this.options.model;
+        let model = modelName ?? this.options.model;
+        // `default` carries no family: describe the served model behind it, and
+        // cache by that id so a model swap on the server is described afresh.
+        if (isServedModelAlias(model) && isServedModelAlias(this.options.model)) {
+            await this.resolveServedModel();
+            model = this.familyModel;
+        }
         const known = knownOpenAICompatModelInfo(this.options.url, model);
         if (known) return known;
 
@@ -1872,12 +1950,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             if (params['reasoning_effort'] === undefined && params['disable_reasoning'] === undefined) {
                 if (thinking) {
                     params['reasoning_effort'] = thinking.enabled ? cerebrasReasoningEffort(thinking.level) : 'none';
-                } else if (usesGemmaCerebrasReasoningDefault(this.options.model)) {
+                } else if (usesGemmaCerebrasReasoningDefault(this.familyModel)) {
                     params['reasoning_effort'] = 'medium';
                 }
             }
         } else if (thinking) {
-            if (isOpenAIReasoningModel(this.options.model)) {
+            if (isOpenAIReasoningModel(this.familyModel)) {
                 if (params['reasoning_effort'] === undefined) {
                     params['reasoning_effort'] = thinking.enabled ? (thinking.level ?? 'medium') : 'minimal';
                 }
@@ -1896,7 +1974,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         // endpoints (api.openai.com, …) reject several /v1/chat/completions params
         // with HTTP 400. Normalize the ones we may have set — all share one
         // predicate (reasoning model AND strict host):
-        if (isOpenAIReasoningModel(this.options.model) && isStrictOpenAICompatHost(this.options.url)) {
+        if (isOpenAIReasoningModel(this.familyModel) && isStrictOpenAICompatHost(this.options.url)) {
             // (a) `max_tokens` is unsupported on these models — rename to
             //     `max_completion_tokens` ("Unsupported parameter: 'max_tokens' …
             //     Use 'max_completion_tokens' instead.").
