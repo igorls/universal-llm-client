@@ -24,6 +24,7 @@
  */
 
 import { collectHostedResult, type HostedTool, type HostedToolResult } from './responses-hosted-tools.js';
+import { TextToolCallGuard, type TextToolCallVerdict } from './responses-text-tool-calls.js';
 import { BaseLLMClient } from '../client.js';
 import { httpStream, parseSSE } from '../http.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
@@ -412,6 +413,12 @@ export class ResponsesClient extends BaseLLMClient {
         let pendingReasoning: ResponsesInputItem[] = [];
         /** function_call arguments accumulated per output item. */
         const argAccum = new Map<string, { callId: string; name: string; args: string }>();
+        /** Holds back message text that opens like a tool call written as text. */
+        const textGuard = new TextToolCallGuard(
+            new Set((options?.tools ?? []).map(tool => this.toWireToolName(tool.function.name))),
+        );
+        /** Well-formed calls recovered from message text, settled once the stream ends. */
+        const recoveredCalls: LLMToolCall[] = [];
 
         const stream = httpStream(url, {
             method: 'POST',
@@ -438,9 +445,10 @@ export class ResponsesClient extends BaseLLMClient {
             switch (type) {
                 case 'response.output_text.delta': {
                     const delta = typeof payload['delta'] === 'string' ? payload['delta'] : '';
-                    if (delta) {
-                        text += delta;
-                        yield { type: 'text', content: delta };
+                    const visible = delta ? textGuard.push(this.itemKey(payload), delta) : '';
+                    if (visible) {
+                        text += visible;
+                        yield { type: 'text', content: visible };
                     }
                     break;
                 }
@@ -479,6 +487,15 @@ export class ResponsesClient extends BaseLLMClient {
                 case 'response.output_item.done': {
                     const item = payload['item'] as Record<string, unknown> | undefined;
                     if (!item) break;
+
+                    if (item['type'] === 'message') {
+                        const released = this.settleMessageText(textGuard.end(this.itemKey(payload, item)), recoveredCalls);
+                        if (released) {
+                            text += released;
+                            yield { type: 'text', content: released };
+                        }
+                        break;
+                    }
 
                     if (item['type'] === 'reasoning') {
                         // Hold it until we know which tool call it belongs to.
@@ -548,6 +565,30 @@ export class ResponsesClient extends BaseLLMClient {
             }
         }
 
+        // A message whose `output_item.done` never arrived still settles.
+        for (const key of textGuard.openKeys()) {
+            const released = this.settleMessageText(textGuard.end(key), recoveredCalls);
+            if (released) {
+                text += released;
+                yield { type: 'text', content: released };
+            }
+        }
+
+        // A recovered call is only a fallback. When the model also made the
+        // real call to that tool in this response, the text was a failed first
+        // attempt, and running both would repeat the action.
+        const realCallNames = new Set(toolCalls.map(call => call.function.name));
+        for (const call of recoveredCalls) {
+            if (realCallNames.has(call.function.name)) {
+                console.debug(`[openai-responses] Dropped the text-written ${call.function.name} call; the model also made it properly`);
+                continue;
+            }
+            console.debug(`[openai-responses] Recovered the text-written ${call.function.name} call`);
+            toolCalls.push(call);
+            if (finishReason === undefined || finishReason === 'stop') finishReason = 'tool_calls';
+            yield { type: 'tool_call', calls: [call] };
+        }
+
         const message: LLMChatMessage = {
             role: 'assistant',
             content: text,
@@ -561,6 +602,30 @@ export class ResponsesClient extends BaseLLMClient {
             ...(usage ? { usage, lastCallUsage: usage } : {}),
             provider: 'openai-responses',
         };
+    }
+
+    /**
+     * Settle one finished message item. Returns the held text to show, or ''
+     * when the item was a tool call written as text: that text never reaches
+     * the caller, and a well-formed call joins `recovered` under a fresh id
+     * (no reasoning item is pinned to it, since the server never issued it).
+     */
+    private settleMessageText(verdict: TextToolCallVerdict, recovered: LLMToolCall[]): string {
+        if (verdict.kind === 'release') return verdict.text;
+
+        const { leak } = verdict;
+        const preview = leak.text.replace(/\s+/g, ' ').trim().slice(0, 160);
+        const name = leak.call ? this.toolNameAliases.get(leak.call.name) ?? leak.call.name : undefined;
+        console.debug(
+            `[openai-responses] Withheld a tool call written as message text (${name ?? 'malformed'}): ${preview}`,
+        );
+        if (!leak.call || !name) return '';
+        recovered.push({
+            id: this.generateToolCallId(),
+            type: 'function',
+            function: { name, arguments: leak.call.arguments },
+        });
+        return '';
     }
 
     /**
