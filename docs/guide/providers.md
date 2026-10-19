@@ -210,7 +210,24 @@ const response = await model.chat(messages, {
   // ... other options
 });
 ```
-When enabled, the client emits appropriate `cache_control` markers for supported Claude models.
+When enabled, the client sets a system-prefix breakpoint, checkpoints the last
+two assistant messages, and sets top-level
+`cache_control: { type: 'ephemeral' }`. Anthropic automatically advances the latter
+over the growing conversation. The assistant checkpoints preserve history reuse
+when a harness replaces temporary context at the end of each request. These use
+at most four cache slots altogether. The default cache lifetime is five minutes;
+model-specific minimum prompt sizes still apply. Passing `false` omits all markers.
+
+`usage.inputTokens` includes uncached input, cache reads and cache writes.
+`usage.cachedTokens` reports reads, and `usage.cacheWriteTokens` reports writes;
+both are already included in `inputTokens`. Missing counters remain absent, rather
+than being reported as measured misses. Streaming counters are cumulative snapshots.
+See [Anthropic's prompt caching guide](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+
+For the Responses transport, `ChatOptions.conversationId` supplies the conversation
+routing headers for one request. It overrides the constructor default without
+mutating the shared client, so concurrent chats retain separate routing values.
+This is distinct from `sessionKey`, which only controls local router affinity.
 
 ### Structured Output & Thinking
 Recent Claude 4.x models have improving native schema enforcement. The library always performs final validation. Thinking / reasoning is surfaced via the standard `reasoning` field and `DecodedEvent` stream events.

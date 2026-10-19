@@ -26,7 +26,7 @@ interface Captured {
 /** Mock an SSE response built from Responses-API event frames. */
 function mockSSE(events: Array<Record<string, unknown>>): Captured {
     const cap: Captured = { url: '', headers: {}, body: {} };
-    const payload = events.map(e => `event: ${String(e['type'])}\ndata: ${JSON.stringify(e)}\n\n`).join('');
+    const payload = events.map((e) => `event: ${String(e['type'])}\ndata: ${JSON.stringify(e)}\n\n`).join('');
 
     globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
         cap.url = String(input);
@@ -141,9 +141,39 @@ describe('ResponsesClient', () => {
             expect(cap.headers['conversation_id']).toBe('conv_42');
         });
 
+        test('per-call conversation routing is isolated across concurrent chats', async () => {
+            const captures: Array<{ input: string; session: string; conversation: string }> = [];
+            const payload = TEXT_STREAM.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('');
+            globalThis.fetch = mock(async (_input, init) => {
+                const body = JSON.parse(String(init?.body));
+                const headers = init?.headers as Record<string, string>;
+                captures.push({
+                    input: body.input[0].content[0].text,
+                    session: headers['session_id']!,
+                    conversation: headers['conversation_id']!,
+                });
+                return new Response(payload, { headers: { 'content-type': 'text/event-stream' } });
+            }) as typeof fetch;
+            const shared = createClient({ conversationId: 'boot-default' });
+            await Promise.all(
+                ['chat-a', 'chat-b'].map((conversationId) =>
+                    shared.chat([{ role: 'user', content: conversationId }], { conversationId } as any),
+                ),
+            );
+            expect(captures.sort((a, b) => a.input.localeCompare(b.input))).toEqual([
+                { input: 'chat-a', session: 'chat-a', conversation: 'chat-a' },
+                { input: 'chat-b', session: 'chat-b', conversation: 'chat-b' },
+            ]);
+            await shared.chat([{ role: 'user', content: 'fallback' }]);
+            expect(captures.at(-1)?.session).toBe('boot-default');
+        });
+
         test('throws before hitting the network when no token is available', async () => {
             const cap = mockSSE(TEXT_STREAM);
-            const client = new ResponsesClient({ model: 'gpt-5.2-codex', authResolver: async () => ({ accessToken: '' }) });
+            const client = new ResponsesClient({
+                model: 'gpt-5.2-codex',
+                authResolver: async () => ({ accessToken: '' }),
+            });
 
             await expect(client.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(LLMProviderError);
             expect(cap.url).toBe('');
@@ -154,7 +184,10 @@ describe('ResponsesClient', () => {
 
     describe('model variants', () => {
         test('legacy Ultra selections send Max without implying delegation', async () => {
-            for (const options of [{ model: 'gpt-6-astra:ultra' }, { model: 'gpt-6-astra', reasoningEffort: 'ultra' }]) {
+            for (const options of [
+                { model: 'gpt-6-astra:ultra' },
+                { model: 'gpt-6-astra', reasoningEffort: 'ultra' },
+            ]) {
                 const cap = mockSSE(TEXT_STREAM);
                 await createClient(options).chat([{ role: 'user', content: 'hi' }]);
                 expect(cap.body['model']).toBe('gpt-6-astra');
@@ -268,7 +301,9 @@ describe('ResponsesClient', () => {
                 {
                     role: 'assistant',
                     content: '',
-                    tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"p":"a.ts"}' } }],
+                    tool_calls: [
+                        { id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"p":"a.ts"}' } },
+                    ],
                 },
                 { role: 'tool', tool_call_id: 'call_1', content: 'file contents' },
             ];
@@ -293,27 +328,31 @@ describe('ResponsesClient', () => {
             ]);
 
             const input = cap.body['input'] as Array<Record<string, unknown>>;
-            expect(input.filter(i => i['role'] === 'assistant')).toHaveLength(0);
+            expect(input.filter((i) => i['role'] === 'assistant')).toHaveLength(0);
         });
 
         test('tool schemas are flattened out of the function wrapper', async () => {
             const cap = mockSSE(TEXT_STREAM);
-            const tools: LLMToolDefinition[] = [{
-                type: 'function',
-                function: {
+            const tools: LLMToolDefinition[] = [
+                {
+                    type: 'function',
+                    function: {
+                        name: 'read_file',
+                        description: 'Read a file',
+                        parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+                    },
+                },
+            ];
+            await createClient().chat([{ role: 'user', content: 'hi' }], { tools });
+
+            expect(cap.body['tools']).toEqual([
+                {
+                    type: 'function',
                     name: 'read_file',
                     description: 'Read a file',
                     parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
                 },
-            }];
-            await createClient().chat([{ role: 'user', content: 'hi' }], { tools });
-
-            expect(cap.body['tools']).toEqual([{
-                type: 'function',
-                name: 'read_file',
-                description: 'Read a file',
-                parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
-            }]);
+            ]);
         });
     });
 
@@ -340,7 +379,7 @@ describe('ResponsesClient', () => {
             ]);
             const { events, result } = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }]));
 
-            expect(events.filter(e => e.type === 'thinking')).toEqual([
+            expect(events.filter((e) => e.type === 'thinking')).toEqual([
                 { type: 'thinking', content: 'Plan: ' },
                 { type: 'thinking', content: 'read the file' },
             ]);
@@ -365,10 +404,18 @@ describe('ResponsesClient', () => {
             ]);
             const { events, result } = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }]));
 
-            expect(events).toEqual([{
-                type: 'tool_call',
-                calls: [{ id: 'call_9', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }],
-            }]);
+            expect(events).toEqual([
+                {
+                    type: 'tool_call',
+                    calls: [
+                        {
+                            id: 'call_9',
+                            type: 'function',
+                            function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+                        },
+                    ],
+                },
+            ]);
             const response = result as { message: LLMChatMessage; finishReason?: string };
             expect(response.message.tool_calls).toHaveLength(1);
             expect(response.finishReason).toBe('tool_calls');
@@ -385,7 +432,13 @@ describe('ResponsesClient', () => {
                 {
                     type: 'response.output_item.done',
                     output_index: 0,
-                    item: { id: 'fc_1', type: 'function_call', call_id: 'c1', name: 'ls', arguments: '{"truncated":false}' },
+                    item: {
+                        id: 'fc_1',
+                        type: 'function_call',
+                        call_id: 'c1',
+                        name: 'ls',
+                        arguments: '{"truncated":false}',
+                    },
                 },
                 { type: 'response.completed', response: {} },
             ]);
@@ -425,10 +478,13 @@ describe('ResponsesClient', () => {
 
         test('ignores unparseable keep-alive frames', async () => {
             const cap = { url: '' };
-            globalThis.fetch = mock(async () => new Response(
-                'data: \n\n' + 'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
-                { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
-            )) as typeof fetch;
+            globalThis.fetch = mock(
+                async () =>
+                    new Response('data: \n\n' + 'data: {"type":"response.output_text.delta","delta":"ok"}\n\n', {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    }),
+            ) as typeof fetch;
             void cap;
 
             const { events } = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }]));
@@ -506,7 +562,7 @@ describe('ResponsesClient', () => {
             ]);
 
             const input = cap.body['input'] as Array<Record<string, unknown>>;
-            expect(input.some(i => i['type'] === 'reasoning')).toBe(false);
+            expect(input.some((i) => i['type'] === 'reasoning')).toBe(false);
         });
     });
 
@@ -534,14 +590,18 @@ describe('ResponsesClient', () => {
         test('an expired token becomes a 401', async () => {
             mockSSE([{ type: 'error', error: { code: 'invalid_token', message: 'token expired' } }]);
 
-            const error = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }])).catch((e: unknown) => e);
+            const error = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }])).catch(
+                (e: unknown) => e,
+            );
             expect((error as LLMHttpError).status).toBe(401);
         });
 
         test('other failures stay provider errors', async () => {
             mockSSE([{ type: 'response.failed', response: { error: { code: 'server_error', message: 'boom' } } }]);
 
-            const error = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }])).catch((e: unknown) => e);
+            const error = await drain(createClient().chatStream([{ role: 'user', content: 'hi' }])).catch(
+                (e: unknown) => e,
+            );
             expect(error).toBeInstanceOf(LLMProviderError);
         });
     });
@@ -563,12 +623,32 @@ describe('ResponsesClient', () => {
 describe('hosted capabilities', () => {
     test('uses Responses auth and collects real image output without replaying function tools', async () => {
         const cap = mockSSE([
-            { type: 'response.output_item.done', item: { id: 'img', type: 'image_generation_call', status: 'completed', result: 'image-fixture' } },
-            { type: 'response.completed', response: { status: 'completed', output: [
-                { id: 'img', type: 'image_generation_call', status: 'completed', result: 'image-fixture', size: '1254x1254' },
-            ] } },
+            {
+                type: 'response.output_item.done',
+                item: { id: 'img', type: 'image_generation_call', status: 'completed', result: 'image-fixture' },
+            },
+            {
+                type: 'response.completed',
+                response: {
+                    status: 'completed',
+                    output: [
+                        {
+                            id: 'img',
+                            type: 'image_generation_call',
+                            status: 'completed',
+                            result: 'image-fixture',
+                            size: '1254x1254',
+                        },
+                    ],
+                },
+            },
         ]);
-        const result = await createClient({ model: 'gpt-5.6-luna:low' }).runHostedTool('A blue circle', { type: 'image_generation', quality: 'low', size: '1024x1024', output_format: 'png' });
+        const result = await createClient({ model: 'gpt-5.6-luna:low' }).runHostedTool('A blue circle', {
+            type: 'image_generation',
+            quality: 'low',
+            size: '1024x1024',
+            output_format: 'png',
+        });
         expect(cap.body['model']).toBe('gpt-5.6-luna');
         expect(cap.body['tool_choice']).toEqual({ type: 'image_generation' });
         expect(cap.body['store']).toBe(false);
@@ -579,25 +659,59 @@ describe('hosted capabilities', () => {
 
     test('returns sourced search text and rejects non-web citation URLs', async () => {
         const cap = mockSSE([
-            { type: 'response.output_item.done', item: { type: 'web_search_call', status: 'completed', action: { sources: [{ url: 'https://example.org', title: 'Example' }] } } },
-            { type: 'response.output_item.done', item: { type: 'message', content: [{ type: 'output_text', text: 'A sourced answer', annotations: [{ url: 'javascript:evil()' }] }] } },
+            {
+                type: 'response.output_item.done',
+                item: {
+                    type: 'web_search_call',
+                    status: 'completed',
+                    action: { sources: [{ url: 'https://example.org', title: 'Example' }] },
+                },
+            },
+            {
+                type: 'response.output_item.done',
+                item: {
+                    type: 'message',
+                    content: [
+                        { type: 'output_text', text: 'A sourced answer', annotations: [{ url: 'javascript:evil()' }] },
+                    ],
+                },
+            },
             { type: 'response.completed', response: { status: 'completed' } },
         ]);
-        const result = await createClient().runHostedTool('Example', { type: 'web_search', filters: { allowed_domains: ['example.org'] } });
+        const result = await createClient().runHostedTool('Example', {
+            type: 'web_search',
+            filters: { allowed_domains: ['example.org'] },
+        });
         expect(cap.body['include']).toEqual(['web_search_call.action.sources']);
         expect(result.text).toBe('A sourced answer');
         expect(result.sources).toEqual([{ url: 'https://example.org/', title: 'Example' }]);
     });
 
     test('text-only completion is not successful generation', async () => {
-        mockSSE([{ type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ text: 'Here is an SVG' }] }] } }]);
-        await expect(createClient().runHostedTool('Draw', { type: 'image_generation', quality: 'low', size: '1024x1024', output_format: 'png' })).rejects.toThrow('no completed image');
+        mockSSE([
+            {
+                type: 'response.completed',
+                response: { status: 'completed', output: [{ type: 'message', content: [{ text: 'Here is an SVG' }] }] },
+            },
+        ]);
+        await expect(
+            createClient().runHostedTool('Draw', {
+                type: 'image_generation',
+                quality: 'low',
+                size: '1024x1024',
+                output_format: 'png',
+            }),
+        ).rejects.toThrow('no completed image');
     });
 
     test('truncated streams and quota errors remain failures', async () => {
         mockSSE([{ type: 'response.output_item.done', item: { type: 'web_search_call', status: 'completed' } }]);
-        await expect(createClient().runHostedTool('Search', { type: 'web_search' })).rejects.toThrow('before completion');
+        await expect(createClient().runHostedTool('Search', { type: 'web_search' })).rejects.toThrow(
+            'before completion',
+        );
         mockSSE([{ type: 'response.failed', response: { error: { code: 'usage_limit_reached', message: 'quota' } } }]);
-        await expect(createClient().runHostedTool('Search', { type: 'web_search' })).rejects.toBeInstanceOf(LLMHttpError);
+        await expect(createClient().runHostedTool('Search', { type: 'web_search' })).rejects.toBeInstanceOf(
+            LLMHttpError,
+        );
     });
 });

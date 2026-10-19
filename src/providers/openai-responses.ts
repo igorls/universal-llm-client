@@ -132,7 +132,7 @@ export function parseModelVariant(model: string): { model: string; effort?: Reas
     const efforts: readonly string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
     if (!efforts.includes(suffix)) return { model };
     // Ultra is a Codex orchestration preset, not a model reasoning level.
-    return { model: base, effort: suffix === 'ultra' ? 'max' : suffix as ReasoningEffort };
+    return { model: base, effort: suffix === 'ultra' ? 'max' : (suffix as ReasoningEffort) };
 }
 
 // ============================================================================
@@ -165,7 +165,7 @@ export class ResponsesClient extends BaseLLMClient {
     // Request Assembly
     // ========================================================================
 
-    private async buildHeaders(): Promise<Record<string, string>> {
+    private async buildHeaders(callConversationId?: string): Promise<Record<string, string>> {
         const auth = this.responsesOptions.authResolver
             ? await this.responsesOptions.authResolver()
             : { accessToken: this.responsesOptions.apiKey ?? '' };
@@ -185,7 +185,7 @@ export class ResponsesClient extends BaseLLMClient {
         if (auth.accountId) headers['chatgpt-account-id'] = auth.accountId;
         if (this.responsesOptions.originator) headers['originator'] = this.responsesOptions.originator;
         // Prompt caching is keyed off these; omitting them costs cache hits, not correctness.
-        const conversationId = this.responsesOptions.conversationId;
+        const conversationId = callConversationId ?? this.responsesOptions.conversationId;
         if (conversationId) {
             headers['session_id'] = conversationId;
             headers['conversation_id'] = conversationId;
@@ -214,7 +214,9 @@ export class ResponsesClient extends BaseLLMClient {
                 parts.push({ type: 'input_image', image_url: part.image_url.url });
             } else if (!this.warnedUnsupportedPart) {
                 this.warnedUnsupportedPart = true;
-                console.warn('[openai-responses] Dropping unsupported content part: audio is not part of the Responses API');
+                console.warn(
+                    '[openai-responses] Dropping unsupported content part: audio is not part of the Responses API',
+                );
             }
         }
         return parts;
@@ -235,12 +237,19 @@ export class ResponsesClient extends BaseLLMClient {
                 // order). With an override, it stays inline as a developer item so
                 // the caller's prompt is not silently dropped.
                 if (!override) {
-                    const text = typeof message.content === 'string'
-                        ? message.content
-                        : this.toContentParts(message.content, 'developer').map(p => p.text ?? '').join('\n');
+                    const text =
+                        typeof message.content === 'string'
+                            ? message.content
+                            : this.toContentParts(message.content, 'developer')
+                                  .map((p) => p.text ?? '')
+                                  .join('\n');
                     if (text) hoisted.push(text);
                 } else {
-                    input.push({ type: 'message', role: 'developer', content: this.toContentParts(message.content, 'developer') });
+                    input.push({
+                        type: 'message',
+                        role: 'developer',
+                        content: this.toContentParts(message.content, 'developer'),
+                    });
                 }
                 continue;
             }
@@ -251,16 +260,19 @@ export class ResponsesClient extends BaseLLMClient {
                     console.warn('[openai-responses] Dropping tool message with no tool_call_id');
                     continue;
                 }
-                const output = typeof message.content === 'string'
-                    ? message.content
-                    : this.toContentParts(message.content, 'user').map(p => p.text ?? '').join('\n');
+                const output =
+                    typeof message.content === 'string'
+                        ? message.content
+                        : this.toContentParts(message.content, 'user')
+                              .map((p) => p.text ?? '')
+                              .join('\n');
                 input.push({ type: 'function_call_output', call_id: callId, output });
                 continue;
             }
 
             if (message.role === 'assistant') {
                 const parts = this.toContentParts(message.content, 'assistant');
-                const hasText = parts.some(p => (p.text ?? '').length > 0);
+                const hasText = parts.some((p) => (p.text ?? '').length > 0);
                 if (hasText) {
                     input.push({ type: 'message', role: 'assistant', content: parts });
                 }
@@ -319,7 +331,7 @@ export class ResponsesClient extends BaseLLMClient {
     /** Flatten `{type:'function', function:{…}}` into the Responses tool shape. */
     private toTools(tools: readonly LLMToolDefinition[] | undefined): ResponsesFunctionTool[] | undefined {
         if (!tools?.length) return undefined;
-        return tools.map(tool => ({
+        return tools.map((tool) => ({
             type: 'function' as const,
             name: this.toWireToolName(tool.function.name),
             description: tool.function.description,
@@ -331,8 +343,7 @@ export class ResponsesClient extends BaseLLMClient {
         const { model, effort } = parseModelVariant(this.responsesOptions.model ?? 'gpt-5.2-codex');
         const { input, instructions } = this.toInput(messages);
 
-        const resolvedEffort: ReasoningEffort =
-            effort ?? this.responsesOptions.reasoningEffort ?? 'medium';
+        const resolvedEffort: ReasoningEffort = effort ?? this.responsesOptions.reasoningEffort ?? 'medium';
 
         const body: Record<string, unknown> = {
             model,
@@ -369,9 +380,17 @@ export class ResponsesClient extends BaseLLMClient {
     }
 
     /** Execute one hosted capability without adding tools or image bytes to chat history. */
-    async runHostedTool(prompt: string, tool: HostedTool, options?: { signal?: AbortSignal }): Promise<HostedToolResult> {
+    async runHostedTool(
+        prompt: string,
+        tool: HostedTool,
+        options?: { signal?: AbortSignal },
+    ): Promise<HostedToolResult> {
         const body = this.buildBody([
-            { role: 'system', content: 'Use the requested hosted tool. Keep your answer concise and cite web sources. Never substitute code or an SVG for image generation.' },
+            {
+                role: 'system',
+                content:
+                    'Use the requested hosted tool. Keep your answer concise and cite web sources. Never substitute code or an SVG for image generation.',
+            },
             { role: 'user', content: prompt },
         ]);
         body['tools'] = [tool];
@@ -379,7 +398,11 @@ export class ResponsesClient extends BaseLLMClient {
         if (tool.type === 'web_search') body['include'] = ['web_search_call.action.sources'];
         const signal = AbortSignal.any([AbortSignal.timeout(180_000), ...(options?.signal ? [options.signal] : [])]);
         const stream = httpStream(`${this.responsesOptions.url}/responses`, {
-            method: 'POST', headers: await this.buildHeaders(), body, timeout: 180_000, signal,
+            method: 'POST',
+            headers: await this.buildHeaders(),
+            body,
+            timeout: 180_000,
+            signal,
         });
         return collectHostedResult(parseSSE(stream), tool.type, (payload) => this.toError(payload));
     }
@@ -394,7 +417,7 @@ export class ResponsesClient extends BaseLLMClient {
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         const url = `${this.responsesOptions.url}/responses`;
         const body = this.buildBody(messages, options);
-        const headers = await this.buildHeaders();
+        const headers = await this.buildHeaders(options?.conversationId);
         const start = Date.now();
 
         this.auditor.record({
@@ -415,7 +438,7 @@ export class ResponsesClient extends BaseLLMClient {
         const argAccum = new Map<string, { callId: string; name: string; args: string }>();
         /** Holds back message text that opens like a tool call written as text. */
         const textGuard = new TextToolCallGuard(
-            new Set((options?.tools ?? []).map(tool => this.toWireToolName(tool.function.name))),
+            new Set((options?.tools ?? []).map((tool) => this.toWireToolName(tool.function.name))),
         );
         /** Well-formed calls recovered from message text, settled once the stream ends. */
         const recoveredCalls: LLMToolCall[] = [];
@@ -489,7 +512,10 @@ export class ResponsesClient extends BaseLLMClient {
                     if (!item) break;
 
                     if (item['type'] === 'message') {
-                        const released = this.settleMessageText(textGuard.end(this.itemKey(payload, item)), recoveredCalls);
+                        const released = this.settleMessageText(
+                            textGuard.end(this.itemKey(payload, item)),
+                            recoveredCalls,
+                        );
                         if (released) {
                             text += released;
                             yield { type: 'text', content: released };
@@ -513,16 +539,17 @@ export class ResponsesClient extends BaseLLMClient {
                     if (item['type'] === 'function_call') {
                         const key = this.itemKey(payload, item);
                         const entry = argAccum.get(key);
-                        const callId = typeof item['call_id'] === 'string' ? item['call_id'] : entry?.callId ?? key;
-                        const wireName = typeof item['name'] === 'string' ? item['name'] : entry?.name ?? '';
+                        const callId = typeof item['call_id'] === 'string' ? item['call_id'] : (entry?.callId ?? key);
+                        const wireName = typeof item['name'] === 'string' ? item['name'] : (entry?.name ?? '');
                         // Hand the caller the name it registered, not the
                         // sanitized wire name it has never heard of.
                         const name = this.toolNameAliases.get(wireName) ?? wireName;
                         // The done event carries the complete arguments; fall back
                         // to the accumulated deltas when it doesn't.
-                        const args = typeof item['arguments'] === 'string' && item['arguments']
-                            ? item['arguments']
-                            : entry?.args ?? '';
+                        const args =
+                            typeof item['arguments'] === 'string' && item['arguments']
+                                ? item['arguments']
+                                : (entry?.args ?? '');
                         argAccum.delete(key);
 
                         for (const reasoningItem of pendingReasoning) {
@@ -577,10 +604,12 @@ export class ResponsesClient extends BaseLLMClient {
         // A recovered call is only a fallback. When the model also made the
         // real call to that tool in this response, the text was a failed first
         // attempt, and running both would repeat the action.
-        const realCallNames = new Set(toolCalls.map(call => call.function.name));
+        const realCallNames = new Set(toolCalls.map((call) => call.function.name));
         for (const call of recoveredCalls) {
             if (realCallNames.has(call.function.name)) {
-                console.debug(`[openai-responses] Dropped the text-written ${call.function.name} call; the model also made it properly`);
+                console.debug(
+                    `[openai-responses] Dropped the text-written ${call.function.name} call; the model also made it properly`,
+                );
                 continue;
             }
             console.debug(`[openai-responses] Recovered the text-written ${call.function.name} call`);
@@ -615,7 +644,7 @@ export class ResponsesClient extends BaseLLMClient {
 
         const { leak } = verdict;
         const preview = leak.text.replace(/\s+/g, ' ').trim().slice(0, 160);
-        const name = leak.call ? this.toolNameAliases.get(leak.call.name) ?? leak.call.name : undefined;
+        const name = leak.call ? (this.toolNameAliases.get(leak.call.name) ?? leak.call.name) : undefined;
         console.debug(
             `[openai-responses] Withheld a tool call written as message text (${name ?? 'malformed'}): ${preview}`,
         );

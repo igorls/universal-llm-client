@@ -62,7 +62,7 @@ interface AnthropicToolUseBlock {
 
 interface AnthropicToolResultBlock {
     readonly type: 'tool_result';
-    readonly tool_call_id: string;
+    readonly tool_use_id: string;
     readonly content: string | AnthropicTextBlock[];
 }
 
@@ -72,12 +72,13 @@ interface AnthropicThinkingBlock {
     readonly signature: string;
 }
 
-type AnthropicContentBlock =
+type AnthropicContentBlock = (
     | AnthropicTextBlock
     | AnthropicImageBlock
     | AnthropicToolUseBlock
     | AnthropicToolResultBlock
-    | AnthropicThinkingBlock;
+    | AnthropicThinkingBlock
+) & { readonly cache_control?: { readonly type: 'ephemeral' } };
 
 /** Anthropic message format */
 interface AnthropicMessage {
@@ -101,21 +102,29 @@ interface AnthropicRequest {
     readonly model: string;
     readonly messages: AnthropicMessage[];
     readonly max_tokens: number;
-    readonly system?: string | Array<{
-        type: 'text';
-        text: string;
-        cache_control?: { type: 'ephemeral' };
-    }>;
+    readonly cache_control?: { readonly type: 'ephemeral' };
+    readonly system?:
+        | string
+        | Array<{
+              type: 'text';
+              text: string;
+              cache_control?: { type: 'ephemeral' };
+          }>;
     readonly tools?: AnthropicToolDef[];
     readonly tool_choice?: { readonly type: 'auto' | 'any' | 'tool'; readonly name?: string };
     readonly stream?: boolean;
     readonly temperature?: number;
-    readonly thinking?:
-        | { readonly type: 'enabled'; readonly budget_tokens: number }
-        | { readonly type: 'disabled' };
+    readonly thinking?: { readonly type: 'enabled'; readonly budget_tokens: number } | { readonly type: 'disabled' };
 }
 
-/** Anthropic non-streaming response */
+/** Anthropic usage counters; input_tokens excludes cache reads and writes. */
+interface AnthropicUsage {
+    readonly input_tokens: number;
+    readonly output_tokens: number;
+    readonly cache_read_input_tokens?: number;
+    readonly cache_creation_input_tokens?: number;
+}
+
 interface AnthropicResponse {
     readonly id: string;
     readonly type: 'message';
@@ -123,10 +132,7 @@ interface AnthropicResponse {
     readonly content: AnthropicContentBlock[];
     readonly model: string;
     readonly stop_reason: 'end_turn' | 'max_tokens' | 'stop_sequence' | 'tool_use' | null;
-    readonly usage: {
-        readonly input_tokens: number;
-        readonly output_tokens: number;
-    };
+    readonly usage: AnthropicUsage;
 }
 
 /** Anthropic model from models list */
@@ -173,9 +179,7 @@ interface StreamMessageDelta {
         readonly stop_reason: string | null;
         readonly stop_sequence?: string | null;
     };
-    readonly usage: {
-        readonly output_tokens: number;
-    };
+    readonly usage: Partial<AnthropicUsage>;
 }
 
 interface StreamMessageStop {
@@ -227,9 +231,11 @@ export class AnthropicClient extends BaseLLMClient {
     override async chat(
         messages: LLMChatMessage[],
         options?: ChatOptions,
+        callOptions?: ChatOptions,
     ): Promise<LLMChatResponse> {
+        const resolvedOptions = callOptions ?? options;
         const url = `${this.baseUrl}/v1/messages`;
-        const body = this.buildRequestBody(messages, options, false);
+        const body = this.buildRequestBody(messages, resolvedOptions, false);
 
         const start = Date.now();
         this.auditor.record({
@@ -243,6 +249,7 @@ export class AnthropicClient extends BaseLLMClient {
             method: 'POST',
             headers: this.buildAnthropicHeaders(),
             body,
+            signal: resolvedOptions?.signal,
             timeout: this.options.timeout ?? 60000,
         });
 
@@ -268,9 +275,11 @@ export class AnthropicClient extends BaseLLMClient {
     override async *chatStream(
         messages: LLMChatMessage[],
         options?: ChatOptions,
+        callOptions?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+        const resolvedOptions = callOptions ?? options;
         const url = `${this.baseUrl}/v1/messages`;
-        const body = this.buildRequestBody(messages, options, true);
+        const body = this.buildRequestBody(messages, resolvedOptions, true);
 
         const start = Date.now();
         this.auditor.record({
@@ -283,23 +292,27 @@ export class AnthropicClient extends BaseLLMClient {
         const decoder = new StandardChatDecoder(() => {});
 
         // Track content blocks as they stream in
-        const contentBlocks: Map<number, {
-            type: string;
-            text: string;
-            toolId?: string;
-            toolName?: string;
-            inputJson?: string;
-            thinking?: string;
-            signature?: string;
-        }> = new Map();
+        const contentBlocks: Map<
+            number,
+            {
+                type: string;
+                text: string;
+                toolId?: string;
+                toolName?: string;
+                inputJson?: string;
+                thinking?: string;
+                signature?: string;
+            }
+        > = new Map();
 
         let usage: TokenUsageInfo | undefined;
-        let inputTokens = 0;
+        let rawUsage: Partial<AnthropicUsage> = {};
 
         const stream = httpStream(url, {
             method: 'POST',
             headers: this.buildAnthropicHeaders(),
             body,
+            signal: resolvedOptions?.signal,
             timeout: this.options.timeout ?? 120000,
         });
 
@@ -309,7 +322,8 @@ export class AnthropicClient extends BaseLLMClient {
 
                 switch (event.type) {
                     case 'message_start': {
-                        inputTokens = event.message.usage?.input_tokens ?? 0;
+                        rawUsage = { ...event.message.usage };
+                        usage = this.toUsage(rawUsage);
                         break;
                     }
 
@@ -369,12 +383,9 @@ export class AnthropicClient extends BaseLLMClient {
                     }
 
                     case 'message_delta': {
-                        const outputTokens = event.usage?.output_tokens ?? 0;
-                        usage = {
-                            inputTokens,
-                            outputTokens,
-                            totalTokens: inputTokens + outputTokens,
-                        };
+                        // Delta counters are cumulative snapshots, not additions.
+                        rawUsage = { ...rawUsage, ...event.usage };
+                        usage = this.toUsage(rawUsage);
                         break;
                     }
 
@@ -449,14 +460,10 @@ export class AnthropicClient extends BaseLLMClient {
                 headers: this.buildAnthropicHeaders(),
                 timeout: 5000,
             });
-            return response.data.data.map(m => m.id);
+            return response.data.data.map((m) => m.id);
         } catch {
             // Fallback: return well-known Claude models
-            return [
-                'claude-sonnet-4-20250514',
-                'claude-haiku-4-20250514',
-                'claude-opus-4-20250514',
-            ];
+            return ['claude-sonnet-4-20250514', 'claude-haiku-4-20250514', 'claude-opus-4-20250514'];
         }
     }
 
@@ -465,8 +472,12 @@ export class AnthropicClient extends BaseLLMClient {
         const model = _modelName ?? this.options.model;
 
         // Claude 4 models have 200K context
-        if (model.includes('claude-4') || model.includes('claude-opus') ||
-            model.includes('claude-sonnet') || model.includes('claude-haiku')) {
+        if (
+            model.includes('claude-4') ||
+            model.includes('claude-opus') ||
+            model.includes('claude-sonnet') ||
+            model.includes('claude-haiku')
+        ) {
             return {
                 model,
                 contextLength: 200_000,
@@ -491,16 +502,18 @@ export class AnthropicClient extends BaseLLMClient {
         stream: boolean,
     ): AnthropicRequest {
         // Extract system prompt from messages
-        const systemMessages = messages.filter(m => m.role === 'system');
-        const nonSystemMessages = messages.filter(m => m.role !== 'system');
+        const systemMessages = messages.filter((m) => m.role === 'system');
+        const nonSystemMessages = messages.filter((m) => m.role !== 'system');
 
-        const systemPrompt = systemMessages.length > 0
-            ? systemMessages
-                .map(m => typeof m.content === 'string' ? m.content : this.extractText(m.content))
-                .join('\n\n')
-            : undefined;
+        const systemPrompt =
+            systemMessages.length > 0
+                ? systemMessages
+                      .map((m) => (typeof m.content === 'string' ? m.content : this.extractText(m.content)))
+                      .join('\n\n')
+                : undefined;
 
-        // Prompt caching support (Anthropic-specific, high impact for long system prompts / RAG)
+        // Cache both the stable system prefix and growing conversation. Automatic
+        // caching moves the last breakpoint forward without rewriting history.
         let system: AnthropicRequest['system'] = systemPrompt;
         if (options?.enablePromptCaching && systemPrompt) {
             system = [
@@ -513,10 +526,9 @@ export class AnthropicClient extends BaseLLMClient {
         }
 
         // Convert tools from OpenAI format to Anthropic format
-        const tools = options?.tools ?? (
-            Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined
-        );
-        const anthropicTools = tools?.map(t => this.convertToolDef(t));
+        const tools =
+            options?.tools ?? (Object.keys(this.toolRegistry).length > 0 ? this.getToolDefinitions() : undefined);
+        const anthropicTools = tools?.map((t) => this.convertToolDef(t));
 
         // Map tool_choice
         let toolChoice: AnthropicRequest['tool_choice'];
@@ -540,17 +552,39 @@ export class AnthropicClient extends BaseLLMClient {
         const budget = thinkingOn ? anthropicThinkingBudget(thinking?.level, requestedMax) : 0;
         const maxTokens = thinkingOn ? Math.max(requestedMax, budget + 1024) : requestedMax;
 
+        const conversation = this.convertMessages(nonSystemMessages);
+        if (options?.enablePromptCaching) {
+            // Per-turn runtime context may be replaced instead of retained in
+            // history. Checkpoint assistant prefixes BEFORE that volatile tail.
+            // Keep the latest two so a rewritten/merged last reply can fall back
+            // one boundary. System + two history + automatic = at most 4 slots.
+            let remaining = 2;
+            for (let i = conversation.length - 1; i >= 0 && remaining > 0; i--) {
+                const message = conversation[i]!;
+                if (message.role !== 'assistant' || !Array.isArray(message.content)) continue;
+                for (let j = message.content.length - 1; j >= 0; j--) {
+                    const block = message.content[j]!;
+                    // Thinking blocks cannot carry an explicit cache marker.
+                    if (block.type === 'thinking') continue;
+                    message.content[j] = { ...block, cache_control: { type: 'ephemeral' } };
+                    remaining--;
+                    break;
+                }
+            }
+        }
+
         const body: AnthropicRequest = {
-            model: this.options.model,
-            messages: this.convertMessages(nonSystemMessages),
+            model: options?.model ?? this.options.model,
+            messages: conversation,
             max_tokens: maxTokens,
             ...(system && { system }),
+            ...(options?.enablePromptCaching ? { cache_control: { type: 'ephemeral' as const } } : {}),
             ...(anthropicTools?.length && { tools: anthropicTools }),
             ...(toolChoice && { tool_choice: toolChoice }),
             ...(stream && { stream: true }),
             ...(thinkingOn
                 ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
-                : (options?.temperature !== undefined && { temperature: options.temperature })),
+                : options?.temperature !== undefined && { temperature: options.temperature }),
         };
 
         return body;
@@ -578,9 +612,7 @@ export class AnthropicClient extends BaseLLMClient {
                 const blocks: AnthropicContentBlock[] = [];
 
                 // Add text content if present
-                const text = typeof msg.content === 'string'
-                    ? msg.content
-                    : this.extractText(msg.content);
+                const text = typeof msg.content === 'string' ? msg.content : this.extractText(msg.content);
                 if (text) {
                     blocks.push({ type: 'text', text });
                 }
@@ -610,10 +642,8 @@ export class AnthropicClient extends BaseLLMClient {
                 // Anthropic needs tool results inside user messages
                 const toolResultBlock: AnthropicToolResultBlock = {
                     type: 'tool_result',
-                    tool_call_id: msg.tool_call_id ?? '',
-                    content: typeof msg.content === 'string'
-                        ? msg.content
-                        : this.extractText(msg.content),
+                    tool_use_id: msg.tool_call_id ?? '',
+                    content: typeof msg.content === 'string' ? msg.content : this.extractText(msg.content),
                 };
 
                 // Collect consecutive tool results
@@ -623,10 +653,9 @@ export class AnthropicClient extends BaseLLMClient {
                     const nextMsg = messages[i]!;
                     toolResults.push({
                         type: 'tool_result',
-                        tool_call_id: nextMsg.tool_call_id ?? '',
-                        content: typeof nextMsg.content === 'string'
-                            ? nextMsg.content
-                            : this.extractText(nextMsg.content),
+                        tool_use_id: nextMsg.tool_call_id ?? '',
+                        content:
+                            typeof nextMsg.content === 'string' ? nextMsg.content : this.extractText(nextMsg.content),
                     });
                 }
 
@@ -750,11 +779,7 @@ export class AnthropicClient extends BaseLLMClient {
             }
         }
 
-        const usage: TokenUsageInfo = {
-            inputTokens: data.usage.input_tokens,
-            outputTokens: data.usage.output_tokens,
-            totalTokens: data.usage.input_tokens + data.usage.output_tokens,
-        };
+        const usage = this.toUsage(data.usage);
 
         return {
             message: {
@@ -771,6 +796,23 @@ export class AnthropicClient extends BaseLLMClient {
     // ========================================================================
     // Internal: Helpers
     // ========================================================================
+
+    private toUsage(raw: Partial<AnthropicUsage>): TokenUsageInfo {
+        // Anthropic input_tokens excludes cache reads AND writes. Normalize to
+        // the same inclusive prompt size used by the other providers.
+        const inputTokens =
+            (raw.input_tokens ?? 0) + (raw.cache_read_input_tokens ?? 0) + (raw.cache_creation_input_tokens ?? 0);
+        const outputTokens = raw.output_tokens ?? 0;
+        return {
+            inputTokens,
+            outputTokens,
+            totalTokens: inputTokens + outputTokens,
+            ...(raw.cache_read_input_tokens !== undefined ? { cachedTokens: raw.cache_read_input_tokens } : {}),
+            ...(raw.cache_creation_input_tokens !== undefined
+                ? { cacheWriteTokens: raw.cache_creation_input_tokens }
+                : {}),
+        };
+    }
 
     /** Convert OpenAI-format tool definition to Anthropic format */
     private convertToolDef(tool: LLMToolDefinition): AnthropicToolDef {
@@ -790,7 +832,7 @@ export class AnthropicClient extends BaseLLMClient {
         if (typeof content === 'string') return content;
         return (content as LLMContentPart[])
             .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-            .map(p => p.text)
+            .map((p) => p.text)
             .join('');
     }
 }

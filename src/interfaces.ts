@@ -361,7 +361,7 @@ export interface ToolRegistry {
 
 /**
  * Response format for structured output.
- * 
+ *
  * For json_schema mode, use: { type: 'json_schema', json_schema: { name, schema, strict } }
  * For json_object mode (legacy), use: { type: 'json_object' }
  */
@@ -383,22 +383,22 @@ export interface ResponseFormat {
 
 /**
  * Output options for structured output in chat responses.
- * 
+ *
  * When provided, the response will include a `structured` property with
  * the validated, typed result. This is the recommended way to request
  * structured output via the chat() method.
- * 
+ *
  * @example
  * ```typescript
  * const UserSchema = z.object({
  *   name: z.string(),
  *   age: z.number(),
  * });
- * 
+ *
  * const response = await model.chat(messages, {
  *   output: { schema: UserSchema },
  * });
- * 
+ *
  * // response.structured is typed as { name: string, age: number }
  * console.log(response.structured?.name);
  * ```
@@ -410,19 +410,19 @@ export interface OutputOptions<T = unknown> {
      * or provide a raw SchemaConfig with jsonSchema + optional validate function.
      */
     schema?: import('./structured-output.js').SchemaConfig<T>;
-    
+
     /**
      * Raw JSON Schema for structured output.
      * Alternative to `schema` when you have a pre-defined schema.
      */
     jsonSchema?: import('./structured-output.js').JSONSchema;
-    
+
     /**
      * Optional name for the schema.
      * Used by providers like OpenAI for better LLM guidance.
      */
     name?: string;
-    
+
     /**
      * Optional description for the schema.
      * Used by providers like OpenAI for better LLM guidance.
@@ -473,6 +473,8 @@ export interface ChatOptions {
      * unhealthy preferred node falls through to the next-best.
      */
     sessionKey?: string;
+    /** Responses transport conversation/session header. Scoped to this call, never shared mutable client state. */
+    conversationId?: string;
     /** Tool definitions (auto-populated from registry if not set) */
     tools?: LLMToolDefinition[];
     /** Tool choice mode */
@@ -485,7 +487,7 @@ export interface ChatOptions {
     executeTools?: boolean;
     /**
      * Enable provider-side prompt caching when supported.
-     * - Anthropic: Adds cache_control: { type: 'ephemeral' } to the system prompt block (most common high-impact pattern).
+     * - Anthropic: Enables automatic caching of the growing conversation and an explicit system-prefix breakpoint.
      * - Other providers: May be passed through via parameters/headers or ignored; consult provider docs.
      */
     enablePromptCaching?: boolean;
@@ -498,19 +500,19 @@ export interface ChatOptions {
      * - A pre-built `StreamDecoder` instance for full control
      */
     decoder?: import('./stream-decoder.js').DecoderType | string | import('./stream-decoder.js').StreamDecoder;
-    
+
     // ========================================================================
     // Structured Output Options
     // ========================================================================
-    
+
     /**
      * Structured output options for chat responses.
      * When provided, the response will include a `structured` property
      * with the validated result.
-     * 
+     *
      * **Note**: `output` and `tools` cannot be used together.
      * If both are provided, an error will be thrown.
-     * 
+     *
      * @example
      * ```typescript
      * const response = await model.chat(messages, {
@@ -520,42 +522,42 @@ export interface ChatOptions {
      * ```
      */
     output?: OutputOptions;
-    
+
     /**
      * Schema configuration for structured output.
      * When provided, the response is validated against this schema.
-     * 
+     *
      * @deprecated Use `output.schema` or `generateStructured()` instead.
      */
     schema?: import('./structured-output.js').SchemaConfig<unknown>;
-    
+
     /**
      * Raw JSON Schema for structured output.
      * Alternative to `schema` when you have a pre-defined schema.
-     * 
+     *
      * @deprecated Use `output.jsonSchema` or `generateStructured()` instead.
      */
     jsonSchema?: import('./structured-output.js').JSONSchema;
-    
+
     /**
      * Name for the schema (optional, used for LLM guidance).
      * Required by some providers (e.g., OpenAI strict mode).
-     * 
+     *
      * @deprecated Use `output.name` or `generateStructured()` instead.
      */
     schemaName?: string;
-    
+
     /**
      * Description for the schema (optional, used for LLM guidance).
-     * 
+     *
      * @deprecated Use `output.description` or `generateStructured()` instead.
      */
     schemaDescription?: string;
-    
+
     /**
      * Response format for structured output (legacy json_object mode).
      * For new code, prefer `output` or `generateStructured()`.
-     * 
+     *
      * Use { type: 'json_object' } for legacy JSON mode without schema validation.
      */
     responseFormat?: ResponseFormat;
@@ -585,6 +587,8 @@ export interface TokenUsageInfo {
     outputTokens: number;
     totalTokens: number;
     cachedTokens?: number;
+    /** Input tokens written to a provider cache (already included in inputTokens). */
+    cacheWriteTokens?: number;
     /**
      * Server-side reasoning/thinking tokens that were generated but not
      * yielded as visible text. Currently populated by the Google provider
@@ -643,11 +647,11 @@ export interface LLMChatResponse<T = unknown> {
     /**
      * Validated structured output when `output` parameter is provided to chat().
      * This is the same type as inferred from the schema provided in `output.schema`.
-     * 
+     *
      * Undefined when:
      * - No `output` parameter was provided
      * - Structured output validation failed (throws StructuredOutputError instead)
-     * 
+     *
      * @example
      * ```typescript
      * const response = await model.chat(messages, {
@@ -865,7 +869,7 @@ export interface DeepResearchOptions {
 /** One intermediate step in a Deep Research interaction. */
 export interface DeepResearchStep {
     type?: string;
-    content?: Array<{ text?: string;[k: string]: unknown }>;
+    content?: Array<{ text?: string; [k: string]: unknown }>;
     [k: string]: unknown;
 }
 
@@ -903,9 +907,10 @@ export function imageContent(
     mimeType: string = 'image/jpeg',
     detail?: 'auto' | 'low' | 'high',
 ): LLMImageContent {
-    const url = base64DataOrUrl.startsWith('data:') || base64DataOrUrl.startsWith('http')
-        ? base64DataOrUrl
-        : `data:${mimeType};base64,${base64DataOrUrl}`;
+    const url =
+        base64DataOrUrl.startsWith('data:') || base64DataOrUrl.startsWith('http')
+            ? base64DataOrUrl
+            : `data:${mimeType};base64,${base64DataOrUrl}`;
     return {
         type: 'image_url',
         image_url: { url, detail },
@@ -913,15 +918,8 @@ export function imageContent(
 }
 
 /** Create a multimodal user message with text and images */
-export function multimodalMessage(
-    text: string,
-    images: string[],
-    mimeType: string = 'image/jpeg',
-): LLMChatMessage {
-    const content: LLMContentPart[] = [
-        textContent(text),
-        ...images.map(img => imageContent(img, mimeType)),
-    ];
+export function multimodalMessage(text: string, images: string[], mimeType: string = 'image/jpeg'): LLMChatMessage {
+    const content: LLMContentPart[] = [textContent(text), ...images.map((img) => imageContent(img, mimeType))];
     return { role: 'user', content };
 }
 
@@ -930,14 +928,14 @@ export function extractTextContent(content: LLMMessageContent): string {
     if (typeof content === 'string') return content;
     return content
         .filter((part): part is LLMTextContent => part.type === 'text')
-        .map(part => part.text)
+        .map((part) => part.text)
         .join('');
 }
 
 /** Check if message content contains images */
 export function hasImages(content: LLMMessageContent): boolean {
     if (typeof content === 'string') return false;
-    return content.some(part => part.type === 'image_url');
+    return content.some((part) => part.type === 'image_url');
 }
 
 /** Create an audio content part from raw base64 data */
@@ -951,5 +949,5 @@ export function audioContent(base64Data: string, mimeType: string): LLMAudioCont
 /** Check if message content contains audio */
 export function hasAudio(content: LLMMessageContent): boolean {
     if (typeof content === 'string') return false;
-    return content.some(part => part.type === 'audio');
+    return content.some((part) => part.type === 'audio');
 }
