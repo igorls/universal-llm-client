@@ -122,4 +122,3 @@ describe('applyQwenRequestDefaults (Qwen3.5+ chat_template_kwargs)', () => {
         expect((body['chat_template_kwargs'] as Record<string, unknown>)['preserve_thinking']).toBe(false);
     });
 });
-
