@@ -90,3 +90,36 @@ describe('budget maps', () => {
         expect(anthropicThinkingBudget('low', 4096)).toBe(1024);
     });
 });
+
+describe('applyQwenRequestDefaults (Qwen3.5+ chat_template_kwargs)', () => {
+    test('sets preserve_thinking: true alongside enable_thinking: true for Qwen3.5+ on self-hosted endpoints', async () => {
+        const { applyQwenRequestDefaults } = await import('../providers/openai.js');
+        const body: Record<string, unknown> = {};
+        applyQwenRequestDefaults({
+            model: 'qwen3.8-27b-nvfp4_dflash2',
+            url: 'http://100.81.253.45:8010/v1',
+            body,
+            thinking: { enabled: true, level: 'medium' },
+        });
+        expect(body['chat_template_kwargs']).toEqual({
+            enable_thinking: true,
+            preserve_thinking: true,
+            reasoning_effort: 'medium',
+        });
+    });
+
+    test('preserves caller-supplied preserve_thinking override', async () => {
+        const { applyQwenRequestDefaults } = await import('../providers/openai.js');
+        const body: Record<string, unknown> = {
+            chat_template_kwargs: { preserve_thinking: false },
+        };
+        applyQwenRequestDefaults({
+            model: 'qwen3.8-27b-nvfp4_dflash2',
+            url: 'http://100.81.253.45:8010/v1',
+            body,
+            thinking: { enabled: true },
+        });
+        expect((body['chat_template_kwargs'] as Record<string, unknown>)['preserve_thinking']).toBe(false);
+    });
+});
+

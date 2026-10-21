@@ -316,6 +316,9 @@ export function applyQwenRequestDefaults(input: {
         if (kwargs['enable_thinking'] === undefined) {
             kwargs['enable_thinking'] = thinkingOn;
         }
+        if (plus && thinkingOn && kwargs['preserve_thinking'] === undefined) {
+            kwargs['preserve_thinking'] = true;
+        }
         // Qwen3.8 effort is a separate template knob. Official values are
         // low/medium/xhigh; omit when thinking is off on vLLM (rejects `none`).
         // Ollama /v1 is the opposite: `none` is the off switch.
