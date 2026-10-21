@@ -109,6 +109,7 @@ describe('applyQwenRequestDefaults', () => {
         expect(body['reasoning_effort']).toBe('xhigh');
         expect(body['chat_template_kwargs']).toEqual({
             enable_thinking: true,
+            preserve_thinking: true,
             reasoning_effort: 'xhigh',
         });
     });
