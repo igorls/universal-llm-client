@@ -620,6 +620,13 @@ export interface LLMChatResponse<T = unknown> {
     message: LLMChatMessage;
     /** Provider finish reason when available (e.g. Ollama done_reason, Google finishReason) */
     finishReason?: string;
+    /**
+     * Names of tool calls the provider discarded because their arguments did
+     * not parse — typically a call the output limit cut off mid-arguments
+     * (`finishReason: 'length'`). They are not in `message.tool_calls`; this
+     * lets a tool loop tell the model which call was lost instead of guessing.
+     */
+    droppedToolCalls?: string[];
     /** Reasoning/thinking content from the model (if supported) */
     reasoning?: string;
     /** Token usage info */

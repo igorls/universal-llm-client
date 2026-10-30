@@ -111,6 +111,23 @@ describe('validation → self-correcting error', () => {
         const r = coerceAndValidateToolArgs({ action: 'add', text: 'Be concise', reason: 'clarity' }, directiveSchema, 't');
         expect(r.error).toBeUndefined();
     });
+    it('treats a blank required string as missing by default', () => {
+        const r = coerceAndValidateToolArgs({ action: 'add', reason: '  ' }, directiveSchema, 't');
+        expect(r.error).toContain('Missing required: reason');
+    });
+    it('accepts an empty string where the property declares minLength: 0', () => {
+        // Creating an empty file (`.gitkeep`) is a real write, not a forgotten field.
+        const writeSchema: ToolParameterSchema = {
+            type: 'object',
+            properties: { path: { type: 'string' }, content: { type: 'string', minLength: 0 } },
+            required: ['path', 'content'],
+        };
+        expect(coerceAndValidateToolArgs({ path: 'out/.gitkeep', content: '' }, writeSchema, 'write_file').error).toBeUndefined();
+        // The opt-in covers blank values only; a key that is absent is still missing.
+        expect(coerceAndValidateToolArgs({ path: 'out/.gitkeep' }, writeSchema, 'write_file').error).toContain(
+            'Missing required: content',
+        );
+    });
 });
 
 describe('fail-open (never false-block)', () => {

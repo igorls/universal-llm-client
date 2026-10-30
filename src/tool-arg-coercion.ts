@@ -37,6 +37,8 @@ interface PropertySchema {
     readonly type?: string | readonly string[];
     readonly enum?: readonly (string | number | boolean | null)[];
     readonly items?: unknown;
+    /** `minLength: 0` declares that an empty string is a real value (see the required check). */
+    readonly minLength?: number;
 }
 
 /** The tool `parameters` object (JSON Schema, `type: "object"`). */
@@ -242,11 +244,16 @@ export function coerceAndValidateToolArgs(
         }
     }
 
-    // Missing required (after coercion). `undefined`/`null`/`""` all count as absent.
+    // Missing required (after coercion). `undefined`/`null`/`""` all count as
+    // absent: small models send `""` for a required field they don't know. A
+    // property that declares `minLength: 0` opts out for the blank string — an
+    // empty file's `content` is a real value, and rejecting it made creating
+    // `.gitkeep` impossible.
     const required = schema?.required ?? [];
     const missing = required.filter((k) => {
         const v = out[k];
-        return v === undefined || v === null || (typeof v === "string" && v.trim() === "");
+        if (v === undefined || v === null) return true;
+        return typeof v === "string" && v.trim() === "" && propSchema(properties[k])?.minLength !== 0;
     });
 
     if (missing.length === 0 && enumViolations.length === 0 && typeViolations.length === 0) {

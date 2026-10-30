@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`droppedToolCalls` on `LLMChatResponse` (OpenAI-compatible)** — when a tool call is discarded because its arguments do not parse (typically a call the output limit cut off, `finishReason: 'length'`), the response now lists the dropped call names, so a tool loop can tell the model which call was lost.
+- **`minLength: 0` opts a required string into accepting `""`** — `coerceAndValidateToolArgs` still treats a blank required string as missing by default (small models send `""` for fields they don't know), but a property that declares `minLength: 0` accepts it, so a tool can take genuinely empty content (an empty file). An absent key is still missing.
 - **`tool_call_delta` stream events (OpenAI-compatible)** — while tool-call argument tokens stream in, `chatStream` now yields `{ type: 'tool_call_delta', calls }` with a full snapshot of the raw accumulation (arguments may be empty, partial, or invalid JSON). Use these only for live UI previews. The existing `{ type: 'tool_call' }` event still fires once at finish with normalized, execute-ready calls. Consumers that only handle `tool_call` are unchanged.
 
 ## [4.6.0] - 2026-07-22

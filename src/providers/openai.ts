@@ -1630,8 +1630,12 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 : decoderToolCalls.length > 0
                     ? decoderToolCalls
                     : undefined;
+        let droppedToolCalls: string[] = [];
         if (finalToolCalls?.length) {
             const valid = finalToolCalls.filter(tc => isValidToolArgumentsJson(tc.function.arguments));
+            droppedToolCalls = finalToolCalls
+                .filter(tc => !isValidToolArgumentsJson(tc.function.arguments))
+                .map(tc => tc.function.name || 'unknown');
             if (valid.length < finalToolCalls.length) {
                 console.warn(
                     `[openai] Dropped ${finalToolCalls.length - valid.length} tool call(s) with malformed arguments (finish_reason=${lastFinishReason ?? 'unknown'})`,
@@ -1685,6 +1689,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             usage,
             provider: 'openai',
             ...(reportedModel && { model: reportedModel }),
+            ...(droppedToolCalls.length > 0 && { droppedToolCalls }),
             // Consumers can tell a guard-aborted turn from a natural stop and
             // e.g. nudge the model instead of trusting the truncated output.
             // The natural finish_reason ('length' etc.) flows through so the

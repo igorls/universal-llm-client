@@ -431,10 +431,16 @@ describe('OpenAICompatibleClient runaway protection', () => {
             let result: IteratorResult<unknown, unknown>;
             while (!(result = await gen.next()).done) { /* consume */ }
 
-            const response = result.value as { finishReason?: string; message?: { tool_calls?: unknown[] } };
+            const response = result.value as {
+                finishReason?: string;
+                message?: { tool_calls?: unknown[] };
+                droppedToolCalls?: string[];
+            };
             // Partial JSON args must never surface for execution or history
             expect(response?.message?.tool_calls ?? undefined).toBeUndefined();
             expect(response?.finishReason).toBe('length');
+            // …but the loop is told WHICH call was lost, so it can say so.
+            expect(response?.droppedToolCalls).toEqual(['write_file']);
         } finally {
             console.warn = originalWarn;
         }
