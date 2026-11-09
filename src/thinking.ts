@@ -134,11 +134,14 @@ export type OllamaThinkValue = boolean | 'low' | 'medium' | 'high' | 'max';
 
 /**
  * Map unified `thinking` onto Ollama's official `think` field.
- * Unset → `true` (historical default: thinking models think unless asked not to).
+ * Unset → `undefined`: leave `think` out and let Ollama apply the model's own default. For a model with the
+ * "thinking" capability that default is to think (measured on Ollama 0.40: an omitted `think` returns the same
+ * `message.thinking` as `true`), so thinking models keep thinking. A model without the capability answers
+ * normally, where `think: true` fails with HTTP 400 "<model> does not support thinking".
  * `xhigh` → `max` (Ollama's documented top rung; Qwen's `xhigh` is not legal).
  */
-export function ollamaThinkValue(thinking: ResolvedThinking | undefined): OllamaThinkValue {
-    if (!thinking) return true;
+export function ollamaThinkValue(thinking: ResolvedThinking | undefined): OllamaThinkValue | undefined {
+    if (!thinking) return undefined;
     if (!thinking.enabled) return false;
     switch (thinking.level) {
         case 'minimal':

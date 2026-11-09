@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ollama requests to models without thinking no longer fail** — with `thinking` unset, the native `/api/chat` request sent `think: true`, and Ollama rejects that for every model without the "thinking" capability (`HTTP 400: "<model>" does not support thinking`), so those models could not be used at all. Unset now leaves `think` out: Ollama applies the model's own default, which for thinking models is to think (same output as `true`, measured on Ollama 0.40). When thinking is asked for (`true` or a level) and `/api/show` reports no "thinking" capability, `think` is left out instead of failing; the lookup is cached per model and only made when thinking is asked for. When the capability cannot be read, the request goes as asked. `false` is always sent.
+
 ### Changed
 
 - **Ollama thinking levels** — native `/api/chat` now follows the official `think` field ([api.md](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion)): boolean or `low`/`medium`/`high`/`max`. Unified `xhigh` → `max`, `minimal` → `low`. `reasoning_effort` is not sent on the native chat API (that is a vLLM/Qwen template knob). OpenAI-compat requests aimed at an Ollama URL (`:11434` / ollama.com) still send `reasoning_effort: none` when thinking is off; vLLM still omits `none`.

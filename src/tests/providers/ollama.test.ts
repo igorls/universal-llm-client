@@ -545,6 +545,91 @@ describe('OllamaClient', () => {
             expect(getBody()!['think']).toBe('max');
             expect(getBody()!['reasoning_effort']).toBeUndefined();
         });
+
+        describe('think and the model\'s capabilities', () => {
+            /**
+             * Answers /api/show with `capabilities` (or a failure) and /api/chat with a completion, and records
+             * every request: which URL, and the chat body.
+             */
+            function mockOllama(capabilities: string[] | 'fail') {
+                const calls: { url: string; body?: Record<string, unknown> }[] = [];
+                globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+                    const url = String(input);
+                    const body = init?.body ? JSON.parse(init.body as string) : undefined;
+                    calls.push({ url, body });
+                    if (url.endsWith('/api/show')) {
+                        if (capabilities === 'fail') return new Response('not found', { status: 404 });
+                        return Response.json({ capabilities, model_info: {} });
+                    }
+                    return Response.json(OLLAMA_RESPONSE);
+                }) as typeof fetch;
+                const chats = () => calls.filter(c => c.url.endsWith('/api/chat')).map(c => c.body!);
+                const shows = () => calls.filter(c => c.url.endsWith('/api/show'));
+                return { chats, shows };
+            }
+
+            test('unset: think is left out, and no capability lookup is made', async () => {
+                const { chats, shows } = mockOllama(['completion', 'tools']);
+                await createClient().chat([{ role: 'user', content: 'hi' }]);
+                expect('think' in chats()[0]!).toBe(false);
+                expect(shows()).toHaveLength(0);
+            });
+
+            test('asked to think, a model without the capability gets no think (Ollama would answer 400)', async () => {
+                const { chats, shows } = mockOllama(['completion', 'vision', 'tools']);
+                const client = createClient({ model: 'medgemma1.5-tools', thinking: true });
+                await client.chat([{ role: 'user', content: 'hi' }]);
+                await client.chat([{ role: 'user', content: 'again' }], { thinking: 'high' });
+                expect(chats().map(b => 'think' in b)).toEqual([false, false]);
+                // One lookup per model for the client's life, naming the model.
+                expect(shows()).toHaveLength(1);
+                expect(shows()[0]!.body).toEqual({ model: 'medgemma1.5-tools' });
+            });
+
+            test('asked to think, a model with the capability thinks as asked', async () => {
+                const { chats } = mockOllama(['completion', 'tools', 'thinking']);
+                const client = createClient({ thinking: 'medium' });
+                await client.chat([{ role: 'user', content: 'hi' }]);
+                expect(chats()[0]!['think']).toBe('medium');
+            });
+
+            test('a per-call model is looked up on its own', async () => {
+                const { chats, shows } = mockOllama(['completion']);
+                await createClient({ thinking: true }).chat([{ role: 'user', content: 'hi' }], { model: 'other-model' });
+                expect(shows()[0]!.body).toEqual({ model: 'other-model' });
+                expect('think' in chats()[0]!).toBe(false);
+            });
+
+            test('off is always sent, without a lookup', async () => {
+                const { chats, shows } = mockOllama(['completion']);
+                await createClient({ thinking: false }).chat([{ role: 'user', content: 'hi' }]);
+                expect(chats()[0]!['think']).toBe(false);
+                expect(shows()).toHaveLength(0);
+            });
+
+            test('when the capability cannot be read, the request goes as asked', async () => {
+                const { chats } = mockOllama('fail');
+                await createClient({ thinking: true }).chat([{ role: 'user', content: 'hi' }]);
+                expect(chats()[0]!['think']).toBe(true);
+            });
+
+            test('chatStream() applies the same rule', async () => {
+                const streamBodies: Record<string, unknown>[] = [];
+                globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+                    if (String(input).endsWith('/api/show')) return Response.json({ capabilities: ['completion', 'tools'] });
+                    streamBodies.push(JSON.parse(init!.body as string));
+                    return new Response(JSON.stringify({ ...OLLAMA_RESPONSE, done: true }) + '\n', {
+                        headers: { 'Content-Type': 'application/x-ndjson' },
+                    });
+                }) as typeof fetch;
+                const client = createClient({ thinking: true });
+                for await (const _ of client.chatStream([{ role: 'user', content: 'hi' }])) {
+                    /* consume */
+                }
+                expect(streamBodies).toHaveLength(1);
+                expect('think' in streamBodies[0]!).toBe(false);
+            });
+        });
     });
 
     // ========================================================================

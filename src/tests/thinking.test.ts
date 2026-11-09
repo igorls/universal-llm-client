@@ -60,8 +60,8 @@ describe('isOllamaEndpoint', () => {
 });
 
 describe('ollamaThinkValue', () => {
-    test('unset defaults to true (historical Ollama default)', () => {
-        expect(ollamaThinkValue(undefined)).toBe(true);
+    test('unset leaves think out, so Ollama applies the model default (true would 400 on non-thinking models)', () => {
+        expect(ollamaThinkValue(undefined)).toBeUndefined();
     });
     test('maps unified levels onto Ollama-legal think values', () => {
         expect(ollamaThinkValue({ enabled: false })).toBe(false);

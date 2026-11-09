@@ -37,25 +37,67 @@ import type {
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
 
-/**
- * Official Ollama `/api/chat` thinking control is `think` only
- * (boolean or low|medium|high|max). Do not send `reasoning_effort` here —
- * that is a Qwen/vLLM template knob and is not in the Ollama chat API.
- */
-function applyOllamaThinking(
-    body: Record<string, unknown>,
-    thinking: ChatOptions['thinking'] | LLMClientOptions['thinking'],
-    configThinking: LLMClientOptions['thinking'],
-): void {
-    body['think'] = ollamaThinkValue(resolveThinking(thinking, configThinking));
-}
-
 export class OllamaClient extends BaseLLMClient {
+    /**
+     * Per model: whether `/api/show` lists the "thinking" capability (undefined: it could not be told).
+     * Capabilities do not change while a model name points at the same weights, so one lookup per client.
+     */
+    private readonly thinkingCapability = new Map<string, Promise<boolean | undefined>>();
+
     constructor(options: LLMClientOptions, auditor?: Auditor) {
         super({
             ...options,
             url: (options.url || 'http://localhost:11434').replace(/\/+$/, ''),
         }, auditor);
+    }
+
+    // ========================================================================
+    // Thinking
+    // ========================================================================
+
+    /**
+     * Set Ollama's `think` on a request. Official Ollama `/api/chat` thinking control is `think` only (boolean or
+     * low|medium|high|max); never send `reasoning_effort` here, a Qwen/vLLM template knob not in the Ollama API.
+     *
+     * - Unset: `think` is left out, so Ollama applies the model's own default (see `ollamaThinkValue`).
+     * - Off: `think: false`, which every model accepts.
+     * - On or a level: sent as asked, unless `/api/show` says the model lacks the "thinking" capability. Ollama
+     *   rejects `think` on such a model with HTTP 400, so every request would fail; it is left out instead.
+     *   When the capability cannot be read, the request is sent as asked.
+     */
+    private async applyThinking(
+        body: Record<string, unknown>,
+        model: string,
+        thinking: ChatOptions['thinking'] | LLMClientOptions['thinking'],
+    ): Promise<void> {
+        const think = ollamaThinkValue(resolveThinking(thinking, this.options.thinking));
+        if (think === undefined) return;
+        if (think !== false && (await this.supportsThinking(model)) === false) {
+            this.debugLog(`Model ${model} does not support thinking; sending the request without "think"`);
+            return;
+        }
+        body['think'] = think;
+    }
+
+    /** Whether `model` lists the "thinking" capability; undefined when `/api/show` cannot tell. Cached. */
+    private supportsThinking(model: string): Promise<boolean | undefined> {
+        let known = this.thinkingCapability.get(model);
+        if (!known) {
+            known = httpRequest<Record<string, unknown>>(`${this.options.url}/api/show`, {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: { model },
+                timeout: 5000,
+            }).then(
+                response => {
+                    const capabilities = response.data?.['capabilities'];
+                    return Array.isArray(capabilities) ? capabilities.includes('thinking') : undefined;
+                },
+                () => undefined,
+            );
+            this.thinkingCapability.set(model, known);
+        }
+        return known;
     }
 
     // ========================================================================
@@ -85,7 +127,7 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        applyOllamaThinking(body, options?.thinking, this.options.thinking);
+        await this.applyThinking(body, model, options?.thinking);
 
         // Handle structured output via format parameter
         const schemaOptions = this.extractSchemaOptions(options);
@@ -192,7 +234,7 @@ export class OllamaClient extends BaseLLMClient {
             body['tools'] = this.convertToolsToOllama(tools);
         }
 
-        applyOllamaThinking(body, options?.thinking, this.options.thinking);
+        await this.applyThinking(body, model, options?.thinking);
 
         // Handle structured output via format parameter — same as chat(). Without
         // this, streaming structured output is unconstrained and the model can emit
