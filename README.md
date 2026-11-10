@@ -2,60 +2,11 @@
 
 [![npm version](https://img.shields.io/npm/v/universal-llm-client.svg)](https://www.npmjs.com/package/universal-llm-client) [![CI](https://github.com/igorls/universal-llm-client/actions/workflows/ci.yml/badge.svg)](https://github.com/igorls/universal-llm-client/actions/workflows/ci.yml) [![npm downloads](https://img.shields.io/npm/dm/universal-llm-client.svg)](https://www.npmjs.com/package/universal-llm-client) [![License: MIT](https://img.shields.io/npm/l/universal-llm-client.svg)](https://github.com/igorls/universal-llm-client/blob/main/LICENSE)
 
-A universal LLM client for JavaScript/TypeScript with **transparent provider failover** and a **provider-agnostic reasoning API** — one set of code across OpenAI, Anthropic, Google Gemini, Ollama, vLLM, and any OpenAI-compatible endpoint. Streaming tool execution, structured output, generation stats, and native observability included.
+One TypeScript client for four LLM wire protocols: OpenAI Chat Completions, Anthropic Messages, Gemini and Ollama. A provider chain with retries, health tracking and failover is built in, and the same code handles streaming, tool calling, structured output and reasoning control on every protocol.
 
-```typescript
-import { AIModel } from 'universal-llm-client';
+Compatibility is stated per wire protocol, not per provider or model. If an endpoint implements one of the four protocols, the matching provider `type` and a `url` connect to it.
 
-const model = new AIModel({
-    model: 'gemini-3.5-flash',
-    providers: [
-        { type: 'google', apiKey: process.env.GOOGLE_API_KEY },
-        { type: 'openai', url: 'https://openrouter.ai/api', apiKey: process.env.OPENROUTER_KEY },
-        { type: 'ollama' },
-    ],
-});
-
-const response = await model.chat([
-    { role: 'user', content: 'Hello!' },
-]);
-```
-
-> **One model, multiple backends.** If Google fails, it transparently fails over to OpenRouter, then to local Ollama. Your code never knows the difference.
-
----
-
-## Features
-
-- 🔄 **Transparent Failover** — Priority-ordered provider chain with retries, health tracking, and cooldowns
-- 🧠 **Unified Reasoning** — One `thinking` flag (`true`/`false` or a level: `'minimal' | 'low' | 'medium' | 'high'`) mapped to each backend's native control; chain-of-thought surfaced as `response.reasoning` + streaming `thinking` events (with `<think>`-tag parsing as a fallback)
-- 🛠️ **Tool Calling** — Register tools once, works across all providers. Autonomous multi-turn execution loop
-- 📋 **Structured Output** — Zod schema validation, JSON Schema support, streaming, and type-safe responses
-- 🌊 **Streaming** — First-class async generator streaming with pluggable decoder strategies
-- 🔬 **Deep Research** — Drive Google Gemini's agentic Deep Research (background interactions with polling + streaming)
-- 📈 **Generation Stats** — `usage.tokensPerSecond` and `durationMs` reported across providers
-- 🔌 **Flexible Transport** — Custom headers, query params, auth header/prefix, and base path for Azure OpenAI and gateways
-- 🔍 **Observability** — Built-in auditor interface for logging, cost tracking, and behavioral analysis
-- 🌐 **Universal Runtime** — Node.js 22+, Bun, Deno, and modern browsers
-- 🤖 **MCP Native** — Bridge MCP servers to LLM tools with zero glue code
-- 📊 **Embeddings** — Single and batch embedding generation
-
-## Supported Providers
-
-| Provider | Type | Notes |
-|---|---|---|
-| **Ollama** | `ollama` | Local or cloud models, NDJSON streaming, model pulling, vision/multimodal, native thinking |
-| **OpenAI + Compat** | `openai` | GPT series, o-series + **any OpenAI-compatible endpoint**: xAI/Grok, Mistral, DeepSeek, Cohere Compatibility, Groq, Together, Fireworks, OpenRouter, Perplexity Sonar, vLLM, LM Studio, TGI, most self-hosted servers |
-| **Google AI Studio** | `google` | Gemini models, system instructions, multimodal, native thinking + grounding |
-| **Vertex AI** | `vertex` | Same as Google AI but with regional endpoints, Bearer tokens, service tiers (flex/priority) |
-| **Anthropic (Claude)** | `anthropic` | Claude 3.5/4 models via native Messages API. Excellent tool use, extended thinking with signatures, strong prompt caching |
-| **LlamaCpp** | `llamacpp` | Local llama.cpp / llama-server instances (OpenAI-compatible under the hood) |
-
-**Most of the world** is reachable via `type: 'openai'` + a `url` override. We only maintain dedicated clients for fundamentally different protocols (Anthropic Messages, Google Gemini) that offer unique high-value capabilities, plus Ollama for local developer experience. See `docs/guide/providers.md` and the research survey in `docs/research/provider-api-landscape-2026.md`.
-
----
-
-## Installation
+## Install
 
 ```bash
 bun add universal-llm-client
@@ -63,582 +14,261 @@ bun add universal-llm-client
 npm install universal-llm-client
 ```
 
-**Optional**: For MCP integration:
+The core library has no runtime dependencies. Two optional peer dependencies enable specific features: `zod` (`^4`) for describing structured output with Zod schemas, and `@modelcontextprotocol/sdk` for MCP.
+
 ```bash
-bun add @modelcontextprotocol/sdk
+bun add zod                         # only for Zod schemas
+bun add @modelcontextprotocol/sdk   # only for MCP
 ```
 
----
+## Five-minute start
 
-## Quick Start
-
-### Basic Chat
+Connect to an endpoint, chat, and stream. This example uses an endpoint that serves OpenAI Chat Completions; [Protocols](docs/guide/protocols.md) shows the `type` for the other three.
 
 ```typescript
 import { AIModel } from 'universal-llm-client';
 
 const model = new AIModel({
-    model: 'qwen3:4b',
-    providers: [{ type: 'ollama' }],
+  model: 'model-id',
+  providers: [
+    { type: 'openai', url: 'https://llm.example.com/v1', apiKey: process.env.LLM_API_KEY },
+  ],
 });
 
+// One response
 const response = await model.chat([
-    { role: 'system', content: 'You are a helpful assistant.' },
-    { role: 'user', content: 'What is the capital of France?' },
+  { role: 'system', content: 'You are a helpful assistant.' },
+  { role: 'user', content: 'What is the capital of France?' },
 ]);
-
 console.log(response.message.content);
-// "The capital of France is Paris."
+
+// Or a stream of typed events
+for await (const event of model.chatStream([
+  { role: 'user', content: 'Write a haiku about code.' },
+])) {
+  if (event.type === 'text') process.stdout.write(event.content);
+  else if (event.type === 'thinking') console.error('[thinking]', event.content);
+}
 ```
+
+## Failover
+
+List more than one provider and the router moves down the list when one fails. The chain can mix protocols; each provider receives the request in its own wire format.
+
+```typescript
+const model = new AIModel({
+  model: 'model-id',
+  retries: 2,       // retries per provider before failing over
+  timeout: 30000,   // request timeout in ms
+  providers: [
+    { type: 'openai', url: 'https://llm.example.com/v1', apiKey: process.env.LLM_API_KEY, priority: 0 },
+    { type: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY, priority: 1 },
+    { type: 'ollama', url: 'http://localhost:11434', model: 'local-model-id', priority: 2 },
+  ],
+});
+
+model.getProviderStatus(); // health, load and latency per provider
+```
+
+A provider that keeps failing is skipped for a cooldown. Providers that share a `priority` form a pool that the router load-balances. A stream can fail over only before its first event. See [Failover](docs/guide/failover.md).
+
+## Capabilities
 
 ### Streaming
 
-```typescript
-for await (const event of model.chatStream([
-    { role: 'user', content: 'Write a haiku about code.' },
-])) {
-    if (event.type === 'text') {
-        process.stdout.write(event.content);
-    } else if (event.type === 'thinking') {
-        // Model reasoning (when supported)
-        console.log('[thinking]', event.content);
-    }
-}
-```
+`chatStream()` yields `text`, `thinking`, `progress`, `tool_call` and `tool_call_delta` events, and a decoder option controls how tags in the text are parsed. See [Streaming](docs/guide/streaming.md).
 
-### Thinking & Reasoning
+### Tool calling
 
-Set one `thinking` value — `true`/`false` or a level (`'minimal' | 'low' | 'medium' | 'high'`) —
-and it maps to each provider's native control (Gemini `thinkingLevel`/`thinkingBudget`, OpenAI
-`reasoning_effort`, vLLM `enable_thinking`, Anthropic `budget_tokens`, Ollama `think`):
-
-```typescript
-const model = new AIModel({
-    model: 'gemini-3.5-flash',
-    thinking: 'high', // true | false | 'minimal' | 'low' | 'medium' | 'high'
-    providers: [{ type: 'google', apiKey: process.env.GOOGLE_API_KEY }],
-});
-
-const res = await model.chat([{ role: 'user', content: 'Solve this step by step: ...' }]);
-console.log(res.message.content); // final answer (clean)
-console.log(res.reasoning);       // chain-of-thought, when the model exposes it
-
-// Per-call override (e.g. turn thinking off for structured output)
-await model.chat(messages, { thinking: false });
-```
-
-### Deep Research (Gemini)
-
-Run Google's agentic Deep Research — creates a background interaction and polls to completion:
-
-```typescript
-const result = await model.deepResearch('Research the history of Google TPUs.', {
-    tools: ['google_search', 'url_context'],
-});
-console.log(result.status, result.report);
-
-// Or stream intermediate thoughts and steps as they arrive:
-for await (const ev of model.deepResearchStream('Compare RISC-V vs ARM in 2026.')) {
-    if (ev.type === 'thought') console.log('[thinking]', ev.content);
-    else if (ev.type === 'text') process.stdout.write(ev.content);
-}
-```
-
-### Tool Calling
+Register a tool once; `chatWithTools()` runs the loop of model call, tool execution and result until the model is done.
 
 ```typescript
 model.registerTool(
-    'get_weather',
-    'Get current weather for a location',
-    {
-        type: 'object',
-        properties: {
-            city: { type: 'string', description: 'City name' },
-        },
-        required: ['city'],
-    },
-    async (args) => {
-        const { city } = args as { city: string };
-        return { temperature: 22, condition: 'sunny', city };
-    },
+  'get_weather',
+  'Get the current weather for a city',
+  {
+    type: 'object',
+    properties: { city: { type: 'string', description: 'City name' } },
+    required: ['city'],
+  },
+  async (args) => {
+    const { city } = args as { city: string };
+    return { city, temperature: 22 };
+  },
 );
 
-// Autonomous tool execution — the model calls tools and loops until done
 const response = await model.chatWithTools([
-    { role: 'user', content: "What's the weather in Tokyo?" },
+  { role: 'user', content: "What's the weather in Tokyo?" },
 ]);
-
-console.log(response.message.content);
-// "The weather in Tokyo is 22°C and sunny."
-console.log(response.toolExecutions);
-// [{ tool_call_id: 'call_abc', output: { temperature: 22, condition: 'sunny', city: 'Tokyo' }, duration: 5 }]
+console.log(response.toolExecutions); // the full trace of tool calls
 ```
 
-### Provider Failover
+See [Tools and MCP](docs/guide/tools.md).
+
+### Structured output
+
+Describe the shape, get a validated and typed value. Zod schemas are wrapped with `fromZod`; a plain JSON Schema with a validate function works without Zod.
 
 ```typescript
-const model = new AIModel({
-    model: 'gemini-2.5-flash',
-    retries: 2,        // retries per provider before failover
-    timeout: 30000,    // request timeout in ms
-    providers: [
-        { type: 'google', apiKey: process.env.GOOGLE_KEY, priority: 0 },
-        { type: 'openai', url: 'https://openrouter.ai/api', apiKey: process.env.OPENROUTER_KEY, priority: 1 },
-        { type: 'ollama', url: 'http://localhost:11434', priority: 2 },
-    ],
-});
+import { fromZod } from 'universal-llm-client/zod';
+import { z } from 'zod';
 
-// If Google returns 500, retries twice, then seamlessly tries OpenRouter.
-// If OpenRouter also fails, falls back to local Ollama.
-// Your code sees a single response.
-const response = await model.chat([{ role: 'user', content: 'Hello' }]);
+const User = fromZod(z.object({ name: z.string(), age: z.number() }));
 
-// Check provider health at any time
-console.log(model.getProviderStatus());
-// [{ id: 'google-0', healthy: true }, { id: 'openai-1', healthy: true }, ...]
+const user = await model.generateStructured(User, [
+  { role: 'user', content: 'Generate a user profile for a software developer' },
+]);
+console.log(user.name, user.age); // typed
+
+const result = await model.tryParseStructured(User, messages); // never throws on bad output
+if (!result.ok) console.error(result.error.message, result.rawOutput);
 ```
 
-### Multimodal (Vision)
+`generateStructuredStream()` yields validated partial objects as the JSON arrives. See [Structured Output](docs/guide/structured-output.md).
+
+### Reasoning
+
+One `thinking` option, a boolean or a level (`'minimal' | 'low' | 'medium' | 'high' | 'xhigh'`), is mapped to each protocol's native control. The reasoning comes back on `response.reasoning` and as `thinking` stream events.
 
 ```typescript
-import { AIModel, multimodalMessage } from 'universal-llm-client';
+const res = await model.chat(messages, { thinking: 'high' });
+console.log(res.message.content); // the answer
+console.log(res.reasoning);       // the reasoning, when the model exposes it
+```
+
+See [Reasoning](docs/guide/reasoning.md).
+
+### Observability
+
+Every request, response, stream, retry, failover, tool call and validation is emitted to an `Auditor`. `ConsoleAuditor` and `BufferedAuditor` are included, and `usage` carries token counts and throughput.
+
+```typescript
+import { AIModel, ConsoleAuditor } from 'universal-llm-client';
 
 const model = new AIModel({
-    model: 'gemini-2.5-flash',
-    providers: [{ type: 'google', apiKey: process.env.GOOGLE_KEY }],
+  model: 'model-id',
+  providers: [{ type: 'ollama' }],
+  auditor: new ConsoleAuditor('[LLM]'),
+});
+```
+
+See [Observability](docs/guide/observability.md).
+
+### MCP
+
+`MCPToolBridge` connects to MCP servers and registers their tools on a model. It needs `@modelcontextprotocol/sdk`.
+
+```typescript
+import { MCPToolBridge } from 'universal-llm-client';
+
+const bridge = new MCPToolBridge({
+  servers: {
+    filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', './'] },
+    remote: { url: 'https://mcp.example.com/tools' },
+  },
 });
 
-const response = await model.chat([
-    multimodalMessage('What do you see in this image?', [
-        'https://example.com/photo.jpg',
-    ]),
-]);
+await bridge.connect();
+await bridge.registerTools(model);
+// model.chatWithTools() can now call the MCP tools
+await bridge.disconnect();
 ```
+
+See [Tools and MCP](docs/guide/tools.md#mcp).
 
 ### Embeddings
 
 ```typescript
-const embedModel = new AIModel({
-    model: 'nomic-embed-text-v2-moe:latest',
-    providers: [{ type: 'ollama' }],
-});
+const embedder = new AIModel({ model: 'model-id', providers: [{ type: 'ollama' }] });
 
-const vector = await embedModel.embed('Hello world');
-// [0.006, 0.026, -0.009, ...]
-
-const vectors = await embedModel.embedArray(['Hello', 'World']);
-// [[0.006, ...], [0.012, ...]]
+const vector = await embedder.embed('Hello world');                      // number[]
+const vectors = await embedder.embedArray(['Hello', 'World']);           // number[][]
 ```
 
-### Structured Output
+The Anthropic Messages protocol has no embeddings endpoint. See [Embeddings and Vision](docs/guide/embeddings-vision.md).
 
-Get typed, validated JSON responses from any LLM using Zod schemas:
-
-```typescript
-import { AIModel } from 'universal-llm-client';
-import { z } from 'zod';
-
-const model = new AIModel({
-    model: 'gemini-2.5-flash',
-    providers: [
-        { type: 'google', apiKey: process.env.GOOGLE_API_KEY },
-        { type: 'ollama' },
-    ],
-});
-
-// Define your schema
-const UserSchema = z.object({
-    name: z.string(),
-    age: z.number(),
-    email: z.string().email(),
-    interests: z.array(z.string()),
-});
-
-// Method 1: generateStructured (throws on validation failure)
-const user = await model.generateStructured(UserSchema, [
-    { role: 'user', content: 'Generate a user profile for a software developer' },
-]);
-
-console.log(user.name);     // TypeScript knows this is string
-console.log(user.age);      // TypeScript knows this is number
-console.log(user.email);    // TypeScript knows this is string
-console.log(user.interests); // TypeScript knows this is string[]
-```
-
-**Non-throwing variant:**
+### Vision
 
 ```typescript
-// Method 2: tryParseStructured (returns result object, never throws)
-const result = await model.tryParseStructured(UserSchema, messages);
+import { multimodalMessage } from 'universal-llm-client';
 
-if (result.ok) {
-    console.log('User:', result.value.name);
-} else {
-    console.log('Error:', result.error.message);
-    console.log('Raw LLM output:', result.rawOutput);
-}
-```
-
-**Via chat options:**
-
-```typescript
-// Method 3: chat with output parameter
-const response = await model.chat(messages, {
-    output: { schema: UserSchema },
-});
-
-// response.structured is typed as { name: string, age: number, ... }
-if (response.structured) {
-    console.log(response.structured.name);
-}
-```
-
-**Streaming structured output:**
-
-```typescript
-// Stream partial validated objects as JSON generates
-for await (const partial of model.generateStructuredStream(UserSchema, messages)) {
-    console.log('Partial:', partial);
-    // Partial: { name: 'Alice' }
-    // Partial: { name: 'Alice', age: 30 }
-    // Partial: { name: 'Alice', age: 30, email: 'alice@example.com' }
-}
-```
-
-**Raw JSON Schema (without Zod):**
-
-```typescript
-const response = await model.chat(messages, {
-    jsonSchema: {
-        type: 'object',
-        properties: {
-            name: { type: 'string' },
-            age: { type: 'number' },
-        },
-        required: ['name', 'age'],
-    },
-    name: 'Person',  // Optional, used for LLM guidance
-});
-```
-
-**Separate module import (tree-shaking):**
-
-```typescript
-// Import only structured output types if you don't need the full client
-import {
-    StructuredOutputError,
-    type StructuredOutputResult,
-    type StructuredOutputOptions,
-    parseStructured,
-    tryParseStructured,
-    zodToJsonSchema,
-} from 'universal-llm-client/structured-output';
-```
-
-**Vision with structured output:**
-
-```typescript
-const ImageAnalysisSchema = z.object({
-    objects: z.array(z.string()),
-    scene: z.string(),
-    mood: z.string(),
-});
-
-const response = await model.generateStructured(ImageAnalysisSchema, [
-    multimodalMessage('Analyze this image', ['https://example.com/photo.jpg']),
+const response = await model.chat([
+  multimodalMessage('What do you see in this image?', ['https://example.com/photo.jpg']),
 ]);
 ```
 
-**Provider compatibility:**
+See [Embeddings and Vision](docs/guide/embeddings-vision.md).
 
-| Provider | Method | Notes |
-|----------|--------|-------|
-| OpenAI | `response_format.json_schema` | Strict mode enabled |
-| Ollama | `format: { schema }` | Model must support grammar |
-| Google | `responseMimeType + responseSchema` | Some features stripped |
+### Deep Research
 
-### Observability
+On the Gemini protocol, `deepResearch()` runs an agentic research interaction and polls it to completion; `deepResearchStream()` yields its intermediate steps. It needs a `type: 'google'` provider.
 
 ```typescript
-import { AIModel, ConsoleAuditor, BufferedAuditor } from 'universal-llm-client';
-
-// Simple console logging
-const model = new AIModel({
-    model: 'qwen3:4b',
-    providers: [{ type: 'ollama' }],
-    auditor: new ConsoleAuditor('[LLM]'),
+const result = await model.deepResearch('Research the history of tensor processors.', {
+  tools: ['google_search', 'url_context'],
 });
-// [LLM] REQUEST [ollama] (qwen3:4b) →
-// [LLM] RESPONSE [ollama] (qwen3:4b) 1200ms 68 tokens
-
-// Buffered for custom sinks (OpenTelemetry, DB, etc.)
-const auditor = new BufferedAuditor({
-    maxBufferSize: 100,
-    onFlush: async (events) => {
-        await sendToOpenTelemetry(events);
-    },
-});
+console.log(result.status, result.report);
 ```
 
-### MCP Integration
+See [Deep Research](docs/guide/deep-research.md).
 
-```typescript
-import { AIModel, MCPToolBridge } from 'universal-llm-client';
+## Protocol support
 
-const model = new AIModel({
-    model: 'qwen3:4b',
-    providers: [{ type: 'ollama' }],
-});
+| | OpenAI Chat Completions | Anthropic Messages | Gemini | Ollama |
+|---|---|---|---|---|
+| Provider `type` | `openai`, `llamacpp` | `anthropic` | `google`, `vertex` | `ollama` |
+| Chat | Yes | Yes | Yes | Yes |
+| Streaming | Yes | Yes | Yes | Yes |
+| Tool calling | Yes | Yes | Yes | Yes |
+| Structured output | Yes, as `response_format` | Validated client-side; the schema is not sent | Yes, as `responseSchema` | Yes, as `format` |
+| Vision | Yes. Not supported with `type: 'llamacpp'` | Yes | Yes | Yes |
+| Embeddings | Yes | No | Yes | Yes |
+| Native thinking | Through response fields or `<think>` tags | Yes, extended thinking | Yes, `thinkingConfig` | Yes, `think` |
 
-const mcp = new MCPToolBridge({
-    servers: {
-        filesystem: {
-            command: 'npx',
-            args: ['-y', '@modelcontextprotocol/server-filesystem', './'],
-        },
-        weather: {
-            url: 'https://mcp.example.com/weather',
-        },
-    },
-});
+`type: 'llamacpp'` uses the same client as `type: 'openai'`, with a different default `url`. Image input is not supported with `type: 'llamacpp'`.
 
-await mcp.connect();
-await mcp.registerTools(model);
+Endpoints that speak OpenAI Chat Completions are reached with `type: 'openai'` and a `url`, with options for the key header, query parameters and base path. See [Protocols](docs/guide/protocols.md).
 
-// MCP tools are now callable via chatWithTools
-const response = await model.chatWithTools([
-    { role: 'user', content: 'List files in the current directory' },
-]);
+## Runtime support
 
-await mcp.disconnect();
-```
-
-### Stream Decoders
-
-```typescript
-import { AIModel, createDecoder } from 'universal-llm-client';
-
-// Passthrough — raw text, no parsing
-// Standard Chat — text + native reasoning + tool calls
-// Interleaved Reasoning — parses <think> and <progress> tags from text streams
-
-const decoder = createDecoder('interleaved-reasoning', (event) => {
-    switch (event.type) {
-        case 'text': console.log(event.content); break;
-        case 'thinking': console.log('[think]', event.content); break;
-        case 'progress': console.log('[progress]', event.content); break;
-        // Execute only on `tool_call` (complete). OpenAI-compatible streams may
-        // also emit `tool_call_delta` for live argument previews — never execute those.
-        case 'tool_call': console.log('[tool]', event.calls); break;
-        case 'tool_call_delta': console.log('[tool preview]', event.calls); break;
-    }
-});
-
-decoder.push('<think>Let me analyze this</think>The answer is 42');
-decoder.flush();
-
-console.log(decoder.getCleanContent());  // "The answer is 42"
-console.log(decoder.getReasoning());      // "Let me analyze this"
-```
-
----
-
-## API Reference
-
-### `AIModel`
-
-The universal client. One class, multiple backends.
-
-```typescript
-new AIModel(config: AIModelConfig)
-```
-
-**Config:**
-
-| Property | Type | Default | Description |
-|---|---|---|---|
-| `model` | `string` | — | Model name (e.g., `'gemini-2.5-flash'`) |
-| `providers` | `ProviderConfig[]` | — | Ordered list of provider backends |
-| `retries` | `number` | `2` | Retries per provider before failover |
-| `timeout` | `number` | `30000` | Request timeout in ms |
-| `auditor` | `Auditor` | `NoopAuditor` | Observability sink |
-| `thinking` | `boolean` | `false` | Enable model thinking/reasoning |
-| `debug` | `boolean` | `false` | Debug logging |
-| `defaultParameters` | `object` | — | Default parameters for all requests |
-
-**Provider Config:**
-
-| Property | Type | Description |
+| Runtime | Version | Notes |
 |---|---|---|
-| `type` | `string` | `'ollama'`, `'openai'`, `'google'`, `'vertex'`, `'llamacpp'`, `'anthropic'` |
-| `url` | `string` | Provider URL (has sensible defaults) |
-| `apiKey` | `string` | API key or Bearer token |
-| `priority` | `number` | Lower = tried first (defaults to array index) |
-| `model` | `string` | Override model name for this provider |
-| `region` | `string` | Vertex AI region (e.g., `'us-central1'`) |
-| `apiVersion` | `string` | API version (e.g., `'v1beta'`) |
-| `headers` | `Record<string,string>` | Extra headers merged into requests — OpenAI-compatible & Ollama (Azure `api-key`, gateways) |
-| `queryParams` | `Record<string,string>` | Query params appended to URLs — OpenAI-compatible only (e.g. Azure `api-version`) |
-| `authHeader` | `string` | Header name for the key — OpenAI-compatible & Ollama (e.g. `'api-key'`) |
-| `authPrefix` | `string` | Prefix before the key value — OpenAI-compatible & Ollama (e.g. `''` for api-key style) |
-| `apiBasePath` | `string` | OpenAI-compatible only: override or disable the `/v1` suffix (use `''` for full Azure deployment URLs) |
+| Node.js | 22 or later | |
+| Bun | 1.0 or later | |
+| Deno | 2.0 or later | |
+| Browsers | Modern, ESM | HTTP transport only. No stdio MCP servers |
 
-**Methods:**
+## For agent framework authors
 
-| Method | Returns | Description |
-|---|---|---|
-| `chat(messages, options?)` | `Promise<LLMChatResponse>` | Send chat request |
-| `chatWithTools(messages, options?)` | `Promise<LLMChatResponse>` | Chat with autonomous tool execution |
-| `chatStream(messages, options?)` | `AsyncGenerator<DecodedEvent>` | Stream chat response |
-| `generateStructured(schema, messages, options?)` | `Promise<T>` | Generate typed JSON validated against Zod schema |
-| `tryParseStructured(schema, messages, options?)` | `Promise<StructuredOutputResult<T>>` | Non-throwing variant returning result object |
-| `generateStructuredStream(schema, messages, options?)` | `AsyncGenerator<T, T>` | Stream partial validated objects as JSON generates |
-| `embed(text)` | `Promise<number[]>` | Generate single embedding |
-| `embedArray(texts)` | `Promise<number[][]>` | Generate batch embeddings |
-| `registerTool(name, desc, params, handler)` | `void` | Register a callable tool |
-| `registerTools(tools)` | `void` | Register multiple tools |
-| `getModels()` | `Promise<string[]>` | List available models |
-| `getModelInfo()` | `Promise<ModelMetadata>` | Get model metadata |
-| `getProviderStatus()` | `ProviderStatus[]` | Check provider health |
-| `setModel(name)` | `void` | Switch model at runtime |
-| `dispose()` | `Promise<void>` | Clean shutdown |
+`AIModel` is meant to be the transport layer under an agent framework:
 
-### Structured Output
-
-```typescript
-import { z } from 'zod';
-
-// Define your schema
-const UserSchema = z.object({
-    name: z.string(),
-    age: z.number(),
-    email: z.string().email(),
-});
-
-// Generate typed JSON
-const user = await model.generateStructured(UserSchema, messages);
-// TypeScript infers: { name: string; age: number; email: string }
-
-// Non-throwing variant
-const result = await model.tryParseStructured(UserSchema, messages);
-if (result.ok) {
-    console.log(result.value.name);  // Fully typed
-} else {
-    console.log(result.error.message);
-}
-
-// Stream partial objects
-for await (const partial of model.generateStructuredStream(UserSchema, messages)) {
-    console.log(partial);  // Partial validated objects
-}
-```
-
-**Separate module import (tree-shaking):**
-
-```typescript
-import {
-    StructuredOutputError,
-    type StructuredOutputResult,
-    parseStructured,
-    tryParseStructured,
-    zodToJsonSchema,
-} from 'universal-llm-client/structured-output';
-
-// Use without importing the full client
-const schema = z.object({ name: z.string() });
-const jsonSchema = zodToJsonSchema(schema);
-```
-
-### `ToolBuilder` / `ToolExecutor`
-
-```typescript
-import { ToolBuilder, ToolExecutor } from 'universal-llm-client';
-
-// Fluent builder
-const tool = new ToolBuilder('search')
-    .description('Search the web')
-    .addParameter('query', 'string', 'Search query', true)
-    .addParameter('limit', 'number', 'Max results', false)
-    .build();
-
-// Execution wrappers
-const safeHandler = ToolExecutor.compose(
-    myHandler,
-    h => ToolExecutor.withTimeout(h, 5000),
-    h => ToolExecutor.safe(h),
-    h => ToolExecutor.withValidation(h, ['query']),
-);
-```
-
-### Auditor Interface
-
-Implement custom observability by providing an `Auditor`:
-
-```typescript
-interface Auditor {
-    record(event: AuditEvent): void;
-    flush?(): Promise<void>;
-}
-```
-
-**Built-in implementations:**
-- `NoopAuditor` — Zero overhead (default)
-- `ConsoleAuditor` — Structured console logging
-- `BufferedAuditor` — Collects events for custom sinks
-
----
+- **Stateless.** It stores no conversation history. Your framework owns memory.
+- **Composable.** Create separate instances for chat, embeddings and vision.
+- **Tool tracing.** `chatWithTools()` returns every tool call in `toolExecutions`, and `droppedToolCalls` lists calls whose arguments were cut off.
+- **Context budgeting.** `getModelInfo()` reports `contextLength`, and `response.lastCallUsage` gives the real size of the last prompt in a tool loop.
+- **Routing.** `sessionKey` keeps a conversation on one node of a pool, so a prompt cache is reused.
+- **Auditor as a bus.** Plug in your own sink for cost tracking and tracing.
+- **Decoders.** Pick a stream decoder per call, or register your own with `registerDecoder()`.
 
 ## Architecture
 
 ```
 universal-llm-client
-├── AIModel          ← Public API (the only class you import)
-├── Router           ← Internal failover engine
-├── BaseLLMClient    ← Abstract client with tool execution
-├── Providers
-│   ├── OllamaClient
-│   ├── OpenAICompatibleClient  (OpenAI, OpenRouter, Groq, LM Studio, vLLM, LlamaCpp)
-│   └── GoogleClient            (AI Studio + Vertex AI)
-├── StreamDecoder    ← Pluggable reasoning strategies
-├── Auditor          ← Observability interface
-├── MCPToolBridge    ← MCP server integration
-└── HTTP Utilities   ← Universal fetch-based transport
+├── AIModel            Public API
+├── Router             Failover, health, pools, structured output validation
+├── BaseLLMClient      Shared client logic and the tool loop
+├── Clients (src/providers/)
+│   ├── OpenAICompatibleClient   OpenAI Chat Completions (openai, llamacpp)
+│   ├── AnthropicClient          Anthropic Messages (anthropic)
+│   ├── GoogleClient             Gemini (google, vertex)
+│   └── OllamaClient             Ollama (ollama)
+├── StreamDecoder      Pluggable stream decoding
+├── Auditor            Observability interface
+├── MCPToolBridge      MCP server integration
+└── HTTP utilities     fetch-based transport
 ```
 
-### Design Principles
-
-1. **Single import** — `AIModel` is the only class users need
-2. **Provider agnostic** — Same code works with any backend
-3. **Transparent failover** — Health tracking and cooldowns happen behind the scenes
-4. **Zero dependencies** — Core library depends only on native `fetch`
-5. **Agent-ready** — Stateless, composable instances designed as foundation for agent frameworks
-6. **Observable** — Every request, response, tool call, retry, and failover is auditable
-
----
-
-## Runtime Support
-
-| Runtime | Version | Status |
-|---|---|---|
-| **Node.js** | 22+ | ✅ Full support |
-| **Bun** | 1.0+ | ✅ Full support |
-| **Deno** | 2.0+ | ✅ Full support |
-| **Browsers** | Modern | ✅ No stdio MCP, HTTP transport only |
-
----
-
-## For Agent Framework Authors
-
-`AIModel` is designed as the transport layer for agentic systems:
-
-- **Stateless** — No conversation history stored. Your framework manages memory
-- **Composable** — Create separate instances for chat, embeddings, vision
-- **Tool tracing** — `chatWithTools()` returns full execution trace
-- **Context budget** — `getModelInfo()` exposes `contextLength`
-- **Auditor as system bus** — Inject custom sinks for cost tracking, behavioral scoring
-- **StreamDecoder as UI bridge** — Select decoder strategy per-call
-
----
+See [Architecture](docs/guide/architecture.md) and the [API reference](docs/api/reference.md).
 
 ## License
 
