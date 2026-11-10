@@ -7,7 +7,9 @@
  * (`thinking: { type: 'enabled', budget_tokens }`), with the API's
  * constraints handled (budget < max_tokens; temperature omitted when on).
  * `false` sends the card's off switch. A `temperature` the model rejects is
- * dropped, the request sent again, and left out of later requests.
+ * dropped, the request sent again, and left out of later requests. Signed
+ * thinking goes back in front of its tool call in tool loops, with
+ * `drop_block` and the beta header.
  *
  * Model info is declared, read from the endpoint's model card, or assumed,
  * never read from the model name, and a failed listing rejects instead of
@@ -16,7 +18,7 @@
 
 import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import { AnthropicClient } from '../../providers/anthropic.js';
-import type { LLMClientOptions } from '../../interfaces.js';
+import type { LLMChatMessage, LLMChatResponse, LLMClientOptions } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 
 function createClient(overrides?: Partial<LLMClientOptions>): AnthropicClient {
@@ -625,5 +627,256 @@ describe('AnthropicClient getModels', () => {
         }) as unknown as typeof fetch;
 
         await expect(createClient().getModels()).rejects.toThrow('connection refused');
+    });
+});
+
+// ============================================================================
+// Thinking replay in tool loops
+// ============================================================================
+
+/** A message response with these content blocks. */
+function messageResponse(content: unknown[], stopReason = 'tool_use'): Record<string, unknown> {
+    return { ...ANTHROPIC_RESPONSE, content, stop_reason: stopReason };
+}
+
+/** SSE for a streamed response with these content blocks. */
+function sseResponse(content: Array<Record<string, unknown>>): string {
+    const events: unknown[] = [{
+        type: 'message_start',
+        message: { id: 'msg_s', type: 'message', role: 'assistant', content: [], model: 'm', stop_reason: null, usage: { input_tokens: 1, output_tokens: 0 } },
+    }];
+    content.forEach((block, index) => {
+        if (block['type'] === 'thinking') {
+            events.push({ type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '', signature: '' } });
+            events.push({ type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: block['thinking'] } });
+            events.push({ type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: block['signature'] } });
+        } else if (block['type'] === 'tool_use') {
+            events.push({ type: 'content_block_start', index, content_block: { type: 'tool_use', id: block['id'], name: block['name'], input: {} } });
+            events.push({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(block['input']) } });
+        } else {
+            events.push({ type: 'content_block_start', index, content_block: block });
+        }
+        events.push({ type: 'content_block_stop', index });
+    });
+    events.push({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 5 } });
+    events.push({ type: 'message_stop' });
+    return events.map((e) => `event: ${(e as { type: string }).type}\ndata: ${JSON.stringify(e)}\n\n`).join('');
+}
+
+/**
+ * Serve model cards (adaptive thinking for every id) and answer each
+ * `POST /v1/messages` with the next scripted reply: a message body or an SSE
+ * string. `reject` may answer a request with an HTTP 400 body instead.
+ */
+function serveScript(
+    replies: unknown[],
+    reject?: (body: Record<string, unknown>, headers: Record<string, string>) => unknown,
+) {
+    const requests: Array<{ body: Record<string, unknown>; headers: Record<string, string> }> = [];
+    const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        const path = new URL(url).pathname;
+        if (path.startsWith('/v1/models/')) {
+            return json(thinkingModelCard(decodeURIComponent(path.slice('/v1/models/'.length)), ['adaptive'], ALL_EFFORTS));
+        }
+        const body = JSON.parse(init!.body as string) as Record<string, unknown>;
+        const headers = init!.headers as Record<string, string>;
+        requests.push({ body, headers });
+        const rejection = reject?.(body, headers);
+        if (rejection) return json(rejection, 400);
+        const reply = replies.shift() ?? messageResponse([{ type: 'text', text: 'done' }], 'end_turn');
+        if (typeof reply === 'string') {
+            return new Response(reply, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+        }
+        return json(reply);
+    }) as unknown as typeof fetch;
+    return requests;
+}
+
+describe('AnthropicClient thinking replay in tool loops', () => {
+    let originalFetch: typeof globalThis.fetch;
+    let warn: ReturnType<typeof spyOn>;
+    beforeEach(() => {
+        originalFetch = globalThis.fetch;
+        warn = spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        warn.mockRestore();
+    });
+
+    const THINKING = { type: 'thinking', thinking: 'I should multiply.', signature: 'sig-1' };
+    const TOOL = { type: 'tool_use', id: 'toolu_1', name: 'multiply', input: { a: 2, b: 3 } };
+    const user: LLMChatMessage = { role: 'user', content: 'What is 2*3?' };
+    const toolResult: LLMChatMessage = { role: 'tool', content: '6', tool_call_id: 'toolu_1' };
+    type SentMessages = Array<{ role: string; content: unknown[] }>;
+
+    /** Ask, then send the tool result back with the assistant turn the client returned. */
+    async function loop(client: AnthropicClient, options: Parameters<AnthropicClient['chat']>[1]) {
+        const first = await client.chat([user], options);
+        await client.chat([user, first.message, toolResult], options);
+        return first;
+    }
+
+    test('sends the thinking back in front of its tool call, with drop_block and the beta header', async () => {
+        const requests = serveScript([messageResponse([THINKING, { type: 'text', text: 'Let me check.' }, TOOL])]);
+        await loop(createClient(), { thinking: true });
+
+        const [first, second] = requests;
+        expect(first!.headers['anthropic-beta']).toBeUndefined();
+        expect((first!.body['thinking'] as Record<string, unknown>)['block_binding']).toBeUndefined();
+
+        expect(second!.headers['anthropic-beta']).toBe('thinking-binding-controls-2026-08-01');
+        expect(second!.body['thinking']).toEqual({
+            type: 'adaptive',
+            display: 'summarized',
+            block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+        const messages = second!.body['messages'] as SentMessages;
+        expect(messages[1]!.content).toEqual([THINKING, { type: 'text', text: 'Let me check.' }, TOOL]);
+    });
+
+    test('interleaved thinking goes back right before its own tool call', async () => {
+        const later = { type: 'thinking', thinking: 'Now the next one.', signature: 'sig-2' };
+        const tool2 = { type: 'tool_use', id: 'toolu_2', name: 'multiply', input: { a: 4, b: 5 } };
+        const requests = serveScript([messageResponse([THINKING, TOOL, later, tool2])]);
+        const client = createClient();
+        const first = await client.chat([user], { thinking: true });
+        await client.chat(
+            [user, first.message, toolResult, { role: 'tool', content: '20', tool_call_id: 'toolu_2' }],
+            { thinking: true },
+        );
+
+        const messages = requests[1]!.body['messages'] as SentMessages;
+        expect(messages[1]!.content).toEqual([THINKING, TOOL, later, tool2]);
+    });
+
+    test('redacted thinking is sent back verbatim; unsigned thinking is not kept', async () => {
+        const redacted = { type: 'redacted_thinking', data: 'opaque' };
+        const unsigned = { type: 'thinking', thinking: 'no signature', signature: '' };
+        const requests = serveScript([messageResponse([unsigned, redacted, TOOL])]);
+        await loop(createClient(), { thinking: true });
+
+        const messages = requests[1]!.body['messages'] as SentMessages;
+        expect(messages[1]!.content).toEqual([redacted, TOOL]);
+    });
+
+    test('a caller that rebuilds history from its own log still gets the blocks', async () => {
+        const requests = serveScript([messageResponse([THINKING, TOOL])]);
+        const client = createClient();
+        const first = await client.chat([user], { thinking: true });
+        const rebuilt: LLMChatMessage = {
+            role: 'assistant',
+            content: '',
+            tool_calls: first.message.tool_calls!.map((call) => ({ ...call, function: { ...call.function } })),
+        };
+        await client.chat([user, rebuilt, toolResult], { thinking: true });
+
+        const messages = requests[1]!.body['messages'] as SentMessages;
+        expect(messages[1]!.content).toEqual([THINKING, TOOL]);
+    });
+
+    test('nothing is sent back when the request does not turn thinking on', async () => {
+        const requests = serveScript([messageResponse([THINKING, TOOL])]);
+        const client = createClient();
+        const first = await client.chat([user], { thinking: true });
+        await client.chat([user, first.message, toolResult], {});
+        await client.chat([user, first.message, toolResult], { thinking: false });
+
+        for (const request of requests.slice(1)) {
+            expect(request.headers['anthropic-beta']).toBeUndefined();
+            expect((request.body['messages'] as SentMessages)[1]!.content).toEqual([TOOL]);
+        }
+    });
+
+    test('the budget shape carries block_binding too', async () => {
+        const requests = serveScript([messageResponse([THINKING, TOOL])]);
+        const scripted = globalThis.fetch;
+        globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+            // No card: the client sends extended thinking with budget_tokens.
+            if (new URL(url).pathname.startsWith('/v1/models/')) return new Response('{}', { status: 404 });
+            return scripted(input, init);
+        }) as unknown as typeof fetch;
+        await loop(createClient(), { thinking: 'low', maxTokens: 4096 });
+
+        expect(requests[1]!.body['thinking']).toEqual({
+            type: 'enabled',
+            budget_tokens: 1024,
+            block_binding: { prefix_mismatch_behavior: 'drop_block' },
+        });
+    });
+
+    test('an endpoint that rejects replay gets the request again without it, then no more replay', async () => {
+        const requests = serveScript(
+            [messageResponse([THINKING, TOOL])],
+            (_body, headers) =>
+                headers['anthropic-beta']
+                    ? { type: 'error', error: { type: 'invalid_request_error', message: 'unknown field' } }
+                    : undefined,
+        );
+        const client = createClient();
+        await loop(client, { thinking: true });
+        expect(requests).toHaveLength(3);
+        expect(requests[1]!.headers['anthropic-beta']).toBeDefined();
+        expect(requests[2]!.headers['anthropic-beta']).toBeUndefined();
+        expect((requests[2]!.body['messages'] as SentMessages)[1]!.content).toEqual([TOOL]);
+        expect(warn).toHaveBeenCalledTimes(1);
+
+        const first = await client.chat([user], { thinking: true });
+        await client.chat([user, first.message, toolResult], { thinking: true });
+        expect(requests.slice(3).every((r) => r.headers['anthropic-beta'] === undefined)).toBe(true);
+    });
+
+    test('an error that recurs without replay is thrown, and replay stays on', async () => {
+        let failing = true;
+        const requests = serveScript(
+            [messageResponse([THINKING, TOOL])],
+            (body) =>
+                failing && (body['messages'] as unknown[]).length > 1
+                    ? { type: 'error', error: { type: 'invalid_request_error', message: 'prompt is too long' } }
+                    : undefined,
+        );
+        const client = createClient();
+        const first = await client.chat([user], { thinking: true });
+        await expect(client.chat([user, first.message, toolResult], { thinking: true })).rejects.toThrow('prompt is too long');
+        expect(requests).toHaveLength(3);
+
+        failing = false;
+        await client.chat([user, first.message, toolResult], { thinking: true });
+        expect(requests.at(-1)!.headers['anthropic-beta']).toBe('thinking-binding-controls-2026-08-01');
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    test('thinking from a streamed response is kept for replay', async () => {
+        const requests = serveScript([sseResponse([THINKING, TOOL])]);
+        const client = createClient();
+        const stream = client.chatStream([user], { thinking: true });
+        let step = await stream.next();
+        while (!step.done) step = await stream.next();
+        const assistant = (step.value as LLMChatResponse).message;
+
+        await client.chat([user, assistant, toolResult], { thinking: true });
+        const messages = requests[1]!.body['messages'] as SentMessages;
+        expect(messages[1]!.content).toEqual([THINKING, TOOL]);
+    });
+
+    test('chatWithTools sends the thinking back between iterations', async () => {
+        const requests = serveScript([messageResponse([THINKING, TOOL])]);
+        const client = createClient();
+        client.registerTool(
+            'multiply',
+            'Multiply two integers.',
+            { type: 'object', properties: { a: { type: 'integer' }, b: { type: 'integer' } }, required: ['a', 'b'] },
+            async (args) => String((args as { a: number; b: number }).a * (args as { a: number; b: number }).b),
+        );
+        const response = await client.chatWithTools([user], { thinking: true });
+
+        expect(response.message.content).toBe('done');
+        const messages = requests[1]!.body['messages'] as SentMessages;
+        expect(messages[1]!.content).toEqual([THINKING, TOOL]);
+        expect(messages[2]!.content).toEqual([{ type: 'tool_result', tool_use_id: 'toolu_1', content: '6' }]);
     });
 });

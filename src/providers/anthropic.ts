@@ -74,12 +74,21 @@ interface AnthropicThinkingBlock {
     readonly signature: string;
 }
 
+interface AnthropicRedactedThinkingBlock {
+    readonly type: 'redacted_thinking';
+    readonly data: string;
+}
+
+/** A thinking block as the API returned it, kept to be sent back verbatim. */
+type AnthropicReplayedThinking = AnthropicThinkingBlock | AnthropicRedactedThinkingBlock;
+
 type AnthropicContentBlock = (
     | AnthropicTextBlock
     | AnthropicImageBlock
     | AnthropicToolUseBlock
     | AnthropicToolResultBlock
     | AnthropicThinkingBlock
+    | AnthropicRedactedThinkingBlock
 ) & { readonly cache_control?: { readonly type: 'ephemeral' } };
 
 /** Anthropic message format */
@@ -117,10 +126,35 @@ interface AnthropicRequest {
     readonly stream?: boolean;
     readonly temperature?: number;
     readonly thinking?:
-        | { readonly type: 'enabled'; readonly budget_tokens: number }
-        | { readonly type: 'adaptive'; readonly display?: 'summarized' | 'omitted' }
+        | { readonly type: 'enabled'; readonly budget_tokens: number; readonly block_binding?: AnthropicBlockBinding }
+        | {
+              readonly type: 'adaptive';
+              readonly display?: 'summarized' | 'omitted';
+              readonly block_binding?: AnthropicBlockBinding;
+          }
         | { readonly type: 'disabled' | 'between_tools' };
     readonly output_config?: { readonly effort: AnthropicEffort };
+}
+
+/**
+ * What the API does with a replayed thinking block whose conversation changed
+ * since the block was made. `drop_block` drops it (not billed) instead of
+ * failing the request. Needs {@link THINKING_BINDING_BETA}.
+ */
+interface AnthropicBlockBinding {
+    readonly prefix_mismatch_behavior: 'drop_block';
+}
+
+/** Beta that accepts `thinking.block_binding`. */
+const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+
+/** Tool calls whose thinking is kept for replay; the oldest are forgotten first. */
+const MAX_REPLAYED_TOOL_CALLS = 512;
+
+/** Whether this request sends thinking blocks back (and so carries `block_binding`). */
+function carriesReplayedThinking(body: AnthropicRequest | undefined): boolean {
+    const thinking = body?.thinking;
+    return thinking !== undefined && 'block_binding' in thinking && thinking.block_binding !== undefined;
 }
 
 /** Thinking shapes a model card can list. */
@@ -189,13 +223,6 @@ function thinkingOffSwitch(card: AnthropicModelInfo | undefined): 'disabled' | '
  * error ("temperature: range: 0..1") and does not match.
  */
 const TEMPERATURE_REJECTED = /`?temperature`? is (?:deprecated|not supported)/i;
-
-/** The same request without `temperature`. */
-function withoutTemperature(body: AnthropicRequest): AnthropicRequest {
-    const { temperature, ...rest } = body;
-    void temperature;
-    return rest;
-}
 
 /**
  * The effort level a thinking level asks for on this model: the same name
@@ -295,6 +322,16 @@ export class AnthropicClient extends BaseLLMClient {
      * own answer is the signal; later requests to these models leave it out.
      */
     private readonly modelsRejectingTemperature = new Set<string>();
+    /**
+     * Signed thinking blocks from responses, keyed by the id of the tool call
+     * they came before. A later request that turns thinking on puts them back
+     * in front of that tool call, so the model keeps its reasoning across a
+     * tool loop. Keyed by id, not position, so it survives a caller rebuilding
+     * history from its own message log.
+     */
+    private readonly thinkingByToolUseId = new Map<string, AnthropicReplayedThinking[]>();
+    /** Set once this endpoint rejected a request with replayed thinking that succeeded without it. */
+    private thinkingReplayRejected = false;
 
     constructor(options: LLMClientOptions, auditor?: Auditor) {
         const url = (options.url || 'https://api.anthropic.com').replace(/\/+$/, '');
@@ -306,13 +343,17 @@ export class AnthropicClient extends BaseLLMClient {
     // Headers
     // ========================================================================
 
-    private buildAnthropicHeaders(): Record<string, string> {
+    /** Request headers; a body that replays thinking also gets {@link THINKING_BINDING_BETA}. */
+    private buildAnthropicHeaders(body?: AnthropicRequest): Record<string, string> {
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
             'anthropic-version': '2023-06-01',
         };
         if (this.options.apiKey) {
             headers['x-api-key'] = this.options.apiKey;
+        }
+        if (carriesReplayedThinking(body)) {
+            headers['anthropic-beta'] = THINKING_BINDING_BETA;
         }
         return headers;
     }
@@ -328,7 +369,8 @@ export class AnthropicClient extends BaseLLMClient {
     ): Promise<LLMChatResponse> {
         const resolvedOptions = callOptions ?? options;
         const url = `${this.baseUrl}/v1/messages`;
-        const body = this.buildRequestBody(messages, resolvedOptions, false, await this.thinkingCard(resolvedOptions));
+        const card = await this.thinkingCard(resolvedOptions);
+        const build = (replay: boolean) => this.buildRequestBody(messages, resolvedOptions, false, card, replay);
 
         const start = Date.now();
         this.auditor.record({
@@ -338,23 +380,18 @@ export class AnthropicClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        const send = (requestBody: AnthropicRequest) =>
+        const response = await this.sendMessages(build, (requestBody) =>
             httpRequest<AnthropicResponse>(url, {
                 method: 'POST',
-                headers: this.buildAnthropicHeaders(),
+                headers: this.buildAnthropicHeaders(requestBody),
                 body: requestBody,
                 signal: resolvedOptions?.signal,
                 timeout: this.options.timeout ?? 60000,
-            });
-        let response: Awaited<ReturnType<typeof send>>;
-        try {
-            response = await send(body);
-        } catch (error) {
-            if (!this.temperatureRejected(body, error)) throw error;
-            response = await send(withoutTemperature(body));
-        }
+            }),
+        );
 
         const data = response.data;
+        this.rememberThinking(data.content);
         const result = this.parseAnthropicResponse(data);
 
         this.auditor.record({
@@ -380,7 +417,8 @@ export class AnthropicClient extends BaseLLMClient {
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         const resolvedOptions = callOptions ?? options;
         const url = `${this.baseUrl}/v1/messages`;
-        const body = this.buildRequestBody(messages, resolvedOptions, true, await this.thinkingCard(resolvedOptions));
+        const card = await this.thinkingCard(resolvedOptions);
+        const build = (replay: boolean) => this.buildRequestBody(messages, resolvedOptions, true, card, replay);
 
         const start = Date.now();
         this.auditor.record({
@@ -403,13 +441,14 @@ export class AnthropicClient extends BaseLLMClient {
                 inputJson?: string;
                 thinking?: string;
                 signature?: string;
+                data?: string;
             }
         > = new Map();
 
         let usage: TokenUsageInfo | undefined;
         let rawUsage: Partial<AnthropicUsage> = {};
 
-        const stream = this.streamMessages(url, body, resolvedOptions?.signal);
+        const stream = this.streamMessages(url, build, resolvedOptions?.signal);
 
         for await (const { data } of parseSSE(stream)) {
             try {
@@ -436,6 +475,8 @@ export class AnthropicClient extends BaseLLMClient {
                             });
                         } else if (block.type === 'thinking') {
                             contentBlocks.set(event.index, { type: 'thinking', text: '', thinking: '' });
+                        } else if (block.type === 'redacted_thinking') {
+                            contentBlocks.set(event.index, { type: 'redacted_thinking', text: '', data: block.data });
                         }
                         break;
                     }
@@ -497,6 +538,22 @@ export class AnthropicClient extends BaseLLMClient {
         }
 
         decoder.flush();
+
+        // The blocks in the order the API sent them, for thinking replay.
+        this.rememberThinking(
+            [...contentBlocks.entries()]
+                .sort(([a], [b]) => a - b)
+                .flatMap(([, block]): AnthropicContentBlock[] => {
+                    if (block.type === 'thinking') {
+                        return [{ type: 'thinking', thinking: block.thinking ?? '', signature: block.signature ?? '' }];
+                    }
+                    if (block.type === 'redacted_thinking') return [{ type: 'redacted_thinking', data: block.data ?? '' }];
+                    if (block.type === 'tool_use' && block.toolId) {
+                        return [{ type: 'tool_use', id: block.toolId, name: block.toolName ?? '', input: {} }];
+                    }
+                    return [];
+                }),
+        );
 
         this.auditor.record({
             timestamp: Date.now(),
@@ -609,8 +666,8 @@ export class AnthropicClient extends BaseLLMClient {
 
     /**
      * Whether `error` is the API rejecting the `temperature` this request
-     * sent. The model is remembered, so later requests leave `temperature`
-     * out, and the caller sends this one again without it.
+     * sent. The model is remembered, so later requests (and the retry of this
+     * one) leave `temperature` out.
      */
     private temperatureRejected(body: AnthropicRequest, error: unknown): boolean {
         if (body.temperature === undefined) return false;
@@ -623,31 +680,115 @@ export class AnthropicClient extends BaseLLMClient {
     }
 
     /**
-     * Stream a Messages request. When the model rejects `temperature` (the
-     * API answers before any event), stream it again without one.
+     * Which change a rejected request calls for before it is sent again:
+     * `temperature` the model does not take (learned, so the next build leaves
+     * it out), or replayed thinking on an endpoint that may not take it (the
+     * next build sends none). Undefined when the error is not one of these.
+     */
+    private retryAfter(body: AnthropicRequest, error: unknown): 'temperature' | 'no-replay' | undefined {
+        if (this.temperatureRejected(body, error)) return 'temperature';
+        if (carriesReplayedThinking(body) && error instanceof LLMHttpError && error.status === 400) return 'no-replay';
+        return undefined;
+    }
+
+    /**
+     * A request with replayed thinking was rejected and the same request
+     * without it went through: this endpoint does not take replayed thinking,
+     * so this client stops sending it.
+     */
+    private noteThinkingReplayRejected(): void {
+        if (this.thinkingReplayRejected) return;
+        this.thinkingReplayRejected = true;
+        console.warn('[anthropic] The endpoint rejected replayed thinking blocks; requests are sent without them');
+    }
+
+    /**
+     * Send a Messages request built by `build`, sending it again after a
+     * rejection {@link retryAfter} recognizes (at most twice). An error on a
+     * request that no longer replays thinking is thrown as it is.
+     */
+    private async sendMessages<T>(
+        build: (replay: boolean) => AnthropicRequest,
+        send: (body: AnthropicRequest) => Promise<T>,
+    ): Promise<T> {
+        let replay = true;
+        let droppedReplay = false;
+        for (let attempt = 0; ; attempt++) {
+            const body = build(replay);
+            try {
+                const result = await send(body);
+                if (droppedReplay) this.noteThinkingReplayRejected();
+                return result;
+            } catch (error) {
+                const change = attempt < 2 ? this.retryAfter(body, error) : undefined;
+                if (!change) throw error;
+                if (change === 'no-replay') {
+                    replay = false;
+                    droppedReplay = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Stream a Messages request, sending it again after a rejection
+     * {@link retryAfter} recognizes, as {@link sendMessages} does. The API
+     * rejects before any event, so a request is only sent again before data.
      */
     private async *streamMessages(
         url: string,
-        body: AnthropicRequest,
+        build: (replay: boolean) => AnthropicRequest,
         signal: AbortSignal | undefined,
     ): AsyncGenerator<string, void, unknown> {
-        const open = (requestBody: AnthropicRequest) =>
-            httpStream(url, {
-                method: 'POST',
-                headers: this.buildAnthropicHeaders(),
-                body: requestBody,
-                signal,
-                timeout: this.options.timeout ?? 120000,
-            });
-        let received = false;
-        try {
-            for await (const chunk of open(body)) {
-                received = true;
-                yield chunk;
+        let replay = true;
+        let droppedReplay = false;
+        for (let attempt = 0; ; attempt++) {
+            const body = build(replay);
+            let received = false;
+            try {
+                for await (const chunk of httpStream(url, {
+                    method: 'POST',
+                    headers: this.buildAnthropicHeaders(body),
+                    body,
+                    signal,
+                    timeout: this.options.timeout ?? 120000,
+                })) {
+                    if (!received && droppedReplay) this.noteThinkingReplayRejected();
+                    received = true;
+                    yield chunk;
+                }
+                return;
+            } catch (error) {
+                const change = !received && attempt < 2 ? this.retryAfter(body, error) : undefined;
+                if (!change) throw error;
+                if (change === 'no-replay') {
+                    replay = false;
+                    droppedReplay = true;
+                }
             }
-        } catch (error) {
-            if (received || !this.temperatureRejected(body, error)) throw error;
-            yield* open(withoutTemperature(body));
+        }
+    }
+
+    /**
+     * Keep the signed thinking blocks of a response, keyed by the tool call
+     * each group came before. Unsigned thinking cannot be sent back.
+     */
+    private rememberThinking(content: readonly AnthropicContentBlock[]): void {
+        let pending: AnthropicReplayedThinking[] = [];
+        for (const block of content) {
+            if (block.type === 'thinking') {
+                if (block.signature) pending.push({ type: 'thinking', thinking: block.thinking, signature: block.signature });
+            } else if (block.type === 'redacted_thinking') {
+                if (block.data) pending.push({ type: 'redacted_thinking', data: block.data });
+            } else if (block.type === 'tool_use' && pending.length > 0) {
+                this.thinkingByToolUseId.delete(block.id);
+                this.thinkingByToolUseId.set(block.id, pending);
+                pending = [];
+            }
+        }
+        for (const id of this.thinkingByToolUseId.keys()) {
+            if (this.thinkingByToolUseId.size <= MAX_REPLAYED_TOOL_CALLS) break;
+            this.thinkingByToolUseId.delete(id);
         }
     }
 
@@ -675,11 +816,17 @@ export class AnthropicClient extends BaseLLMClient {
     // Internal: Request Building
     // ========================================================================
 
+    /**
+     * Build a Messages request. With `replay`, a request that turns thinking
+     * on puts the kept thinking blocks back in front of their tool calls and
+     * asks the API to drop (not reject) any block whose conversation changed.
+     */
     private buildRequestBody(
         messages: LLMChatMessage[],
         options: ChatOptions | undefined,
         stream: boolean,
         card?: AnthropicModelInfo,
+        replay = false,
     ): AnthropicRequest {
         // Extract system prompt from messages
         const systemMessages = messages.filter((m) => m.role === 'system');
@@ -744,7 +891,12 @@ export class AnthropicClient extends BaseLLMClient {
         const budget = thinkingOn ? anthropicThinkingBudget(thinking?.level, requestedMax) : 0;
         const maxTokens = thinkingOn ? Math.max(requestedMax, budget + 1024) : requestedMax;
 
-        const conversation = this.convertMessages(nonSystemMessages);
+        // Replayed thinking only goes with thinking on: a request without a
+        // thinking object has nowhere to put `block_binding`, and an
+        // `adaptive` or `enabled` one is what the API takes it with.
+        const replayThinking = replay && thinkingOn && !this.thinkingReplayRejected;
+        const { messages: conversation, replayed } = this.convertMessages(nonSystemMessages, replayThinking);
+        const blockBinding = replayed > 0 ? { block_binding: { prefix_mismatch_behavior: 'drop_block' as const } } : {};
         if (options?.enablePromptCaching) {
             // Per-turn runtime context may be replaced instead of retained in
             // history. Checkpoint assistant prefixes BEFORE that volatile tail.
@@ -757,7 +909,7 @@ export class AnthropicClient extends BaseLLMClient {
                 for (let j = message.content.length - 1; j >= 0; j--) {
                     const block = message.content[j]!;
                     // Thinking blocks cannot carry an explicit cache marker.
-                    if (block.type === 'thinking') continue;
+                    if (block.type === 'thinking' || block.type === 'redacted_thinking') continue;
                     message.content[j] = { ...block, cache_control: { type: 'ephemeral' } };
                     remaining--;
                     break;
@@ -777,11 +929,11 @@ export class AnthropicClient extends BaseLLMClient {
             ...(adaptive
                 ? {
                       // Summarized, so `reasoning` keeps text: newer models default to omitting it.
-                      thinking: { type: 'adaptive' as const, display: 'summarized' as const },
+                      thinking: { type: 'adaptive' as const, display: 'summarized' as const, ...blockBinding },
                       ...(effort && { output_config: { effort } }),
                   }
                 : thinkingOn
-                  ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
+                  ? { thinking: { type: 'enabled' as const, budget_tokens: budget, ...blockBinding } }
                   : {
                         ...(offSwitch && { thinking: { type: offSwitch } }),
                         ...(temperature !== undefined && { temperature }),
@@ -802,8 +954,12 @@ export class AnthropicClient extends BaseLLMClient {
      *   - assistant messages with tool_calls → assistant message with tool_use blocks
      *   - multimodal content → Anthropic image blocks
      */
-    private convertMessages(messages: LLMChatMessage[]): AnthropicMessage[] {
+    private convertMessages(
+        messages: LLMChatMessage[],
+        replayThinking = false,
+    ): { messages: AnthropicMessage[]; replayed: number } {
         const result: AnthropicMessage[] = [];
+        let replayed = 0;
 
         for (let i = 0; i < messages.length; i++) {
             const msg = messages[i]!;
@@ -818,14 +974,21 @@ export class AnthropicClient extends BaseLLMClient {
                     blocks.push({ type: 'text', text });
                 }
 
-                // Convert tool_calls to tool_use blocks
+                // Convert tool_calls to tool_use blocks. With replay, each call's
+                // kept thinking goes back where the API sent it: the first call's
+                // at the start of the turn, a later call's right before it.
                 if (msg.tool_calls) {
-                    for (const tc of msg.tool_calls) {
+                    msg.tool_calls.forEach((tc, index) => {
                         let input: Record<string, unknown> = {};
                         try {
                             input = JSON.parse(tc.function.arguments);
                         } catch {
                             // Keep empty object if parse fails
+                        }
+                        const thinking = replayThinking ? this.thinkingByToolUseId.get(tc.id) : undefined;
+                        if (thinking) {
+                            blocks.splice(index === 0 ? 0 : blocks.length, 0, ...thinking);
+                            replayed += thinking.length;
                         }
                         blocks.push({
                             type: 'tool_use',
@@ -833,7 +996,7 @@ export class AnthropicClient extends BaseLLMClient {
                             name: tc.function.name,
                             input,
                         });
-                    }
+                    });
                 }
 
                 if (blocks.length > 0) {
@@ -869,7 +1032,7 @@ export class AnthropicClient extends BaseLLMClient {
 
         // Anthropic requires alternating user/assistant messages.
         // Merge consecutive same-role messages if needed.
-        return this.ensureAlternating(result);
+        return { messages: this.ensureAlternating(result), replayed };
     }
 
     /**
