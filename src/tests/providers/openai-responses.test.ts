@@ -613,9 +613,57 @@ describe('ResponsesClient', () => {
             await expect(createClient().embed('x')).rejects.toThrow(LLMProviderError);
         });
 
-        test('reports a codex-sized context window', async () => {
-            expect((await createClient().getModelInfo('gpt-5.2-codex')).contextLength).toBe(272000);
-            expect((await createClient().getModelInfo('gpt-5.1-codex-mini')).contextLength).toBe(128000);
+        test('reports the assumed default; the model name picks no window', async () => {
+            for (const name of ['gpt-5.2-codex', 'gpt-5.1-codex-mini']) {
+                const info = await createClient().getModelInfo(name);
+                expect(info.contextLength).toBe(8192);
+                expect(info.contextLengthSource).toBe('assumed');
+                expect(info.capabilities).toBeUndefined();
+            }
+        });
+
+        test('reports a declared contextLength and capabilities', async () => {
+            const info = await createClient({ contextLength: 272_000, capabilities: ['tools', 'vision'] }).getModelInfo();
+            expect(info).toMatchObject({
+                model: 'gpt-5.2-codex',
+                contextLength: 272_000,
+                contextLengthSource: 'declared',
+                capabilities: ['tools', 'vision'],
+                capabilitiesSource: 'declared',
+            });
+        });
+
+        test('declared values do not describe another model', async () => {
+            const info = await createClient({ contextLength: 272_000 }).getModelInfo('gpt-5.1-codex-mini');
+            expect(info.contextLengthSource).toBe('assumed');
+        });
+
+        test('lists no models', async () => {
+            expect(await createClient().getModels()).toEqual([]);
+        });
+    });
+
+    describe('model', () => {
+        test('a missing model fails with a clear error before any request', async () => {
+            const cap = mockSSE([]);
+            const fetchMock = globalThis.fetch as unknown as ReturnType<typeof mock>;
+
+            const error = await createClient({ model: '' })
+                .chat([{ role: 'user', content: 'hi' }])
+                .catch((e: unknown) => e);
+
+            expect(error).toBeInstanceOf(LLMProviderError);
+            expect((error as Error).message).toMatch(/No model configured/);
+            expect(fetchMock).not.toHaveBeenCalled();
+            expect(cap.url).toBe('');
+        });
+
+        test('the configured model is sent as given (no default substituted)', async () => {
+            const cap = mockSSE([{ type: 'response.completed', response: { id: 'r1', output: [] } }]);
+
+            await createClient({ model: 'model-id' }).chat([{ role: 'user', content: 'hi' }]);
+
+            expect(cap.body['model']).toBe('model-id');
         });
     });
 });

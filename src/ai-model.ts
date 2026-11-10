@@ -378,6 +378,7 @@ export class AIModel {
             debug: this.config.debug ?? false,
             defaultParameters,
             contextLength: providerConfig.contextLength ?? this.config.contextLength,
+            capabilities: providerConfig.capabilities ?? this.config.capabilities,
             // Preserve `undefined` (not set) vs explicit false so providers can
             // decide whether to send a thinking toggle at all.
             thinking: this.config.thinking,

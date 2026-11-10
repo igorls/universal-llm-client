@@ -5,7 +5,7 @@
  * Works with: OpenAI, OpenRouter, LM Studio, LlamaCpp, vLLM, Groq, Together.
  */
 
-import { BaseLLMClient } from '../client.js';
+import { BaseLLMClient, ASSUMED_CONTEXT_LENGTH } from '../client.js';
 import {
     resolveThinking,
     isOpenAIReasoningModel,
@@ -62,13 +62,6 @@ export function shouldOmitResponseFormatWire(options: {
     return options.omitResponseFormat === true;
 }
 
-const CEREBRAS_MODEL_CONTEXT_LENGTHS: Readonly<Record<string, number>> = {
-    // Cerebras currently omits max context metadata from /v1/models for this
-    // served model. Live requests with ~90K prompt tokens succeed, so 128K is
-    // a conservative fallback that avoids treating it like an 8K local server.
-    'gemma-4-31b': 131_072,
-};
-
 function isCerebrasEndpoint(url: string | undefined): boolean {
     return (url ?? '').toLowerCase().includes('api.cerebras.ai');
 }
@@ -78,16 +71,17 @@ function normalizeModelId(model: string): string {
 }
 
 /**
- * OpenAI-compat endpoints (vLLM, llama.cpp, gateways) rarely advertise
- * modality capabilities on `/v1/models`. Without a `vision` flag, BentoKit's
- * ProviderManager treats the model as text-only and **strips images** before
- * they ever reach the server — even when the served weights are multimodal
- * (e.g. Gemma-4 on vLLM, proven live via image OCR + describe benches).
+ * Guess a capability list from the model id. OpenAI-compatible endpoints
+ * (vLLM, llama.cpp, gateways) rarely advertise modalities on `/v1/models`, and
+ * a caller that sees no `vision` flag may strip images even when the served
+ * weights are multimodal. Conservative: only families known to accept
+ * OpenAI-style `image_url` parts get `vision`; `tools` is tagged for families
+ * with documented function calling.
  *
- * Infer a best-effort capability list from the model id so callers can route
- * images. Conservative: only families known to accept OpenAI-style
- * `image_url` parts. Tools are tagged for families with documented function
- * calling. Callers that need certainty should live-probe (CP image-probe).
+ * @deprecated Name matching is the last resort. `getModelInfo()` prefers a
+ * declared `capabilities` list and anything the endpoint reports, and marks
+ * a result from this function `capabilitiesSource: 'inferred'`. No new names
+ * will be added; declare `capabilities` in config for models it does not know.
  */
 export function inferOpenAICompatCapabilities(model: string): string[] {
     const m = normalizeModelId(model);
@@ -123,20 +117,16 @@ export function inferOpenAICompatCapabilities(model: string): string[] {
     return [...caps];
 }
 
-function knownOpenAICompatModelInfo(url: string | undefined, model: string): ModelMetadata | undefined {
-    if (!isCerebrasEndpoint(url)) return undefined;
-    const contextLength = CEREBRAS_MODEL_CONTEXT_LENGTHS[normalizeModelId(model)];
-    if (!contextLength) return undefined;
-    return {
-        model,
-        contextLength,
-        capabilities: inferOpenAICompatCapabilities(model),
-    };
-}
-
+/**
+ * `info` with name-inferred capabilities when it carries none. Marked
+ * `inferred` when a name rule matched, `assumed` when only the protocol's
+ * baseline (`completion`) is left.
+ */
 function withInferredCapabilities(model: string, info: ModelMetadata): ModelMetadata {
     if (info.capabilities?.length) return info;
-    return { ...info, capabilities: inferOpenAICompatCapabilities(model) };
+    const capabilities = inferOpenAICompatCapabilities(model);
+    const matched = capabilities.some(c => c !== 'completion');
+    return { ...info, capabilities, capabilitiesSource: matched ? 'inferred' : 'assumed' };
 }
 
 function applyMaxTokensParam(
@@ -970,11 +960,17 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         if (!isServedModelAlias(this.options.model) || this.servedModelId) return;
         if (Date.now() - this.servedModelLookupFailedAt < SERVED_MODEL_RETRY_MS) return;
         this.servedModelLookup ??= this.getModels()
-            .then(ids => {
-                const id = ids.find(candidate => !isServedModelAlias(candidate));
-                if (id) this.servedModelId = id;
-                else this.servedModelLookupFailedAt = Date.now();
-            })
+            .then(
+                ids => {
+                    const id = ids.find(candidate => !isServedModelAlias(candidate));
+                    if (id) this.servedModelId = id;
+                    else this.servedModelLookupFailedAt = Date.now();
+                },
+                // A failed listing is a failed lookup: retried later, never fatal.
+                () => {
+                    this.servedModelLookupFailedAt = Date.now();
+                },
+            )
             .finally(() => {
                 this.servedModelLookup = undefined;
             });
@@ -1762,19 +1758,16 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // Model Discovery
     // ========================================================================
 
+    /** The endpoint's model ids. A failed listing throws instead of reading as an empty list. */
     async getModels(): Promise<string[]> {
         const url = this.buildUrl('/models');
-        try {
-            const response = await httpRequest<{
-                data: OpenAIModelInfo[];
-            }>(url, {
-                headers: buildHeaders(this.options),
-                timeout: 5000,
-            });
-            return response.data.data.map(m => m.id);
-        } catch {
-            return [];
-        }
+        const response = await httpRequest<{
+            data: OpenAIModelInfo[];
+        }>(url, {
+            headers: buildHeaders(this.options),
+            timeout: 5000,
+        });
+        return response.data.data.map(m => m.id);
     }
 
     // ========================================================================
@@ -1785,10 +1778,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     private modelInfoCache = new Map<string, ModelMetadata>();
 
     /**
-     * Context length we positively KNOW (endpoint metadata probe or the known-
-     * model map) — never the conservative 8192 fallback. Undefined for cloud
-     * endpoints that expose no window metadata. Negative results are cached so
-     * cloud endpoints pay the /models probe exactly once per client.
+     * Context length the endpoint itself advertised — never the conservative
+     * 8192 fallback. Undefined for cloud endpoints that expose no window
+     * metadata. Negative results are cached so cloud endpoints pay the /models
+     * probe exactly once per client.
      */
     private knownWindowCache = new Map<string, number | null>();
 
@@ -1806,15 +1799,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     }
 
     /**
-     * Probe the endpoint's REAL context window for a model: the known-model map
-     * first, then the live `/models` card (vLLM `max_model_len` / llama.cpp
-     * `meta.n_ctx_train`). Returns `undefined` when the endpoint advertises no
-     * window — callers decide whether to apply a default (budgeting) or leave
-     * the request unbounded (output-bounding).
+     * Probe the endpoint's REAL context window for a model from the live
+     * `/models` card (vLLM `max_model_len` / llama.cpp `meta.n_ctx_train`).
+     * Returns `undefined` when the endpoint advertises no window — callers
+     * decide whether to apply a default (budgeting) or leave the request
+     * unbounded (output-bounding).
      */
     private async probeContextLength(model: string): Promise<number | undefined> {
-        const known = knownOpenAICompatModelInfo(this.options.url, model);
-        if (known?.contextLength) return known.contextLength;
         try {
             const response = await httpRequest<{
                 data?: Array<{
@@ -1867,9 +1858,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
      * Bound the output when the caller didn't. Hard-window backends treat an
      * omitted max_tokens as "generate until the window fills" — a reasoning
      * loop then runs for minutes and the oversized result overflows the next
-     * request. Only applies when the endpoint's REAL window is known (vLLM
-     * max_model_len / llama.cpp n_ctx_train / known-model map): cloud APIs
-     * with server-managed defaults keep today's behavior.
+     * request. Only applies when the endpoint advertises its REAL window (vLLM
+     * max_model_len / llama.cpp n_ctx_train): cloud APIs with server-managed
+     * defaults keep today's behavior. A declared `contextLength` does not
+     * bound output; it describes the model in `getModelInfo()`.
      *
      * Thinking-ON turns get a higher floor/cap so a real CoT + answer can finish
      * without being clipped into another retry spiral.
@@ -1901,6 +1893,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         }
     }
 
+    /**
+     * Each value resolves declared, then endpoint, then name inference, then
+     * the conservative default; the `*Source` fields say which one answered.
+     */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         let model = modelName ?? this.options.model;
         // `default` carries no family: describe the served model behind it, and
@@ -1909,29 +1905,34 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             await this.resolveServedModel();
             model = this.familyModel;
         }
-        const known = knownOpenAICompatModelInfo(this.options.url, model);
-        if (known) return known;
 
-        const cached = this.modelInfoCache.get(model);
-        if (cached) return cached;
+        // Config already answers both questions: nothing to ask the endpoint.
+        if (this.declaresModelInfo(modelName)) {
+            return this.withDeclaredModelInfo({ model, contextLength: ASSUMED_CONTEXT_LENGTH }, modelName);
+        }
 
-        // Ask the endpoint for its real window (vLLM reports `max_model_len` per
-        // model card, llama.cpp exposes `meta.n_ctx_train`) before falling back
-        // to the conservative 8192 default — otherwise every local vLLM/llama.cpp
-        // server is treated as an 8K-context model and callers budget/truncate
-        // against the wrong window. The fallback keeps this method total so
-        // budgeting callers always get a number; output-bounding instead uses
-        // resolveKnownContextLength(), which never applies the fallback.
-        //
-        // Capabilities are almost never on the card — attach family inference
-        // so multimodal models (Gemma-4, etc.) are not treated as text-only.
-        const probed = await this.probeContextLength(model);
-        const info = withInferredCapabilities(model, {
-            model,
-            contextLength: probed ?? 8192,
-        });
-        this.modelInfoCache.set(model, info);
-        return info;
+        let info = this.modelInfoCache.get(model);
+        if (!info) {
+            // Ask the endpoint for its real window (vLLM reports `max_model_len`
+            // per model card, llama.cpp exposes `meta.n_ctx_train`) before
+            // falling back to the conservative default — otherwise every local
+            // vLLM/llama.cpp server is treated as an 8K-context model and callers
+            // budget/truncate against the wrong window. The fallback keeps this
+            // method total so budgeting callers always get a number;
+            // output-bounding uses resolveKnownContextLength() alone, which never
+            // applies it. Sharing that cache means one probe serves both.
+            //
+            // Capabilities are almost never on the card — name inference is the
+            // last resort so multimodal models are not treated as text-only.
+            const probed = await this.resolveKnownContextLength(model);
+            info = withInferredCapabilities(model, {
+                model,
+                contextLength: probed ?? ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource: probed !== undefined ? 'endpoint' : 'assumed',
+            });
+            this.modelInfoCache.set(model, info);
+        }
+        return this.withDeclaredModelInfo(info, modelName);
     }
 
     private convertMessages(messages: LLMChatMessage[]): LLMChatMessage[] {

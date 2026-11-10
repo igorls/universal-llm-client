@@ -27,17 +27,31 @@ export enum AIModelApiType {
 // Model Metadata
 // ============================================================================
 
+/**
+ * Where a {@link ModelMetadata} value came from. Clients resolve each value in
+ * this order and report the first that applies:
+ * - `declared`: set in config (`contextLength`, `capabilities`)
+ * - `endpoint`: reported by the server (a `/models` card, Ollama `/api/show`)
+ * - `inferred`: matched from the model name, a last resort
+ * - `assumed`: a default used because nothing else was known
+ */
+export type ModelMetadataSource = 'declared' | 'endpoint' | 'inferred' | 'assumed';
+
 export interface ModelMetadata {
     /** Model name as reported by provider */
     model?: string;
     /** Context window size in tokens */
     contextLength: number;
+    /** Where {@link contextLength} came from. */
+    contextLengthSource?: ModelMetadataSource;
     /** Model architecture (e.g., "llama", "mistral3") */
     architecture?: string;
     /** Parameter count */
     parameterCount?: number;
     /** Model capabilities reported by provider (e.g., "tools", "vision", "thinking") */
     capabilities?: string[];
+    /** Where {@link capabilities} came from. Set whenever `capabilities` is. */
+    capabilitiesSource?: ModelMetadataSource;
 }
 
 // ============================================================================
@@ -59,6 +73,11 @@ export interface ProviderConfig {
      * {@link LLMClientOptions.contextLength} for the mapping (Ollama num_ctx).
      */
     contextLength?: number;
+    /**
+     * Per-provider declared capabilities. Falls back to
+     * {@link AIModelConfig.capabilities}. See {@link LLMClientOptions.capabilities}.
+     */
+    capabilities?: string[];
     /**
      * Explicit priority (default: array order, lower = higher priority).
      * Providers sharing the SAME priority form a **pool**: the Router
@@ -167,6 +186,12 @@ export interface AIModelConfig {
      * {@link LLMClientOptions.contextLength} for the per-provider mapping.
      */
     contextLength?: number;
+    /**
+     * Declared model capabilities (e.g. `['tools', 'vision']`), applied to
+     * every provider unless a ProviderConfig overrides it. See
+     * {@link LLMClientOptions.capabilities}.
+     */
+    capabilities?: string[];
     /** Request timeout in ms (default: 30000) */
     timeout?: number;
     /** Retries per provider before failover (default: 2) */
@@ -212,10 +237,21 @@ export interface LLMClientOptions {
      * Ollama: sent as `options.num_ctx` — without it Ollama uses its own
      * (small, typically 4096) default and long agent prompts silently
      * truncate. Providers whose context is configured server-side
-     * (OpenAI-compatible, Anthropic, Google) ignore it. An explicit
+     * (OpenAI-compatible, Anthropic, Google) do not send it. An explicit
      * `num_ctx` in defaultParameters/parameters always wins.
+     *
+     * Every client's `getModelInfo()` reports this value for the configured
+     * model, ahead of what the endpoint reports, with
+     * `contextLengthSource: 'declared'`.
      */
     contextLength?: number;
+    /**
+     * Declared capabilities of the configured model (e.g. `['tools', 'vision']`).
+     * `getModelInfo()` reports this list as given, replacing what the endpoint
+     * reports or the model name suggests, with `capabilitiesSource: 'declared'`.
+     * It is not sent to the server.
+     */
+    capabilities?: string[];
     /** Enable debug logging */
     debug?: boolean;
     /** Vertex AI region */

@@ -196,6 +196,14 @@ type AnthropicStreamEvent =
     | { readonly type: 'ping' }
     | { readonly type: 'error'; readonly error: { readonly type: string; readonly message: string } };
 
+/**
+ * Window reported when config declares none (`contextLengthSource: 'assumed'`).
+ * One value for the whole protocol, not looked up by model name: the figure
+ * this client has always reported. A server with a smaller window should be
+ * given a declared `contextLength`.
+ */
+const ANTHROPIC_ASSUMED_CONTEXT_LENGTH = 200_000;
+
 // ============================================================================
 // Anthropic Client
 // ============================================================================
@@ -451,45 +459,34 @@ export class AnthropicClient extends BaseLLMClient {
     // Model Discovery
     // ========================================================================
 
+    /** The endpoint's model ids. A failed listing throws; nothing is made up. */
     override async getModels(): Promise<string[]> {
         const url = `${this.baseUrl}/v1/models`;
-        try {
-            const response = await httpRequest<{
-                data: AnthropicModelInfo[];
-            }>(url, {
-                headers: this.buildAnthropicHeaders(),
-                timeout: 5000,
-            });
-            return response.data.data.map((m) => m.id);
-        } catch {
-            // Fallback: return well-known Claude models
-            return ['claude-sonnet-4-20250514', 'claude-haiku-4-20250514', 'claude-opus-4-20250514'];
-        }
+        const response = await httpRequest<{
+            data: AnthropicModelInfo[];
+        }>(url, {
+            headers: this.buildAnthropicHeaders(),
+            timeout: 5000,
+        });
+        return response.data.data.map((m) => m.id);
     }
 
-    override async getModelInfo(_modelName?: string): Promise<ModelMetadata> {
-        // Claude models support large context windows
-        const model = _modelName ?? this.options.model;
-
-        // Claude 4 models have 200K context
-        if (
-            model.includes('claude-4') ||
-            model.includes('claude-opus') ||
-            model.includes('claude-sonnet') ||
-            model.includes('claude-haiku')
-        ) {
-            return {
-                model,
-                contextLength: 200_000,
-                capabilities: ['tools', 'vision', 'thinking'],
-            };
-        }
-
-        return {
-            model,
-            contextLength: 200_000,
-            capabilities: ['tools', 'vision'],
-        };
+    /**
+     * Declared values first. Otherwise the Messages protocol's own features
+     * (tool use and image input) and the protocol's usual window, both marked
+     * `assumed`: the model name is not read, and the endpoint is not asked.
+     */
+    override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
+        return this.withDeclaredModelInfo(
+            {
+                model: modelName ?? this.options.model,
+                contextLength: ANTHROPIC_ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource: 'assumed',
+                capabilities: ['tools', 'vision'],
+                capabilitiesSource: 'assumed',
+            },
+            modelName,
+        );
     }
 
     // ========================================================================

@@ -1,0 +1,847 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-10T02:20:15.230Z",
+  "title": "Design System: Universal LLM Client documentation site",
+  "extensions": {
+    "colorMeta": {
+      "signal": {
+        "role": "primary",
+        "displayName": "Signal Green",
+        "canonical": "#05704f",
+        "tonalRamp": [
+          "#001007",
+          "#002f1f",
+          "#025239",
+          "#167856",
+          "#449c79",
+          "#6cc29d",
+          "#b5e0cb",
+          "#e0f4ea"
+        ]
+      },
+      "signal-hover": {
+        "role": "primary",
+        "displayName": "Signal Green, hover",
+        "canonical": "#045c41",
+        "tonalRamp": [
+          "#001007",
+          "#012f1f",
+          "#08523a",
+          "#2b7659",
+          "#519a7c",
+          "#77c0a0",
+          "#badecd",
+          "#e2f3eb"
+        ]
+      },
+      "signal-active": {
+        "role": "primary",
+        "displayName": "Signal Green, active",
+        "canonical": "#034a34",
+        "tonalRamp": [
+          "#010f08",
+          "#042e20",
+          "#0f513b",
+          "#37745b",
+          "#5b987e",
+          "#80bda2",
+          "#beddce",
+          "#e4f3eb"
+        ]
+      },
+      "signal-wash": {
+        "role": "primary",
+        "displayName": "Signal Wash",
+        "canonical": "rgba(5, 112, 79, 0.1)",
+        "tonalRamp": [
+          "#001007",
+          "#002f1f",
+          "#025239",
+          "#167856",
+          "#449c79",
+          "#6cc29d",
+          "#b5e0cb",
+          "#e0f4ea"
+        ]
+      },
+      "on-signal": {
+        "role": "primary",
+        "displayName": "On Signal",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#262626",
+          "#454545",
+          "#666666",
+          "#898989",
+          "#aeaeae",
+          "#d4d4d4",
+          "#eeeeee"
+        ]
+      },
+      "ground": {
+        "role": "neutral",
+        "displayName": "Ground",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#262626",
+          "#454545",
+          "#666666",
+          "#898989",
+          "#aeaeae",
+          "#d4d4d4",
+          "#eeeeee"
+        ]
+      },
+      "ground-alt": {
+        "role": "neutral",
+        "displayName": "Alternate Ground",
+        "canonical": "#f5f6f6",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#262626",
+          "#444545",
+          "#656666",
+          "#888989",
+          "#adaeae",
+          "#d4d4d4",
+          "#eeeeee"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#0c0f0e",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#242726",
+          "#424645",
+          "#636766",
+          "#868a89",
+          "#abafad",
+          "#d2d5d4",
+          "#edefee"
+        ]
+      },
+      "ink-dim": {
+        "role": "neutral",
+        "displayName": "Dim Ink",
+        "canonical": "#474f4c",
+        "tonalRamp": [
+          "#090c0b",
+          "#222826",
+          "#3f4744",
+          "#606865",
+          "#838b88",
+          "#a7b0ad",
+          "#d1d5d4",
+          "#edefee"
+        ]
+      },
+      "ink-faint": {
+        "role": "neutral",
+        "displayName": "Faint Ink",
+        "canonical": "#636b68",
+        "tonalRamp": [
+          "#090c0b",
+          "#222826",
+          "#3f4744",
+          "#606865",
+          "#838b88",
+          "#a7b0ad",
+          "#d1d5d4",
+          "#edefee"
+        ]
+      },
+      "rule-strong": {
+        "role": "neutral",
+        "displayName": "Strong Rule",
+        "canonical": "#c6ccc9",
+        "tonalRamp": [
+          "#0a0c0b",
+          "#232826",
+          "#414644",
+          "#626765",
+          "#858b88",
+          "#aaafad",
+          "#d2d5d3",
+          "#edefee"
+        ]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Rule",
+        "canonical": "#e1e5e3",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#242726",
+          "#434644",
+          "#636765",
+          "#868a88",
+          "#abafad",
+          "#d3d5d4",
+          "#eeefee"
+        ]
+      },
+      "inline-code-fill": {
+        "role": "neutral",
+        "displayName": "Inline Code Fill",
+        "canonical": "rgba(12, 15, 14, 0.06)",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#242726",
+          "#424645",
+          "#636766",
+          "#868a89",
+          "#abafad",
+          "#d2d5d4",
+          "#edefee"
+        ]
+      },
+      "code-value": {
+        "role": "secondary",
+        "displayName": "Value Blue",
+        "canonical": "#33506f",
+        "tonalRamp": [
+          "#040c15",
+          "#102840",
+          "#2a4765",
+          "#4b6989",
+          "#6d8cae",
+          "#91b1d5",
+          "#c5d6ea",
+          "#e7eff9"
+        ]
+      },
+      "state-fail": {
+        "role": "tertiary",
+        "displayName": "Failure Red",
+        "canonical": "#b3261e",
+        "tonalRamp": [
+          "#200000",
+          "#4d0504",
+          "#860002",
+          "#b62921",
+          "#e05446",
+          "#fc8778",
+          "#fec4bb",
+          "#fee9e6"
+        ]
+      },
+      "state-move": {
+        "role": "tertiary",
+        "displayName": "Movement Amber",
+        "canonical": "#7a5200",
+        "tonalRamp": [
+          "#130900",
+          "#362200",
+          "#5d3e03",
+          "#865d15",
+          "#ab813e",
+          "#d2a664",
+          "#e8d0af",
+          "#f8eddd"
+        ]
+      },
+      "dark-signal": {
+        "role": "primary",
+        "displayName": "Signal Green (dark)",
+        "canonical": "#3ddc97",
+        "tonalRamp": [
+          "#001006",
+          "#002f1b",
+          "#045334",
+          "#187850",
+          "#24a16c",
+          "#22cd89",
+          "#a3e6c1",
+          "#d8f7e5"
+        ]
+      },
+      "dark-signal-hover": {
+        "role": "primary",
+        "displayName": "Signal Green, hover (dark)",
+        "canonical": "#6ee7b0",
+        "tonalRamp": [
+          "#001007",
+          "#032f1d",
+          "#0d5237",
+          "#097952",
+          "#11a26f",
+          "#4cc893",
+          "#abe3c6",
+          "#dcf6e7"
+        ]
+      },
+      "dark-signal-active": {
+        "role": "primary",
+        "displayName": "Signal Green, active (dark)",
+        "canonical": "#2fc586",
+        "tonalRamp": [
+          "#001006",
+          "#032f1c",
+          "#0e5235",
+          "#0d794f",
+          "#16a26b",
+          "#38cb8b",
+          "#a6e5c2",
+          "#daf7e6"
+        ]
+      },
+      "dark-signal-deep": {
+        "role": "primary",
+        "displayName": "Deep Mint (dark)",
+        "canonical": "#12a16b",
+        "tonalRamp": [
+          "#001006",
+          "#032f1c",
+          "#0e5236",
+          "#0c7950",
+          "#14a26c",
+          "#4dc890",
+          "#abe3c4",
+          "#dcf6e7"
+        ]
+      },
+      "dark-signal-wash": {
+        "role": "primary",
+        "displayName": "Signal Wash (dark)",
+        "canonical": "rgba(61, 220, 151, 0.14)",
+        "tonalRamp": [
+          "#001006",
+          "#002f1b",
+          "#045334",
+          "#187850",
+          "#24a16c",
+          "#22cd89",
+          "#a3e6c1",
+          "#d8f7e5"
+        ]
+      },
+      "dark-on-signal": {
+        "role": "primary",
+        "displayName": "On Signal (dark)",
+        "canonical": "#04130c",
+        "tonalRamp": [
+          "#070d0a",
+          "#1c2a23",
+          "#384a41",
+          "#586b62",
+          "#7b8f85",
+          "#9fb4a9",
+          "#ccd7d2",
+          "#ebf0ed"
+        ]
+      },
+      "dark-ground": {
+        "role": "neutral",
+        "displayName": "Ground (dark)",
+        "canonical": "#0b0d0c",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252726",
+          "#434644",
+          "#646765",
+          "#878a88",
+          "#acafad",
+          "#d3d4d4",
+          "#eeefee"
+        ]
+      },
+      "dark-ground-alt": {
+        "role": "neutral",
+        "displayName": "Alternate Ground (dark)",
+        "canonical": "#101312",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#242726",
+          "#424645",
+          "#636766",
+          "#868a89",
+          "#abafad",
+          "#d2d5d4",
+          "#eeefee"
+        ]
+      },
+      "dark-ground-soft": {
+        "role": "neutral",
+        "displayName": "Soft Ground (dark)",
+        "canonical": "#131716",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#242726",
+          "#414645",
+          "#626766",
+          "#858a89",
+          "#aaafae",
+          "#d2d5d4",
+          "#edefee"
+        ]
+      },
+      "dark-ground-raised": {
+        "role": "neutral",
+        "displayName": "Raised Ground (dark)",
+        "canonical": "#151918",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#242726",
+          "#424645",
+          "#626766",
+          "#858a89",
+          "#aaafae",
+          "#d2d5d4",
+          "#edefee"
+        ]
+      },
+      "dark-gutter": {
+        "role": "neutral",
+        "displayName": "Gutter (dark)",
+        "canonical": "#060807",
+        "tonalRamp": [
+          "#0a0b0b",
+          "#252726",
+          "#434644",
+          "#646765",
+          "#868a88",
+          "#abafad",
+          "#d3d5d4",
+          "#eeefee"
+        ]
+      },
+      "dark-ink": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "canonical": "#eef1ef",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252726",
+          "#434644",
+          "#646765",
+          "#878a88",
+          "#acafad",
+          "#d3d4d3",
+          "#eeefee"
+        ]
+      },
+      "dark-ink-dim": {
+        "role": "neutral",
+        "displayName": "Dim Ink (dark)",
+        "canonical": "#a9b1ad",
+        "tonalRamp": [
+          "#0a0c0b",
+          "#222825",
+          "#404743",
+          "#616864",
+          "#848b87",
+          "#a8b0ac",
+          "#d1d5d3",
+          "#edefee"
+        ]
+      },
+      "dark-ink-faint": {
+        "role": "neutral",
+        "displayName": "Faint Ink (dark)",
+        "canonical": "#838c88",
+        "tonalRamp": [
+          "#090c0b",
+          "#222825",
+          "#3f4744",
+          "#606865",
+          "#838c88",
+          "#a7b0ac",
+          "#d0d5d3",
+          "#edefee"
+        ]
+      },
+      "dark-rule-strong": {
+        "role": "neutral",
+        "displayName": "Strong Rule (dark)",
+        "canonical": "#2e3633",
+        "tonalRamp": [
+          "#090c0b",
+          "#212826",
+          "#3f4744",
+          "#606865",
+          "#828c88",
+          "#a7b0ad",
+          "#d0d6d3",
+          "#ecefee"
+        ]
+      },
+      "dark-rule": {
+        "role": "neutral",
+        "displayName": "Rule (dark)",
+        "canonical": "#1f2523",
+        "tonalRamp": [
+          "#0a0c0b",
+          "#222826",
+          "#404744",
+          "#616865",
+          "#848b89",
+          "#a8b0ad",
+          "#d1d5d4",
+          "#edefee"
+        ]
+      },
+      "dark-inline-code-fill": {
+        "role": "neutral",
+        "displayName": "Inline Code Fill (dark)",
+        "canonical": "rgba(238, 241, 239, 0.1)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252726",
+          "#434644",
+          "#646765",
+          "#878a88",
+          "#acafad",
+          "#d3d4d3",
+          "#eeefee"
+        ]
+      },
+      "dark-code-value": {
+        "role": "secondary",
+        "displayName": "Value Blue (dark)",
+        "canonical": "#b4c4d8",
+        "tonalRamp": [
+          "#070b11",
+          "#1c2735",
+          "#394657",
+          "#596779",
+          "#7c8b9d",
+          "#a0b0c3",
+          "#cdd5e0",
+          "#ebeff4"
+        ]
+      },
+      "dark-state-fail": {
+        "role": "tertiary",
+        "displayName": "Failure Red (dark)",
+        "canonical": "#ff8f80",
+        "tonalRamp": [
+          "#1d0101",
+          "#4f0101",
+          "#7f1813",
+          "#a74035",
+          "#cf6457",
+          "#f98a7b",
+          "#fcc5bc",
+          "#fde9e6"
+        ]
+      },
+      "dark-state-move": {
+        "role": "tertiary",
+        "displayName": "Movement Amber (dark)",
+        "canonical": "#f0c26a",
+        "tonalRamp": [
+          "#120900",
+          "#342300",
+          "#5a4004",
+          "#816016",
+          "#ad8121",
+          "#d3a64d",
+          "#e9d1a7",
+          "#f9edd9"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The homepage headline, once."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Section headings."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "The heading inside a capability panel."
+      },
+      "subtitle": {
+        "displayName": "Subtitle",
+        "purpose": "Headings inside framed panels."
+      },
+      "lead": {
+        "displayName": "Lead",
+        "purpose": "One paragraph under a heading, in dim ink."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Panel summaries and running text."
+      },
+      "body-sm": {
+        "displayName": "Body, small",
+        "purpose": "List rows, table cells and notes."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Term labels, legends, the simulation notice and status text. Sentence case."
+      },
+      "control": {
+        "displayName": "Control",
+        "purpose": "Buttons, text links and navigation rows."
+      },
+      "mono-command": {
+        "displayName": "Mono, command",
+        "purpose": "The install command."
+      },
+      "mono-data": {
+        "displayName": "Mono, data",
+        "purpose": "Trace rows, with tabular figures. Event names at weight 600."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "ulc-ease",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "The one easing curve, for every transition and the trace entrance."
+      },
+      {
+        "name": "state-change",
+        "value": "0.2s",
+        "purpose": "Colour, border and underline changes on hover and selection."
+      },
+      {
+        "name": "arrow-nudge",
+        "value": "0.25s, translateX(3px)",
+        "purpose": "A trailing arrow slides right on hover. Off under reduced motion."
+      },
+      {
+        "name": "trace-in",
+        "value": "0.45s, opacity 0 to 1, translateY(0.25rem) to 0",
+        "purpose": "Entrance of each trace row during playback. The only authored motion. Off under reduced motion, where the finished trace appears at once."
+      },
+      {
+        "name": "trace-hold",
+        "value": "220ms to 900ms per row",
+        "purpose": "Pause before each row appears during playback, longer for slower events."
+      },
+      {
+        "name": "answer-highlight",
+        "value": "0.5s",
+        "purpose": "Background cross-fade of the answering provider lines in the code sample."
+      },
+      {
+        "name": "copy-confirmation",
+        "value": "2400ms",
+        "purpose": "How long the Copy button shows its confirmed state."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "capability-panel-stack",
+        "value": "1100px"
+      },
+      {
+        "name": "columns-stack",
+        "value": "960px"
+      },
+      {
+        "name": "tab-rail-to-grid",
+        "value": "860px"
+      },
+      {
+        "name": "phone",
+        "value": "640px"
+      },
+      {
+        "name": "install-compact",
+        "value": "480px"
+      }
+    ],
+    "focusRing": {
+      "value": "2px solid, offset 2px, radius 4px",
+      "color": "signal",
+      "purpose": "Applied to every focusable element site wide."
+    },
+    "icons": {
+      "grid": "16px",
+      "stroke": "1.5px, round caps and joins, no fill, currentColor",
+      "set": [
+        "copy",
+        "check",
+        "cross",
+        "arrow",
+        "retry",
+        "chevron"
+      ],
+      "source": "docs/.vitepress/theme/home/UlcIcon.vue"
+    },
+    "codeThemes": {
+      "source": "docs/.vitepress/config.mts",
+      "light": {
+        "name": "ulc-light",
+        "text": "#0c0f0e",
+        "dim": "#474f4c",
+        "faint": "#636b68",
+        "value": "#33506f",
+        "ground": "#f5f6f6"
+      },
+      "dark": {
+        "name": "ulc-dark",
+        "text": "#eef1ef",
+        "dim": "#a9b1ad",
+        "faint": "#838c88",
+        "value": "#b4c4d8",
+        "ground": "#101312"
+      }
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one filled green action in a view, with a trailing arrow that nudges on hover.",
+      "html": "<a class=\"ds-btn ds-btn-primary\" href=\"#\">Get started <svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8h10M9 4l4 4-4 4\"/></svg></a>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; gap: 0.5rem; height: 2.75rem; padding: 0 1.125rem; border: 1px solid var(--vp-c-border, #c6ccc9); border-radius: 8px; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.9375rem; font-weight: 600; color: var(--vp-c-text-1, #0c0f0e); text-decoration: none; transition: background-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)), border-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)), color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-btn svg { transition: transform 0.25s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-btn:hover svg { transform: translateX(3px); } .ds-btn:focus-visible { outline: 2px solid var(--vp-c-brand-1, #05704f); outline-offset: 2px; } .ds-btn-primary { border-color: var(--vp-button-brand-bg, #05704f); background: var(--vp-button-brand-bg, #05704f); color: var(--vp-button-brand-text, #ffffff); } .ds-btn-primary:hover { border-color: var(--vp-button-brand-hover-bg, #045c41); background: var(--vp-button-brand-hover-bg, #045c41); color: var(--vp-button-brand-hover-text, #ffffff); } @media (prefers-reduced-motion: reduce) { .ds-btn svg { transition: none; } }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A hairline-outlined action in neutral ink beside the primary.",
+      "html": "<a class=\"ds-btn-secondary\" href=\"#\">API reference</a>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; height: 2.75rem; padding: 0 1.125rem; border: 1px solid var(--vp-c-border, #c6ccc9); border-radius: 8px; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.9375rem; font-weight: 600; color: var(--vp-c-text-1, #0c0f0e); text-decoration: none; transition: border-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-btn-secondary:hover { border-color: var(--vp-c-text-3, #636b68); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--vp-c-brand-1, #05704f); outline-offset: 2px; }"
+    },
+    {
+      "name": "Install Command",
+      "kind": "custom",
+      "refersTo": "install-row",
+      "description": "Package manager pills above a monospace command row with a divided Copy button.",
+      "html": "<div class=\"ds-install\"><div class=\"ds-install-managers\"><span class=\"ds-install-pill ds-install-pill-on\">npm</span><span class=\"ds-install-pill\">bun</span><span class=\"ds-install-pill\">pnpm</span></div><div class=\"ds-install-row\"><code class=\"ds-install-command\">npm install universal-llm-client</code><button type=\"button\" class=\"ds-install-copy\"><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"5.5\" y=\"5.5\" width=\"8\" height=\"8\" rx=\"1.5\"/><path d=\"M10.5 5.5v-1a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h1\"/></svg><span>Copy</span></button></div></div>",
+      "css": ".ds-install { max-width: 30rem; } .ds-install-managers { display: flex; gap: 0.25rem; margin-bottom: 0.5rem; } .ds-install-pill { padding: 0.3125rem 0.75rem; border-radius: 6px; font-family: var(--vp-font-family-mono, 'Monaspace Neon', ui-monospace, monospace); font-size: 0.8125rem; line-height: 1.25rem; color: var(--vp-c-text-2, #474f4c); cursor: pointer; transition: color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)), background-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-install-pill:hover { color: var(--vp-c-text-1, #0c0f0e); } .ds-install-pill-on { color: var(--vp-c-text-1, #0c0f0e); background: var(--vp-c-bg-soft, #f5f6f6); box-shadow: inset 0 0 0 1px var(--vp-c-border, #c6ccc9); } .ds-install-row { display: flex; align-items: stretch; border: 1px solid var(--vp-c-border, #c6ccc9); border-radius: var(--ulc-radius, 10px); background: var(--vp-c-bg-alt, #f5f6f6); overflow: hidden; } .ds-install-command { flex: 1; min-width: 0; padding: 0.8125rem 1rem; font-family: var(--vp-font-family-mono, 'Monaspace Neon', ui-monospace, monospace); font-size: 0.875rem; line-height: 1.5rem; color: var(--vp-c-text-1, #0c0f0e); white-space: nowrap; overflow-x: auto; } .ds-install-copy { display: inline-flex; align-items: center; justify-content: center; gap: 0.4375rem; width: 6.25rem; border: 0; border-left: 1px solid var(--vp-c-border, #c6ccc9); background: none; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.875rem; font-weight: 550; color: var(--vp-c-text-1, #0c0f0e); cursor: pointer; transition: background-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-install-copy:hover { background: var(--vp-c-bg-soft, #f5f6f6); } .ds-install-copy:focus-visible { outline: 2px solid var(--vp-c-brand-1, #05704f); outline-offset: -2px; }"
+    },
+    {
+      "name": "Provider Select",
+      "kind": "input",
+      "refersTo": "control-compact",
+      "description": "A native select with a drawn chevron, labelled with the provider name and its id in monospace.",
+      "html": "<div class=\"ds-select-field\"><label class=\"ds-select-label\" for=\"ds-select-demo\">Google <span>google-0</span></label><div class=\"ds-select\"><select id=\"ds-select-demo\"><option>Healthy</option><option selected>Returns HTTP 429</option><option>Unreachable</option></select><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m4 6 4 4 4-4\"/></svg></div></div>",
+      "css": ".ds-select-field { max-width: 12rem; } .ds-select-label { display: flex; align-items: baseline; gap: 0 0.5rem; margin-bottom: 0.375rem; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.875rem; line-height: 1.25rem; font-weight: 600; color: var(--vp-c-text-1, #0c0f0e); } .ds-select-label span { font-family: var(--vp-font-family-mono, 'Monaspace Neon', ui-monospace, monospace); font-size: 0.75rem; font-weight: 400; color: var(--vp-c-text-2, #474f4c); } .ds-select { position: relative; color: var(--vp-c-text-2, #474f4c); } .ds-select select { width: 100%; height: 2.5rem; padding: 0 2rem 0 0.75rem; border: 1px solid var(--vp-c-border, #c6ccc9); border-radius: 8px; background: var(--vp-c-bg, #ffffff); color: var(--vp-c-text-1, #0c0f0e); font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.875rem; appearance: none; cursor: pointer; transition: border-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-select select:hover { border-color: var(--vp-c-text-3, #636b68); } .ds-select select:focus-visible { outline: 2px solid var(--vp-c-brand-1, #05704f); outline-offset: 2px; } .ds-select svg { position: absolute; right: 0.625rem; top: 50%; transform: translateY(-50%); pointer-events: none; }"
+    },
+    {
+      "name": "Capability Tabs",
+      "kind": "nav",
+      "description": "A vertical tab rail on a hairline. The selected tab is marked by one green segment and heavier ink.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\"><button type=\"button\" role=\"tab\" class=\"ds-tab\" aria-selected=\"true\">Streaming</button><button type=\"button\" role=\"tab\" class=\"ds-tab\" aria-selected=\"false\">Tool calling</button><button type=\"button\" role=\"tab\" class=\"ds-tab\" aria-selected=\"false\">Structured output</button></div>",
+      "css": ".ds-tabs { display: flex; flex-direction: column; width: 11rem; border-left: 1px solid var(--vp-c-divider, #e1e5e3); } .ds-tab { margin-left: -1px; padding: 0.5625rem 1rem; border: 0; border-left: 1px solid transparent; background: none; text-align: left; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.9375rem; line-height: 1.5rem; font-weight: 500; color: var(--vp-c-text-2, #474f4c); cursor: pointer; transition: color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)), border-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-tab:hover { color: var(--vp-c-text-1, #0c0f0e); } .ds-tab[aria-selected='true'] { border-left-color: var(--vp-c-brand-1, #05704f); color: var(--vp-c-text-1, #0c0f0e); font-weight: 650; } .ds-tab:focus-visible { outline: 2px solid var(--vp-c-brand-1, #05704f); outline-offset: 2px; border-radius: 4px; }"
+    },
+    {
+      "name": "Text Link",
+      "kind": "nav",
+      "description": "Neutral ink on a hairline underline with a faint arrow. Never green.",
+      "html": "<a class=\"ds-text-link\" href=\"#\">Streaming guide <svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8h10M9 4l4 4-4 4\"/></svg></a>",
+      "css": ".ds-text-link { display: inline-flex; align-items: center; gap: 0.375rem; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.9375rem; font-weight: 600; color: var(--vp-c-text-1, #0c0f0e); text-decoration: underline; text-decoration-color: var(--vp-c-border, #c6ccc9); text-decoration-thickness: 1px; text-underline-offset: 5px; transition: text-decoration-color 0.2s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-text-link svg { color: var(--vp-c-text-3, #636b68); transition: transform 0.25s var(--ulc-ease, cubic-bezier(0.16, 1, 0.3, 1)); } .ds-text-link:hover { text-decoration-color: currentColor; } .ds-text-link:hover svg { transform: translateX(3px); } .ds-text-link:focus-visible { outline: 2px solid var(--vp-c-brand-1, #05704f); outline-offset: 2px; border-radius: 4px; }"
+    },
+    {
+      "name": "Failover Trace",
+      "kind": "custom",
+      "refersTo": "trace-row-answered",
+      "description": "Audit-log rows in monospace: time, event with icon, provider, detail. Only the row that answered is green.",
+      "html": "<div class=\"ds-trace-panel\"><div class=\"ds-trace-head\"><strong>One call, three providers</strong><span>Simulated in your browser with the library's routing rules. Nothing is sent.</span></div><ol class=\"ds-trace\"><li class=\"ds-trace-row\"><span class=\"ds-trace-at\">+0.00 s</span><span class=\"ds-trace-event\"><span class=\"ds-trace-mark\"></span>REQUEST</span><span class=\"ds-trace-dim\">google</span><span class=\"ds-trace-dim\">model-id</span></li><li class=\"ds-trace-row ds-trace-fail\"><span class=\"ds-trace-at\">+0.12 s</span><span class=\"ds-trace-event\"><span class=\"ds-trace-mark\"><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m4 4 8 8m0-8-8 8\"/></svg></span>ERROR</span><span class=\"ds-trace-dim\">google-0</span><span class=\"ds-trace-dim\">HTTP 429, cooldown 30 s</span></li><li class=\"ds-trace-row ds-trace-move\"><span class=\"ds-trace-at\">+0.12 s</span><span class=\"ds-trace-event\"><span class=\"ds-trace-mark\"><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8h10M9 4l4 4-4 4\"/></svg></span>FAILOVER</span><span class=\"ds-trace-dim\">google-0</span><span class=\"ds-trace-dim\">to openai-1</span></li><li class=\"ds-trace-row ds-trace-ok\"><span class=\"ds-trace-at\">+3.90 s</span><span class=\"ds-trace-event\"><span class=\"ds-trace-mark\"><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8.5 6.5 12 13 4.5\"/></svg></span>RESPONSE</span><span>ollama</span><span>1280 ms, 38 tokens</span></li></ol></div>",
+      "css": ".ds-trace-panel { border: 1px solid var(--vp-c-border, #c6ccc9); border-radius: 14px; background: var(--vp-c-bg-alt, #f5f6f6); overflow: hidden; } .ds-trace-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1.5rem; padding: 0.875rem 1.25rem; border-bottom: 1px solid var(--vp-c-divider, #e1e5e3); font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); } .ds-trace-head strong { font-size: 1rem; line-height: 1.5rem; font-weight: 650; letter-spacing: -0.01em; color: var(--vp-c-text-1, #0c0f0e); } .ds-trace-head span { font-size: 0.8125rem; line-height: 1.5rem; color: var(--vp-c-text-2, #474f4c); } .ds-trace { margin: 0; padding: 0.5rem 0; list-style: none; font-family: var(--vp-font-family-mono, 'Monaspace Neon', ui-monospace, monospace); font-size: 0.8125rem; line-height: 1.5rem; font-variant-numeric: tabular-nums; } .ds-trace-row { display: grid; grid-template-columns: 4.25rem 5.75rem 4.5rem minmax(0, 1fr); column-gap: 0.75rem; padding: 0 1.25rem; color: var(--vp-c-text-1, #0c0f0e); } .ds-trace-at { color: var(--vp-c-text-3, #636b68); text-align: right; } .ds-trace-event { display: inline-flex; align-items: center; gap: 0.375rem; height: 1.5rem; font-weight: 600; } .ds-trace-mark { flex: none; width: 1rem; height: 1rem; } .ds-trace-dim { color: var(--vp-c-text-2, #474f4c); } .ds-trace-fail .ds-trace-event { color: var(--ulc-fail, #b3261e); } .ds-trace-move .ds-trace-event { color: var(--ulc-retry, #7a5200); } .ds-trace-ok { background: var(--ulc-live-bg, rgba(5, 112, 79, 0.1)); } .ds-trace-ok .ds-trace-event { color: var(--ulc-ok, #05704f); } .ds-trace-ok .ds-trace-at { color: var(--vp-c-text-2, #474f4c); }"
+    },
+    {
+      "name": "Protocol Table",
+      "kind": "custom",
+      "description": "A framed table of wire protocols against capabilities, with a drawn check, plain words for no, and written caveats.",
+      "html": "<div class=\"ds-matrix\"><table><thead><tr><th scope=\"col\">Capability</th><th scope=\"col\">OpenAI Chat Completions</th><th scope=\"col\">Anthropic Messages</th></tr></thead><tbody><tr><th scope=\"row\">Structured output</th><td><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8.5 6.5 12 13 4.5\"/></svg></td><td>Validated client-side</td></tr><tr><th scope=\"row\">Embeddings</th><td><svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8.5 6.5 12 13 4.5\"/></svg></td><td class=\"ds-matrix-no\">Not supported</td></tr></tbody></table></div>",
+      "css": ".ds-matrix { border: 1px solid var(--vp-c-border, #c6ccc9); border-radius: 14px; overflow-x: auto; } .ds-matrix table { width: 100%; border-collapse: collapse; font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 0.9375rem; line-height: 1.375rem; color: var(--vp-c-text-1, #0c0f0e); } .ds-matrix th, .ds-matrix td { padding: 0.8125rem 1.25rem; border-bottom: 1px solid var(--vp-c-divider, #e1e5e3); text-align: left; vertical-align: middle; } .ds-matrix tbody tr:last-child th, .ds-matrix tbody tr:last-child td { border-bottom: 0; } .ds-matrix thead th { background: var(--vp-c-bg-alt, #f5f6f6); font-weight: 650; } .ds-matrix tbody th { font-weight: 550; white-space: nowrap; } .ds-matrix-no { color: var(--vp-c-text-2, #474f4c); }"
+    },
+    {
+      "name": "Fact Rows",
+      "kind": "custom",
+      "description": "A term and its detail between hairlines. The list pattern used in place of bullets and tiles.",
+      "html": "<dl class=\"ds-facts\"><div><dt>Stateless</dt><dd>No conversation history is stored. Your framework owns memory.</dd></div><div><dt>Composable</dt><dd>Create separate instances for chat, embeddings and vision.</dd></div></dl>",
+      "css": ".ds-facts { margin: 0; border-top: 1px solid var(--vp-c-divider, #e1e5e3); font-family: var(--vp-font-family-base, 'Mona Sans', system-ui, sans-serif); font-size: 1rem; color: var(--vp-c-text-1, #0c0f0e); } .ds-facts > div { display: grid; grid-template-columns: 9.5rem minmax(0, 1fr); column-gap: 1.5rem; padding: 0.9375rem 0; border-bottom: 1px solid var(--vp-c-divider, #e1e5e3); } .ds-facts dt { font-weight: 650; } .ds-facts dd { margin: 0; color: var(--vp-c-text-2, #474f4c); line-height: 1.55; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Audit Log",
+    "overview": "Scope. This file covers the documentation site only: the homepage (`docs/index.md` and the components in `docs/.vitepress/theme/home/`) plus the tokens in `docs/.vitepress/theme/tokens.css` and the code themes in `docs/.vitepress/config.mts`, which the guide and API pages inherit. Colour values in the frontmatter are light theme first; the same roles prefixed `dark-` are the dark theme.\n\nThe site is a serious library site for developers and for AI agents building tools. It states the offer in plain words and then proves it with the thing the library actually produces: a list of audit events. Everything else follows from that log. Surfaces are near-white or near-black neutrals with a faint green cast, separated by one-pixel rules. Type is one sans family for prose and one monospace family for anything a machine says. A single green appears only where something answered, where something is live, or where the primary action is.\n\nThe homepage is dense and flat. It uses tables, tabbed code and log rows as its component language, and it has no hero illustration, logo strip, icon-card grid, glass, glow or gradient. Compatibility is stated per wire protocol (OpenAI Chat Completions, Anthropic Messages, Gemini, Ollama) in a table, and code samples use placeholder model ids. Motion is limited to one authored moment, the playback of the failover trace, and that moment has a reduced-motion path.\n\nThe guide and API pages keep the default VitePress theme layout. They inherit the fonts, grounds, ink, signal green, focus ring and code themes, and nothing else. On those pages the default theme also applies the signal green to body links and to the current navigation item.",
+    "keyCharacteristics": [
+      "Neutral grounds with a slight green cast, in a light and a dark theme of equal standing.",
+      "One signal green, used for what answered, what is live, and the primary action.",
+      "Hairline panels and rules. No shadow, glass, gradient or glow anywhere.",
+      "Mona Sans for prose, Monaspace Neon for code, commands, ids and timestamps.",
+      "Code in neutral ink with one quiet blue for literal values and no red family.",
+      "Drawn 16px single-stroke icons from one family.",
+      "One authored motion moment, the trace playback, with a reduced-motion path."
+    ],
+    "rules": [
+      {
+        "name": "The Signal Rule",
+        "body": "Green marks only what answered, what is live, and the primary action. On the homepage that is the RESPONSE row and the provider lines that produced it, the selected tab, the focus ring and selection, and one filled button. Text links, secondary buttons, icons and inline code stay in neutral ink.",
+        "section": "colors"
+      },
+      {
+        "name": "The Quiet Code Rule",
+        "body": "Code is neutral ink in three strengths (ink for identifiers, dim ink for keywords and punctuation, faint ink for comments) plus Value Blue for literals. There is no red family in code, so a code sample can never compete with the failure state in the trace beside it.",
+        "section": "colors"
+      },
+      {
+        "name": "The Never Colour Alone Rule",
+        "body": "Every trace state is carried by its event name in words and by an icon, and only then by colour. ERROR has a cross, RESPONSE a check, FAILOVER an arrow, RETRY a loop.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Voices Rule",
+        "body": "Mona Sans is for what a person says. Monaspace Neon is for what a machine says: code, commands, provider types, ids, paths and timestamps. A value never changes family to look more technical, and a heading is never set in monospace.",
+        "section": "typography"
+      },
+      {
+        "name": "The 46 Column Rule",
+        "body": "Homepage code samples are wrapped to 46 columns or fewer, so that at 0.75rem with 16px side padding they fit a phone without horizontal scrolling. Code containers go edge to edge below 640px for the same reason.",
+        "section": "typography"
+      },
+      {
+        "name": "The Reserved Height Rule",
+        "body": "Anything that changes while the visitor watches keeps its height. The trace has a reserved height and scrolls inside itself, a new run replaces rows in place, and the status sentence and the copy confirmation hold a minimum height when empty. The page never jumps.",
+        "section": "layout"
+      },
+      {
+        "name": "The Hairline Rule",
+        "body": "A surface is separated from the page by one pixel of rule and at most one tonal step. If a panel seems to need a shadow to read as a panel, its outline or its ground is wrong.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Honest Simulation Rule",
+        "body": "The failover demo follows the library's real routing rules and defaults: two retries on a 5xx before failing over, immediate failover with a 30 second cooldown on a 429 or a timeout, and a 2.5 second probe for a cold provider. The panel says in its head that it is simulated in the browser and that nothing is sent. If the router changes, the demo changes with it.",
+        "section": "components"
+      },
+      {
+        "name": "The Protocol Table Rule",
+        "body": "Compatibility is shown as a table of wire protocols against capabilities. It is never a list, strip or grid of provider names, logos or model names, and samples use placeholder model ids.",
+        "section": "components"
+      },
+      {
+        "name": "The One Moment Rule",
+        "body": "The trace playback is the only authored motion. Everything else is state feedback: 0.2s colour changes and a 3px arrow nudge on hover, all on one easing curve. Nothing animates on load or on scroll.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do keep green for what answered, what is live, and the primary action. One filled green button per view.",
+      "Do separate surfaces with a one-pixel rule and at most one tonal step, at 14px corners for panels, 10px for code and 8px for controls.",
+      "Do set anything a machine says in Monaspace Neon and everything else in Mona Sans.",
+      "Do pair every state colour with a word and an icon.",
+      "Do wrap homepage code samples to 46 columns and use placeholder model ids such as `model-id`.",
+      "Do state compatibility per wire protocol, in the table.",
+      "Do reserve the height of anything that updates in place, and give every motion a reduced-motion path.",
+      "Do draw new icons in the existing family: 16px grid, 1.5px round stroke, no fill, current colour.",
+      "Do keep both themes at 4.5:1 or better for text, including text on the green wash, where timestamps step up from Faint Ink to Dim Ink."
+    ],
+    "donts": [
+      "Don't add elevation shadows, glass, blur, gradients or glow. An inset one-pixel line drawn with `box-shadow` is a hairline, not a shadow, and is the only permitted use.",
+      "Don't use red, or any warm hue, in code themes. Red and amber belong to the trace.",
+      "Don't colour text links, secondary buttons, icons or inline code green on the homepage.",
+      "Don't list providers or models as proof of compatibility, and don't put real model names in samples.",
+      "Don't animate on load or on scroll, and don't add a second authored motion moment.",
+      "Don't use icon tiles, card grids, logo strips or a hero illustration.",
+      "Don't let the demo show a sequence the router would not produce, or drop the notice that it is a simulation."
+    ]
+  }
+}

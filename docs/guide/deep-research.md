@@ -1,11 +1,12 @@
-# Deep Research (Gemini)
+# Deep Research
 
-Google Gemini's **Deep Research** is an agentic, long-running mode: the model plans, browses,
-and synthesizes a cited report over several minutes. It runs on a dedicated `interactions`
-endpoint (not `generateContent`), so the client exposes it as its own methods.
+Deep Research is an agentic, long-running mode on the Gemini protocol: an agent plans, browses,
+and synthesizes a report over several minutes. It runs on a dedicated `interactions`
+endpoint (not `generateContent`), so the client exposes it as its own methods, `deepResearch()` and
+`deepResearchStream()`.
 
-> **Google AI Studio only.** `deepResearch` requires a `type: 'google'` provider and throws a
-> clear error otherwise (Vertex AI is not supported).
+> **Needs a `type: 'google'` provider.** `deepResearch` throws a clear error when the chain has
+> no `google` provider, or only a `vertex` one (the Vertex AI client does not support it).
 
 ## Run and await a report
 
@@ -14,7 +15,7 @@ elapses), returning the report and intermediate steps:
 
 ```typescript
 const model = new AIModel({
-  model: 'gemini-3.5-flash',
+  model: 'model-id',
   providers: [{ type: 'google', apiKey: process.env.GOOGLE_API_KEY }],
 });
 
@@ -46,7 +47,7 @@ for await (const ev of model.deepResearchStream('Compare RISC-V vs ARM in 2026.'
 
 | Option | Default | Description |
 |---|---|---|
-| `agent` | `'deep-research-preview-04-2026'` | Research agent id. |
+| `agent` | A built-in preview agent id, set in `src/providers/google.ts` | Research agent id. Pass the id you want to use; the built-in default is a preview id. |
 | `tools` | — | Allowed tools, e.g. `['google_search', 'url_context', 'code_execution']`. |
 | `thinkingSummaries` | `'auto'` | Emit intermediate reasoning (`'auto'`) or not (`'none'`). |
 | `previousInteractionId` | — | Continue a prior interaction (follow-up question). |
@@ -70,6 +71,5 @@ interface DeepResearchResult {
 ## Notes
 
 - Runs take **minutes** — keep `timeoutMs` generous, or use the streaming variant for progress.
-- The interactions preview API can be flaky; `deepResearch()` retries transient errors and
-  tolerates blips during polling.
+- `deepResearch()` retries transient errors and tolerates failed polls.
 - The interaction continues server-side even if you stop polling (it's a background job).

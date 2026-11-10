@@ -847,12 +847,25 @@ describe('OpenAICompatibleClient Structured Output', () => {
             expect(cap.headers['x-custom']).toBe('v');
         });
 
-        test('uses known Cerebras context metadata when /models omits max_model_len', async () => {
+        test('reports the assumed default when Cerebras /models omits max_model_len (no built-in table)', async () => {
+            captureRequest({ object: 'list', data: [{ id: 'gemma-4-31b', object: 'model' }] });
             const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b' });
 
             await expect(client.getModelInfo()).resolves.toMatchObject({
                 model: 'gemma-4-31b',
+                contextLength: 8192,
+                contextLengthSource: 'assumed',
+            });
+        });
+
+        test('a declared contextLength describes a Cerebras model whose /models omits a window', async () => {
+            captureRequest({ object: 'list', data: [{ id: 'gemma-4-31b', object: 'model' }] });
+            const client = createClient({ url: 'https://api.cerebras.ai', model: 'gemma-4-31b', contextLength: 131_072 });
+
+            await expect(client.getModelInfo()).resolves.toMatchObject({
+                model: 'gemma-4-31b',
                 contextLength: 131_072,
+                contextLengthSource: 'declared',
             });
         });
     });
