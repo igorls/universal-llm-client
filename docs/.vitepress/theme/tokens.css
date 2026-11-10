@@ -1,0 +1,154 @@
+/* ============================================================================
+   Universal LLM Client: site tokens
+   Neutral grounds, hairline rules, one signal green. The green marks what
+   answered, what is live, and the primary action. Code is neutral ink with one
+   quiet blue for literal values (the themes are in .vitepress/config.mts).
+   ============================================================================ */
+
+/* Self-hosted, Latin subset. Licences sit beside the files in public/fonts. */
+@font-face {
+    font-family: 'Mona Sans';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 200 900;
+    font-stretch: 75% 125%;
+    src: url('/fonts/mona-sans-latin-wdth.woff2') format('woff2-variations');
+}
+
+@font-face {
+    font-family: 'Monaspace Neon';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 400;
+    src: url('/fonts/monaspace-neon-latin-400.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Monaspace Neon';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 600;
+    src: url('/fonts/monaspace-neon-latin-600.woff2') format('woff2');
+}
+
+:root {
+    --vp-font-family-base: 'Mona Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --vp-font-family-mono: 'Monaspace Neon', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+
+    /* Grounds and ink (light) */
+    --vp-c-bg: #ffffff;
+    --vp-c-bg-alt: #f5f6f6;
+    --vp-c-bg-elv: #ffffff;
+    --vp-c-bg-soft: #f5f6f6;
+    --vp-c-text-1: #0c0f0e;
+    --vp-c-text-2: #474f4c;
+    --vp-c-text-3: #636b68;
+    --vp-c-border: #c6ccc9;
+    --vp-c-divider: #e1e5e3;
+    --vp-c-gutter: #e1e5e3;
+
+    /* Signal green (light) */
+    --vp-c-brand-1: #05704f;
+    --vp-c-brand-2: #045c41;
+    --vp-c-brand-3: #05704f;
+    --vp-c-brand-soft: rgba(5, 112, 79, 0.1);
+
+    --vp-button-brand-bg: #05704f;
+    --vp-button-brand-text: #ffffff;
+    --vp-button-brand-border: transparent;
+    --vp-button-brand-hover-bg: #045c41;
+    --vp-button-brand-hover-text: #ffffff;
+    --vp-button-brand-hover-border: transparent;
+    --vp-button-brand-active-bg: #034a34;
+    --vp-button-brand-active-text: #ffffff;
+    --vp-button-brand-active-border: transparent;
+
+    --vp-code-line-highlight-color: rgba(5, 112, 79, 0.1);
+
+    /* Inline code is neutral: ink on a faint neutral fill, never the brand colour. */
+    --vp-code-color: var(--vp-c-text-1);
+    --vp-code-link-color: var(--vp-c-text-1);
+    --vp-code-bg: rgba(12, 15, 14, 0.06);
+
+    /* Trace states. Always paired with a word, never colour alone. */
+    --ulc-ok: #05704f;
+    --ulc-fail: #b3261e;
+    --ulc-retry: #7a5200;
+    --ulc-live-bg: rgba(5, 112, 79, 0.1);
+
+    --ulc-ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --ulc-radius: 10px;
+    --ulc-page: 1200px;
+}
+
+.dark {
+    --vp-c-bg: #0b0d0c;
+    --vp-c-bg-alt: #101312;
+    --vp-c-bg-elv: #151918;
+    --vp-c-bg-soft: #131716;
+    --vp-c-text-1: #eef1ef;
+    --vp-c-text-2: #a9b1ad;
+    --vp-c-text-3: #838c88;
+    --vp-c-border: #2e3633;
+    --vp-c-divider: #1f2523;
+    --vp-c-gutter: #060807;
+
+    --vp-c-brand-1: #3ddc97;
+    --vp-c-brand-2: #6ee7b0;
+    --vp-c-brand-3: #12a16b;
+    --vp-c-brand-soft: rgba(61, 220, 151, 0.14);
+
+    --vp-button-brand-bg: #3ddc97;
+    --vp-button-brand-text: #04130c;
+    --vp-button-brand-hover-bg: #6ee7b0;
+    --vp-button-brand-hover-text: #04130c;
+    --vp-button-brand-active-bg: #2fc586;
+    --vp-button-brand-active-text: #04130c;
+
+    --vp-code-line-highlight-color: rgba(61, 220, 151, 0.14);
+
+    --vp-code-bg: rgba(238, 241, 239, 0.1);
+
+    --ulc-ok: #3ddc97;
+    --ulc-fail: #ff8f80;
+    --ulc-retry: #f0c26a;
+    --ulc-live-bg: rgba(61, 220, 151, 0.14);
+}
+
+/* ── Browser surfaces ────────────────────────────────────────── */
+
+::selection {
+    background: color-mix(in srgb, var(--vp-c-brand-1) 30%, transparent);
+    color: var(--vp-c-text-1);
+}
+
+:focus-visible {
+    outline: 2px solid var(--vp-c-brand-1);
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+html {
+    scrollbar-color: var(--vp-c-border) transparent;
+}
+
+/* ── Type ────────────────────────────────────────────────────── */
+
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+}
+
+.vp-doc a {
+    text-underline-offset: 3px;
+}
+
+.vp-doc table {
+    font-variant-numeric: tabular-nums;
+}
+
+.VPNavBarTitle .title {
+    letter-spacing: -0.01em;
+}
