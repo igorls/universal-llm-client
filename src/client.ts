@@ -29,6 +29,13 @@ import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
 import { coerceAndValidateToolArgs } from './tool-arg-coercion.js';
 
+/**
+ * Context length reported when neither config nor the endpoint gives one
+ * (`contextLengthSource: 'assumed'`). Deliberately small, so a caller that
+ * budgets against it trims too much rather than overflowing the window.
+ */
+export const ASSUMED_CONTEXT_LENGTH = 8192;
+
 // ============================================================================
 // Abstract Base Client
 // ============================================================================
@@ -75,9 +82,47 @@ export abstract class BaseLLMClient {
     /**
      * Get metadata about a model (context length, architecture, etc.)
      * Override per-provider for accurate data.
+     *
+     * Each value resolves in the order declared, endpoint, inferred, assumed
+     * (see `ModelMetadataSource`). This base knows no endpoint, so it reports
+     * the declared values or the conservative default.
      */
-    async getModelInfo(_modelName?: string): Promise<ModelMetadata> {
-        return { contextLength: 8192 }; // Conservative default
+    async getModelInfo(modelName?: string): Promise<ModelMetadata> {
+        return this.withDeclaredModelInfo(
+            { contextLength: ASSUMED_CONTEXT_LENGTH, contextLengthSource: 'assumed' },
+            modelName,
+        );
+    }
+
+    /**
+     * `info` with the configured `contextLength` and `capabilities` laid over
+     * it, each marked `declared`. Config describes the configured model only,
+     * so a lookup for another model name gets `info` unchanged.
+     */
+    protected withDeclaredModelInfo(info: ModelMetadata, modelName?: string): ModelMetadata {
+        if (!this.describesConfiguredModel(modelName)) return info;
+        const { contextLength, capabilities } = this.options;
+        const declared: ModelMetadata = { ...info };
+        if (contextLength !== undefined) {
+            declared.contextLength = contextLength;
+            declared.contextLengthSource = 'declared';
+        }
+        if (capabilities !== undefined) {
+            declared.capabilities = [...capabilities];
+            declared.capabilitiesSource = 'declared';
+        }
+        return declared;
+    }
+
+    /** True when config declares both values, so nothing needs to be asked of the endpoint. */
+    protected declaresModelInfo(modelName?: string): boolean {
+        return this.describesConfiguredModel(modelName)
+            && this.options.contextLength !== undefined
+            && this.options.capabilities !== undefined;
+    }
+
+    private describesConfiguredModel(modelName: string | undefined): boolean {
+        return modelName === undefined || modelName === this.options.model;
     }
 
     // ========================================================================

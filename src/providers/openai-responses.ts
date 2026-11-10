@@ -25,7 +25,7 @@
 
 import { collectHostedResult, type HostedTool, type HostedToolResult } from './responses-hosted-tools.js';
 import { TextToolCallGuard, type TextToolCallVerdict } from './responses-text-tool-calls.js';
-import { BaseLLMClient } from '../client.js';
+import { BaseLLMClient, ASSUMED_CONTEXT_LENGTH } from '../client.js';
 import { httpStream, parseSSE } from '../http.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
 import type {
@@ -340,7 +340,12 @@ export class ResponsesClient extends BaseLLMClient {
     }
 
     private buildBody(messages: LLMChatMessage[], options?: ChatOptions): Record<string, unknown> {
-        const { model, effort } = parseModelVariant(this.responsesOptions.model ?? 'gpt-5.2-codex');
+        if (!this.responsesOptions.model) {
+            throw new LLMProviderError('openai-responses', 'No model configured: set `model` on the client options', {
+                retryable: false,
+            });
+        }
+        const { model, effort } = parseModelVariant(this.responsesOptions.model);
         const { input, instructions } = this.toInput(messages);
 
         const resolvedEffort: ReasoningEffort = effort ?? this.responsesOptions.reasoningEffort ?? 'medium';
@@ -747,11 +752,17 @@ export class ResponsesClient extends BaseLLMClient {
         throw new LLMProviderError('openai-responses', 'Embeddings are not available on the Responses API');
     }
 
+    /**
+     * Declared values, otherwise the conservative default marked `assumed`.
+     * The backend lists no models, so there is no endpoint value to read, and
+     * the model name is not used to guess a window.
+     */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         const { model } = parseModelVariant(modelName ?? this.responsesOptions.model ?? '');
-        // Codex-family context windows; conservative floor for anything unknown.
-        const contextLength = /codex-mini/.test(model) ? 128000 : 272000;
-        return { contextLength };
+        return this.withDeclaredModelInfo(
+            { ...(model ? { model } : {}), contextLength: ASSUMED_CONTEXT_LENGTH, contextLengthSource: 'assumed' },
+            modelName,
+        );
     }
 
     /** Clear the cached encrypted reasoning (e.g. when a conversation is reset). */

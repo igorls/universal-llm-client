@@ -11,7 +11,7 @@
  * - VAL-PROVIDER-OLLAMA-004: format "json" vs schema modes
  */
 
-import { BaseLLMClient } from '../client.js';
+import { BaseLLMClient, ASSUMED_CONTEXT_LENGTH } from '../client.js';
 import { ollamaThinkValue, resolveThinking, type OllamaThinkValue } from '../thinking.js';
 import { httpRequest, httpStream, parseNDJSON, buildHeaders } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
@@ -461,8 +461,18 @@ export class OllamaClient extends BaseLLMClient {
         return response.data.models.map(m => m.name);
     }
 
+    /**
+     * Declared values first, then what `/api/show` and `/api/ps` report, then
+     * the conservative default. The endpoint is asked even when both values
+     * are declared, since only it knows the architecture and parameter count.
+     */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
+        return this.withDeclaredModelInfo(await this.endpointModelInfo(modelName), modelName);
+    }
+
+    private async endpointModelInfo(modelName?: string): Promise<ModelMetadata> {
         const url = `${this.options.url}/api/show`;
+        const assumed: ModelMetadata = { contextLength: ASSUMED_CONTEXT_LENGTH, contextLengthSource: 'assumed' };
         try {
             const targetModel = modelName ?? this.options.model;
             const response = await httpRequest<Record<string, unknown>>(url, {
@@ -472,16 +482,16 @@ export class OllamaClient extends BaseLLMClient {
             });
 
             const modelInfo = response.data['model_info'] as Record<string, unknown> | undefined;
-            if (!modelInfo) return { contextLength: 8192 };
+            if (!modelInfo) return assumed;
 
             // Extract architecture-specific context length
             const arch = modelInfo['general.architecture'] as string | undefined;
-            let contextLength = 8192;
+            let reported: number | undefined;
 
             if (arch) {
                 const ctxKey = `${arch}.context_length`;
                 const ctxValue = modelInfo[ctxKey] as number | undefined;
-                if (ctxValue) contextLength = ctxValue;
+                if (ctxValue) reported = ctxValue;
             }
 
             // Prefer the live deployment context when available. /api/show reports
@@ -495,24 +505,29 @@ export class OllamaClient extends BaseLLMClient {
                     model => model.name?.toLowerCase() === targetModel.toLowerCase(),
                 );
                 if (liveModel?.context_length && liveModel.context_length > 0) {
-                    contextLength = Math.min(contextLength, liveModel.context_length);
+                    reported = reported === undefined
+                        ? liveModel.context_length
+                        : Math.min(reported, liveModel.context_length);
                 }
             } catch {
                 // Ignore /api/ps failures — /api/show is still a valid fallback
             }
 
             const paramCountRaw = modelInfo['general.parameter_count'] as number | undefined;
-            const capabilities = response.data['capabilities'] as string[] | undefined;
+            const capabilities = response.data['capabilities'];
 
             return {
                 model: targetModel,
-                contextLength,
+                contextLength: reported ?? ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource: reported !== undefined ? 'endpoint' : 'assumed',
                 architecture: arch,
                 parameterCount: paramCountRaw,
-                capabilities,
+                ...(Array.isArray(capabilities)
+                    ? { capabilities: capabilities as string[], capabilitiesSource: 'endpoint' as const }
+                    : {}),
             };
         } catch {
-            return { contextLength: 8192 };
+            return assumed;
         }
     }
 

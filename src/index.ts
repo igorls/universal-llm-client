@@ -80,6 +80,7 @@ export {
     type DeepResearchEvent,
     // Model info
     type ModelMetadata,
+    type ModelMetadataSource,
     // Helpers
     textContent,
     imageContent,
