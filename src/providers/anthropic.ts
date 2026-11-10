@@ -30,6 +30,7 @@ import type {
     ModelMetadata,
     LLMContentPart,
     LLMMessageContent,
+    ThinkingLevel,
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
@@ -115,8 +116,19 @@ interface AnthropicRequest {
     readonly tool_choice?: { readonly type: 'auto' | 'any' | 'tool'; readonly name?: string };
     readonly stream?: boolean;
     readonly temperature?: number;
-    readonly thinking?: { readonly type: 'enabled'; readonly budget_tokens: number } | { readonly type: 'disabled' };
+    readonly thinking?:
+        | { readonly type: 'enabled'; readonly budget_tokens: number }
+        | { readonly type: 'adaptive'; readonly display?: 'summarized' | 'omitted' }
+        | { readonly type: 'disabled' };
+    readonly output_config?: { readonly effort: AnthropicEffort };
 }
+
+/** Thinking shapes a model card can list. */
+type AnthropicThinkingType = 'enabled' | 'adaptive' | 'disabled' | 'between_tools';
+
+/** `output_config.effort` levels, lowest first. */
+type AnthropicEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const ANTHROPIC_EFFORTS: readonly AnthropicEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /** Anthropic usage counters; input_tokens excludes cache reads and writes. */
 interface AnthropicUsage {
@@ -147,8 +159,34 @@ interface AnthropicModelInfo {
     /** What the model accepts. Anthropic-compatible servers may omit it. */
     readonly capabilities?: {
         readonly image_input?: { readonly supported?: boolean };
-        readonly thinking?: { readonly supported?: boolean };
+        readonly thinking?: {
+            readonly supported?: boolean;
+            /** Which `thinking.type` values the model accepts. */
+            readonly types?: Partial<Record<AnthropicThinkingType, { readonly supported?: boolean }>>;
+        };
+        /** Which `output_config.effort` levels the model accepts. */
+        readonly effort?: { readonly supported?: boolean } & Partial<
+            Record<AnthropicEffort, { readonly supported?: boolean }>
+        >;
     };
+}
+
+/**
+ * The effort level a thinking level asks for on this model: the same name
+ * (`minimal` asks for `low`), or else the nearest level the card lists, the
+ * lower one on a tie. Undefined when the card lists no effort levels.
+ */
+function effortForLevel(level: ThinkingLevel, card: AnthropicModelInfo): AnthropicEffort | undefined {
+    const effort = card.capabilities?.effort;
+    if (!effort?.supported) return undefined;
+    const wanted = ANTHROPIC_EFFORTS.indexOf(level === 'minimal' ? 'low' : level);
+    let best: AnthropicEffort | undefined;
+    for (const candidate of ANTHROPIC_EFFORTS) {
+        if (!effort[candidate]?.supported) continue;
+        const distance = Math.abs(ANTHROPIC_EFFORTS.indexOf(candidate) - wanted);
+        if (best === undefined || distance < Math.abs(ANTHROPIC_EFFORTS.indexOf(best) - wanted)) best = candidate;
+    }
+    return best;
 }
 
 // ============================================================================
@@ -258,7 +296,7 @@ export class AnthropicClient extends BaseLLMClient {
     ): Promise<LLMChatResponse> {
         const resolvedOptions = callOptions ?? options;
         const url = `${this.baseUrl}/v1/messages`;
-        const body = this.buildRequestBody(messages, resolvedOptions, false);
+        const body = this.buildRequestBody(messages, resolvedOptions, false, await this.thinkingCard(resolvedOptions));
 
         const start = Date.now();
         this.auditor.record({
@@ -302,7 +340,7 @@ export class AnthropicClient extends BaseLLMClient {
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
         const resolvedOptions = callOptions ?? options;
         const url = `${this.baseUrl}/v1/messages`;
-        const body = this.buildRequestBody(messages, resolvedOptions, true);
+        const body = this.buildRequestBody(messages, resolvedOptions, true, await this.thinkingCard(resolvedOptions));
 
         const start = Date.now();
         this.auditor.record({
@@ -524,6 +562,16 @@ export class AnthropicClient extends BaseLLMClient {
         return this.withDeclaredModelInfo(info, modelName);
     }
 
+    /**
+     * The card of the model a request goes to, looked up only when the
+     * request turns thinking on: the card says which thinking shape the model
+     * takes. Cached like every card, so this costs one request per model.
+     */
+    private async thinkingCard(options: ChatOptions | undefined): Promise<AnthropicModelInfo | undefined> {
+        if (resolveThinking(options?.thinking, this.options.thinking)?.enabled !== true) return undefined;
+        return this.modelCard(options?.model ?? this.options.model);
+    }
+
     /** The model's card, from the cache or `GET /v1/models/{id}`; undefined when unavailable. */
     private async modelCard(model: string): Promise<AnthropicModelInfo | undefined> {
         if (!model) return undefined;
@@ -552,6 +600,7 @@ export class AnthropicClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options: ChatOptions | undefined,
         stream: boolean,
+        card?: AnthropicModelInfo,
     ): AnthropicRequest {
         // Extract system prompt from messages
         const systemMessages = messages.filter((m) => m.role === 'system');
@@ -592,15 +641,21 @@ export class AnthropicClient extends BaseLLMClient {
             toolChoice = { type: 'auto' };
         }
 
-        // Unified thinking flag → Anthropic extended thinking. Per-call overrides
-        // model config; the level sets `budget_tokens` (kept < max_tokens). The
-        // API forbids a custom temperature while thinking is enabled, so it is
-        // omitted in that case (the required default of 1 applies).
+        // Unified thinking flag. Per-call overrides model config. The model card
+        // says which shape the model takes: adaptive thinking when it lists
+        // `adaptive` (the level becomes `output_config.effort`; a bare `true`
+        // leaves the model's default effort), otherwise, or with no card,
+        // extended thinking where the level sets `budget_tokens` (kept <
+        // max_tokens). The API forbids a custom temperature while thinking is
+        // on, so it is omitted in that case (the required default of 1 applies).
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
         const thinkingOn = thinking?.enabled === true;
+        const adaptive = thinkingOn && card?.capabilities?.thinking?.types?.adaptive?.supported === true;
+        const effort = adaptive && card && thinking?.level ? effortForLevel(thinking.level, card) : undefined;
         const requestedMax = options?.maxTokens ?? 4096;
         // Extended thinking requires budget_tokens >= 1024 AND < max_tokens, so when
         // thinking is on we bump max_tokens to guarantee headroom for the answer.
+        // Adaptive thinking gets the same room, so switching shape changes no limit.
         const budget = thinkingOn ? anthropicThinkingBudget(thinking?.level, requestedMax) : 0;
         const maxTokens = thinkingOn ? Math.max(requestedMax, budget + 1024) : requestedMax;
 
@@ -634,9 +689,15 @@ export class AnthropicClient extends BaseLLMClient {
             ...(anthropicTools?.length && { tools: anthropicTools }),
             ...(toolChoice && { tool_choice: toolChoice }),
             ...(stream && { stream: true }),
-            ...(thinkingOn
-                ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
-                : options?.temperature !== undefined && { temperature: options.temperature }),
+            ...(adaptive
+                ? {
+                      // Summarized, so `reasoning` keeps text: newer models default to omitting it.
+                      thinking: { type: 'adaptive' as const, display: 'summarized' as const },
+                      ...(effort && { output_config: { effort } }),
+                  }
+                : thinkingOn
+                  ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
+                  : options?.temperature !== undefined && { temperature: options.temperature }),
         };
 
         return body;

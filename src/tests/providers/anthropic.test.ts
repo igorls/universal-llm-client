@@ -2,7 +2,8 @@
  * Anthropic Provider — unified thinking flag, model info and model listing.
  *
  * Validates that the model-level `thinking` config and per-call
- * `ChatOptions.thinking` map to Anthropic extended thinking
+ * `ChatOptions.thinking` map to the shape the model card lists: adaptive
+ * thinking with `output_config.effort`, or else extended thinking
  * (`thinking: { type: 'enabled', budget_tokens }`), with the API's
  * constraints handled (budget < max_tokens; temperature omitted when on).
  *
@@ -36,6 +37,8 @@ const ANTHROPIC_RESPONSE = {
 };
 
 describe('AnthropicClient thinking flag', () => {
+    // This mock answers the model card lookup with a message, a card that lists
+    // no thinking types, so these cover the extended-thinking (budget) shape.
     let originalFetch: typeof globalThis.fetch;
     beforeEach(() => { originalFetch = globalThis.fetch; });
     afterEach(() => { globalThis.fetch = originalFetch; });
@@ -118,6 +121,183 @@ describe('AnthropicClient thinking flag', () => {
         const budget = (body['thinking'] as Record<string, unknown>)['budget_tokens'] as number;
         expect(budget).toBeGreaterThanOrEqual(1024);
         expect(budget).toBeLessThan(body['max_tokens'] as number);
+    });
+});
+
+/** A card listing these thinking types and effort levels, as the API reports them. */
+function thinkingModelCard(id: string, types: string[], efforts: string[] = []): Record<string, unknown> {
+    const allTypes = ['enabled', 'adaptive', 'disabled', 'between_tools'];
+    const allEfforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+    return modelCard(id, {
+        max_input_tokens: 1_000_000,
+        capabilities: {
+            thinking: {
+                supported: true,
+                types: Object.fromEntries(allTypes.map((t) => [t, { supported: types.includes(t) }])),
+            },
+            effort: {
+                supported: efforts.length > 0,
+                ...Object.fromEntries(allEfforts.map((e) => [e, { supported: efforts.includes(e) }])),
+            },
+        },
+    });
+}
+
+const ALL_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+/**
+ * Serve model cards and `POST /v1/messages` (a message, or SSE when the body
+ * asks to stream). Records each request with its parsed body.
+ */
+function serveThinking(cards: Record<string, Record<string, unknown>>) {
+    const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    const respond = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    globalThis.fetch = mock(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        const body = init?.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : undefined;
+        calls.push({ url, body });
+        const path = new URL(url).pathname;
+        if (path === '/v1/messages') {
+            if (body?.['stream']) {
+                return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/event-stream' },
+                });
+            }
+            return respond(ANTHROPIC_RESPONSE);
+        }
+        const card = cards[decodeURIComponent(path.slice('/v1/models/'.length))];
+        return card
+            ? respond(card)
+            : respond({ type: 'error', error: { type: 'not_found_error', message: 'model not found' } }, 404);
+    }) as unknown as typeof fetch;
+    return {
+        messageBody: () => calls.filter((c) => c.body).at(-1)!.body!,
+        cardRequests: () => calls.filter((c) => new URL(c.url).pathname.startsWith('/v1/models/')).map((c) => c.url),
+    };
+}
+
+describe('AnthropicClient thinking shape from the model card', () => {
+    let originalFetch: typeof globalThis.fetch;
+    beforeEach(() => { originalFetch = globalThis.fetch; });
+    afterEach(() => { globalThis.fetch = originalFetch; });
+
+    const MODEL = 'claude-sonnet-4-5';
+    const chat = (client: AnthropicClient, options: Parameters<AnthropicClient['chat']>[1]) =>
+        client.chat([{ role: 'user', content: 'hi' }], options);
+
+    test('a model that takes only adaptive thinking gets it, with a summarized display', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        await chat(createClient(), { thinking: true, temperature: 0.7 });
+        const body = server.messageBody();
+        expect(body['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
+        // A bare `true` leaves the model's default effort.
+        expect(body['output_config']).toBeUndefined();
+        expect(body['temperature']).toBeUndefined();
+    });
+
+    test('a thinking level becomes output_config.effort', async () => {
+        const client = createClient();
+        for (const level of ['low', 'medium', 'high', 'xhigh'] as const) {
+            const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+            await chat(client, { thinking: level });
+            expect(server.messageBody()['output_config']).toEqual({ effort: level });
+        }
+    });
+
+    test('minimal asks for low effort', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        await chat(createClient(), { thinking: 'minimal' });
+        expect(server.messageBody()['output_config']).toEqual({ effort: 'low' });
+    });
+
+    test('adaptive is preferred when the model takes both shapes', async () => {
+        const server = serveThinking({
+            [MODEL]: thinkingModelCard(MODEL, ['enabled', 'adaptive', 'disabled'], ['low', 'medium', 'high', 'max']),
+        });
+        await chat(createClient(), { thinking: 'high' });
+        const body = server.messageBody();
+        expect(body['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
+        expect(body['output_config']).toEqual({ effort: 'high' });
+    });
+
+    test('a level the model does not list falls to the nearest one, the lower on a tie', async () => {
+        const server = serveThinking({
+            [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ['low', 'medium', 'high', 'max']),
+        });
+        await chat(createClient(), { thinking: 'xhigh' });
+        expect(server.messageBody()['output_config']).toEqual({ effort: 'high' });
+    });
+
+    test('no effort is sent when the card lists none', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive']) });
+        await chat(createClient(), { thinking: 'high' });
+        const body = server.messageBody();
+        expect(body['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
+        expect(body['output_config']).toBeUndefined();
+    });
+
+    test('a model without adaptive thinking keeps budget_tokens', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['enabled', 'disabled'], ['low', 'medium', 'high']) });
+        await chat(createClient(), { thinking: 'high', maxTokens: 32000 });
+        const body = server.messageBody();
+        expect(body['thinking']).toEqual({ type: 'enabled', budget_tokens: 16384 });
+        expect(body['output_config']).toBeUndefined();
+    });
+
+    test('without a card, extended thinking is sent as before', async () => {
+        const server = serveThinking({});
+        await chat(createClient(), { thinking: true });
+        expect(server.messageBody()['thinking']).toEqual({ type: 'enabled', budget_tokens: 2048 });
+    });
+
+    test('adaptive thinking keeps the max_tokens headroom extended thinking had', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        await chat(createClient(), { thinking: 'low', maxTokens: 1024 });
+        expect(server.messageBody()['max_tokens']).toBe(2048);
+    });
+
+    test('the card is looked up once per model, and not at all without thinking', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        const client = createClient();
+        await chat(client, { thinking: true });
+        await chat(client, { thinking: 'high' });
+        expect(server.cardRequests()).toHaveLength(1);
+
+        const quiet = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        const unset = createClient();
+        await chat(unset, { temperature: 0.5 });
+        await chat(createClient({ thinking: true }), { thinking: false, temperature: 0.5 });
+        expect(quiet.cardRequests()).toEqual([]);
+        expect(quiet.messageBody()['thinking']).toBeUndefined();
+        expect(quiet.messageBody()['temperature']).toBe(0.5);
+    });
+
+    test('a per-call model uses that model\'s card', async () => {
+        const server = serveThinking({
+            [MODEL]: thinkingModelCard(MODEL, ['enabled', 'disabled']),
+            'model-b': thinkingModelCard('model-b', ['adaptive'], ALL_EFFORTS),
+        });
+        await chat(createClient(), { model: 'model-b', thinking: true });
+        expect(server.cardRequests()).toEqual(['https://api.anthropic.com/v1/models/model-b']);
+        expect(server.messageBody()['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
+    });
+
+    test('model-level thinking config uses the card too', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        await chat(createClient({ thinking: 'medium' }), {});
+        expect(server.messageBody()['output_config']).toEqual({ effort: 'medium' });
+    });
+
+    test('streaming sends the same shape', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        const stream = createClient().chatStream([{ role: 'user', content: 'hi' }], { thinking: 'high' });
+        for await (const _event of stream) { /* drain */ }
+        const body = server.messageBody();
+        expect(body['stream']).toBe(true);
+        expect(body['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
+        expect(body['output_config']).toEqual({ effort: 'high' });
     });
 });
 
