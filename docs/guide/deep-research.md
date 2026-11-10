@@ -47,7 +47,7 @@ for await (const ev of model.deepResearchStream('Compare RISC-V vs ARM in 2026.'
 
 | Option | Default | Description |
 |---|---|---|
-| `agent` | `'deep-research-preview-04-2026'` | Research agent id. |
+| `agent` | A built-in preview agent id, set in `src/providers/google.ts` | Research agent id. Pass the id you want to use; the built-in default is a preview id. |
 | `tools` | — | Allowed tools, e.g. `['google_search', 'url_context', 'code_execution']`. |
 | `thinkingSummaries` | `'auto'` | Emit intermediate reasoning (`'auto'`) or not (`'none'`). |
 | `previousInteractionId` | — | Continue a prior interaction (follow-up question). |
