@@ -1,97 +1,101 @@
 # Architecture
 
-Universal LLM Client uses a layered architecture that separates concerns cleanly:
+The library is layered so that protocol details stay in the clients and everything shared sits above them.
 
 ```
-┌─────────────────────────────────────────┐
-│              AIModel                    │  ← Public API (stateless facade)
-├─────────────────────────────────────────┤
-│              Router                     │  ← Failover, health, validation
-│  ┌──────────┬──────────┬──────────────┐ │
-│  │ Structured│  Tool   │   Stream     │ │  ← Orchestration features
-│  │  Output   │Executor │  Decoders    │ │
-│  └──────────┴──────────┴──────────────┘ │
-├─────────────────────────────────────────┤
-│           BaseLLMClient                 │  ← Common provider logic
-├────────────────────┬───────────┬─────────────┬──────────┤
-│ OpenAICompatible   │  Google   │ Anthropic   │ Ollama   │  ← Provider implementations
-│ (ecosystem lingua) │  Client   │ Client      │ Client   │
-└────────────────────┴───────────┴─────────────┴──────────┘
+AIModel                  public facade
+  Router                 failover, health, pools, structured output validation
+  BaseLLMClient          shared client logic: tool loop, schema helpers, errors
+    OpenAICompatibleClient   OpenAI Chat Completions   (type: openai, llamacpp)
+    AnthropicClient          Anthropic Messages        (type: anthropic)
+    GoogleClient             Gemini                    (type: google, vertex)
+    OllamaClient             Ollama                    (type: ollama)
 ```
 
-## Layer Responsibilities
+Beside the request path:
 
-### AIModel (Public Facade)
+- **Stream decoders** turn raw tokens into typed events.
+- **Auditor** receives lifecycle events from the router and the clients.
+- **MCPToolBridge** registers tools from MCP servers on an `AIModel`.
+- **HTTP utilities** wrap `fetch`, server-sent events and newline-delimited JSON.
 
-The only class users import. A stateless facade that delegates to the Router:
+## Layer responsibilities
 
-- Creates and configures providers from the config
-- Exposes `chat()`, `chatStream()`, `generateStructured()`, `tryParseStructured()`, `generateStructuredStream()`
-- Manages tool registration and embeddings
-- Provides provider status and lifecycle methods
+### AIModel
 
-### Router (Orchestration)
+The class you construct. It holds no conversation state and delegates to the router:
 
-The Router handles cross-cutting concerns that don't belong in individual providers:
+- Builds one client per entry in `providers`, choosing the client from the entry's `type`.
+- Exposes `chat()`, `chatWithTools()`, `chatStream()`, the structured output methods, `embed()`, `deepResearch()`, tool registration, model info and provider status.
+- Calls `auditor.flush()` on `dispose()`.
 
-- **Provider failover** — tries providers in priority order, retries on failure
-- **Health tracking** — marks unhealthy providers, applies cooldowns
-- **Structured output validation** — parses and validates responses with Zod (centralized, not per-provider)
-- **Tool execution** — multi-turn autonomous tool calling
-- **Auditor integration** — emits audit events for all operations
+### Router
 
-### Structured Output Flow
+The router handles what does not belong to one protocol:
+
+- **Failover.** Tries providers in priority order and retries before moving on.
+- **Health tracking.** Marks failing providers unhealthy and applies a cooldown.
+- **Pools.** Spreads load across providers that share a priority.
+- **Structured output validation.** Parses and validates responses in one place, whichever client answered.
+- **Audit events.** Emits `failover`, `retry`, `error` and structured output events.
+
+See [Failover](/guide/failover).
+
+### BaseLLMClient
+
+Shared by every client:
+
+- The `chatWithTools()` loop and tool execution
+- Extracting the schema from `ChatOptions`
+- Error normalisation
+
+### Clients
+
+Each client implements one wire protocol and translates the library's canonical message and tool format to it. There is no client per vendor. A new endpoint is reached by pointing the matching client at its `url`; a new wire protocol would need a new client. See [Protocols](/guide/protocols).
+
+`openai-responses.ts` also contains a client for the OpenAI Responses wire format. It is exported as `ResponsesClient`, but `AIModel` does not construct it and it is not part of the four protocols described in these guides.
+
+## Structured output flow
 
 ```
-1. AIModel.generateStructured(schema, messages)
-2. Router converts Zod schema → JSON Schema (via z.toJSONSchema())
-3. Router delegates to Provider.chat(messages, { jsonSchema })
-4. Provider formats schema for its API:
-   - OpenAI: response_format.json_schema
-   - Google: responseMimeType + responseSchema
-   - Ollama: format
-5. Provider returns raw response
-6. Router parses JSON + validates against Zod schema
-7. Returns typed T or throws StructuredOutputError
+1. model.generateStructured(config, messages)
+2. Router takes config.jsonSchema
+3. Router calls client.chat(messages, { jsonSchema })
+4. The client puts the schema in its protocol's field:
+     OpenAI Chat Completions: response_format.json_schema
+     Gemini:                  responseMimeType + responseSchema
+     Ollama:                  format
+     Anthropic Messages:      nothing is sent
+5. The client returns the raw response
+6. Router parses the JSON and runs config.validate
+7. Returns T, or throws StructuredOutputError
 ```
 
-::: info Key Design Decision
-Validation is **centralized in the Router**, not in individual providers. Providers return raw responses — the Router handles all parsing and validation. This ensures consistent behavior regardless of which provider responds.
-:::
+Validation lives in the router, not in the clients. Clients return raw responses, so behaviour is the same whichever provider answers.
 
-### BaseLLMClient (Provider Base)
-
-Common logic shared by all providers:
-
-- HTTP request/response handling
-- Schema extraction from ChatOptions
-- Stream processing
-- Error normalization
-
-### Providers
-
-Each provider implements the LLM-specific API protocol. The design deliberately avoids one adapter per provider (see `docs/research/provider-api-landscape-2026.md` for the full 2026 survey):
-
-- **OpenAICompatibleClient** is the primary transport (covers the vast majority of providers via the OpenAI Chat Completions wire format: official OpenAI, xAI, Mistral, DeepSeek, Cohere compat, Groq, Together, Fireworks, OpenRouter, Perplexity, vLLM, etc.).
-- Dedicated clients exist **only** for protocols that are sufficiently different *and* expose unique high-value features (Anthropic thinking+caching, Google thinking+grounding+Vertex, Ollama local ergonomics).
-
-## Module Structure
+## Source layout
 
 ```
 src/
-├── ai-model.ts         # Public API facade
-├── router.ts           # Failover, orchestration, validation
-├── client.ts           # BaseLLMClient (shared provider logic)
-├── structured-output.ts # Types, schema conversion, parsing, streaming
-├── interfaces.ts       # All TypeScript interfaces and types
-├── auditor.ts          # Observability (NoopAuditor, ConsoleAuditor, etc.)
-├── tools.ts            # ToolBuilder, ToolExecutor, built-in tools
-├── stream-decoder.ts   # Pluggable stream decoding strategies
-├── mcp.ts              # MCP server bridge
-├── http.ts             # HTTP utilities (request, streaming, SSE)
+├── ai-model.ts            # AIModel facade
+├── router.ts              # Failover, pools, validation
+├── client.ts              # BaseLLMClient
+├── interfaces.ts          # Public types and message helpers
+├── structured-output.ts   # SchemaConfig, parsing, streaming parser
+├── zod-adapter.ts         # fromZod (universal-llm-client/zod)
+├── auditor.ts             # Auditor, NoopAuditor, ConsoleAuditor, BufferedAuditor
+├── tools.ts               # ToolBuilder, ToolExecutor, example tools
+├── tool-arg-coercion.ts   # Tool argument coercion and validation
+├── stream-decoder.ts      # Decoders and the decoder registry
+├── stream-guard.ts        # Runaway-output detection
+├── thinking.ts            # Thinking option resolution
+├── errors.ts              # Typed errors and failure classification
+├── mcp.ts                 # MCPToolBridge
+├── http.ts                # Request, streaming, SSE, NDJSON
 └── providers/
-    ├── openai.ts       # OpenAI-compatible provider (primary; used for xAI, Mistral, DeepSeek, Groq, Together, vLLM, etc.)
-    ├── google.ts       # Google/Vertex AI provider
-    ├── anthropic.ts    # Anthropic Messages (Claude) provider
-    └── ollama.ts       # Ollama provider
+    ├── openai.ts          # OpenAI Chat Completions client
+    ├── anthropic.ts       # Anthropic Messages client
+    ├── google.ts          # Gemini client (Gemini API and Vertex AI)
+    ├── ollama.ts          # Ollama client
+    └── openai-responses.ts  # Responses-format client (not used by AIModel)
 ```

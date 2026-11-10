@@ -1,127 +1,179 @@
 # Structured Output
 
-Get type-safe, validated responses from any LLM provider with Zod schemas. The library handles schema conversion, provider-specific formatting, response parsing, and validation automatically.
+Ask for JSON in a shape you define and get back a parsed, validated, typed value. The library sends the schema in each protocol's native form where the protocol has one, parses the response, and runs your validator on it.
 
 ## Overview
 
-Three methods for structured output:
-
 | Method | Throws on failure | Returns |
 |--------|:-----------------:|---------|
-| `generateStructured()` | ✅ | `T` |
-| `tryParseStructured()` | ❌ | `Result<T>` |
-| `generateStructuredStream()` | ✅ (on final) | `AsyncGenerator<T>` |
+| `generateStructured()` | Yes | `T` |
+| `tryParseStructured()` | No | `StructuredOutputResult<T>` |
+| `generateStructuredStream()` | Yes, on the final object | `AsyncGenerator<T, T>` |
+| `chat(messages, { output })` | Yes | `LLMChatResponse` with `structured` |
+
+## Describing a schema
+
+Every method takes a `SchemaConfig<T>`: a JSON Schema plus an optional validator.
+
+```typescript
+interface SchemaConfig<T> {
+  jsonSchema: JSONSchema;                 // sent to the provider
+  validate?: (data: unknown) => T;        // parse unknown to T, or throw
+  name?: string;
+  description?: string;
+}
+```
+
+### With Zod
+
+Zod is an optional peer dependency. Install it (`zod@^4`) and wrap a schema with `fromZod` from `universal-llm-client/zod`:
+
+```typescript
+import { fromZod } from 'universal-llm-client/zod';
+import { z } from 'zod';
+
+const Sentiment = fromZod(
+  z.object({
+    sentiment: z.enum(['positive', 'negative', 'neutral']),
+    confidence: z.number().min(0).max(1),
+    reasoning: z.string(),
+  }),
+);
+```
+
+`fromZod` converts the schema with Zod 4's `z.toJSONSchema()` and uses `schema.safeParse` as the validator, so `T` is inferred from the Zod schema.
+
+### Without Zod
+
+Write the JSON Schema and a validator yourself. The core library does not import Zod:
+
+```typescript
+import type { SchemaConfig } from 'universal-llm-client';
+
+type Person = { name: string; age: number };
+
+const PersonSchema: SchemaConfig<Person> = {
+  jsonSchema: {
+    type: 'object',
+    properties: {
+      name: { type: 'string' },
+      age: { type: 'number' },
+    },
+    required: ['name', 'age'],
+  },
+  validate: (data) => {
+    const p = data as Person;
+    if (typeof p?.name !== 'string' || typeof p?.age !== 'number') {
+      throw new Error('Not a Person');
+    }
+    return p;
+  },
+};
+```
+
+If `validate` is omitted, the parsed JSON is returned as is, with no runtime check.
 
 ## generateStructured
 
-The primary method — sends your Zod schema to the LLM, parses the JSON response, and validates it against the schema. Returns a fully typed object.
+Sends the schema, parses the JSON response, validates it, and returns the typed value:
 
 ```typescript
 import { AIModel } from 'universal-llm-client';
-import { z } from 'zod';
 
 const model = new AIModel({
-  model: 'gpt-4o-mini',
-  providers: [{ type: 'openai', apiKey: process.env.OPENAI_API_KEY }],
+  model: 'model-id',
+  providers: [{ type: 'openai', url: 'https://llm.example.com/v1', apiKey: process.env.LLM_API_KEY }],
 });
 
-const SentimentSchema = z.object({
-  sentiment: z.enum(['positive', 'negative', 'neutral']),
-  confidence: z.number().min(0).max(1),
-  reasoning: z.string(),
-});
-
-const result = await model.generateStructured(SentimentSchema, [
+const result = await model.generateStructured(Sentiment, [
   { role: 'user', content: 'Analyze: "This product is amazing!"' },
 ]);
 
-// result is typed as { sentiment: 'positive' | 'negative' | 'neutral', confidence: number, reasoning: string }
-console.log(result.sentiment);  // "positive"
-console.log(result.confidence); // 0.95
+// result: { sentiment: 'positive' | 'negative' | 'neutral'; confidence: number; reasoning: string }
+console.log(result.sentiment);
 ```
 
 ## tryParseStructured
 
-Non-throwing variant that returns a discriminated union `Result<T>`:
+The non-throwing variant. It returns a discriminated union:
 
 ```typescript
-const result = await model.tryParseStructured(SentimentSchema, [
+const result = await model.tryParseStructured(Sentiment, [
   { role: 'user', content: 'Analyze this text...' },
 ]);
 
 if (result.ok) {
-  // TypeScript narrows to { ok: true, value: T }
   console.log(result.value.sentiment);
 } else {
-  // TypeScript narrows to { ok: false, error: StructuredOutputError, rawOutput: string }
   console.error('Failed:', result.error.message);
-  console.error('Raw LLM output:', result.rawOutput);
+  console.error('Raw output:', result.rawOutput);
 }
 ```
 
+This reports validation and parse failures as a result. A transport error after every provider has failed still throws.
+
 ## generateStructuredStream
 
-Stream partial validated objects as the LLM generates JSON token by token:
+Streams partial validated objects as the JSON generates:
 
 ```typescript
-const ArticleSchema = z.object({
-  title: z.string(),
-  summary: z.string(),
-  tags: z.array(z.string()),
-});
+const Article = fromZod(
+  z.object({
+    title: z.string(),
+    summary: z.string(),
+    tags: z.array(z.string()),
+  }),
+);
 
-const stream = model.generateStructuredStream(ArticleSchema, [
+for await (const partial of model.generateStructuredStream(Article, [
   { role: 'user', content: 'Write an article about TypeScript' },
-]);
-
-for await (const partial of stream) {
-  // partial is progressively filled as JSON streams in
+])) {
   console.log(partial);
-  // First:  { title: "TypeScript..." }
-  // Then:   { title: "TypeScript...", summary: "A deep dive..." }
-  // Final:  { title: "...", summary: "...", tags: ["typescript", "programming"] }
+  // { title: '...' }
+  // { title: '...', summary: '...' }
+  // { title: '...', summary: '...', tags: [...] }
 }
 ```
 
 ::: info
-Partial yields are best-effort — only yielded when the partial JSON parses and validates successfully. The final object is always fully validated.
+Partial yields are best-effort: one is yielded only when the partial JSON parses and validates. The final object is always fully validated, and a failure there throws `StructuredOutputError`.
 :::
 
-## Inline via `chat()` Options
+## Through `chat()`
 
-You can also pass structured output config directly to `chat()`:
+Pass `output` to get the validated value on `response.structured`:
 
 ```typescript
 const response = await model.chat(
   [{ role: 'user', content: 'Generate a user profile' }],
   {
     output: {
-      schema: UserSchema,
-      name: 'user_profile',        // optional: hint for the LLM
-      description: 'A user profile', // optional: hint for the LLM
+      schema: User,                    // a SchemaConfig
+      name: 'user_profile',            // optional hint
+      description: 'A user profile',   // optional hint
     },
   },
 );
 
-// The response content will be the validated JSON
-const user = JSON.parse(response.message.content as string);
+response.structured; // typed from the schema
 ```
 
-## Error Handling
+`chatStream()` throws if you pass `output`. Use `generateStructuredStream()` for streaming.
 
-When validation fails, a `StructuredOutputError` is thrown with full debugging context:
+## Error handling
+
+A parse or validation failure throws `StructuredOutputError`, with the text the model returned:
 
 ```typescript
 import { StructuredOutputError } from 'universal-llm-client';
+import { z } from 'zod';
 
 try {
-  const result = await model.generateStructured(StrictSchema, messages);
+  await model.generateStructured(Sentiment, messages);
 } catch (error) {
   if (error instanceof StructuredOutputError) {
-    // The raw text the LLM returned (before parsing failed)
     console.log('Raw output:', error.rawOutput);
 
-    // The underlying cause — ZodError for validation failures, SyntaxError for JSON parse errors
     if (error.cause instanceof z.ZodError) {
       console.log('Validation issues:', error.cause.issues);
     }
@@ -129,116 +181,98 @@ try {
 }
 ```
 
-### Error types
-
-| Cause | Scenario |
+| `error.cause` | Scenario |
 |-------|----------|
-| `SyntaxError` | LLM returned non-JSON text |
-| `z.ZodError` | JSON parsed but doesn't match schema |
+| `SyntaxError` | The model returned text that is not JSON |
+| `z.ZodError` | The JSON parsed but does not match the Zod schema |
 
-## Schema Tips
+Responses wrapped in a Markdown code fence are unwrapped before parsing.
 
-### Use `.describe()` for better LLM guidance
+## Schema tips
 
-```typescript
-const ReviewSchema = z.object({
-  rating: z.number().min(1).max(5).describe('Rating from 1 (worst) to 5 (best)'),
-  pros: z.array(z.string()).describe('List of positive aspects'),
-  cons: z.array(z.string()).describe('List of negative aspects'),
-});
-```
+### Describe fields
 
-### Optional fields with defaults
+Descriptions in the schema reach the model:
 
 ```typescript
-const ConfigSchema = z.object({
-  name: z.string(),
-  debug: z.boolean().default(false),
-  retries: z.number().default(3),
-});
-```
-
-### Enums for constrained values
-
-```typescript
-const ClassificationSchema = z.object({
-  category: z.enum(['bug', 'feature', 'question', 'docs']),
-  priority: z.enum(['low', 'medium', 'high', 'critical']),
-});
-```
-
-### Nested objects
-
-```typescript
-const CompanySchema = z.object({
-  name: z.string(),
-  ceo: z.object({
-    name: z.string(),
-    age: z.number(),
+const Review = fromZod(
+  z.object({
+    rating: z.number().min(1).max(5).describe('Rating from 1 (worst) to 5 (best)'),
+    pros: z.array(z.string()).describe('Positive aspects'),
+    cons: z.array(z.string()).describe('Negative aspects'),
   }),
-  offices: z.array(z.object({
-    city: z.string(),
-    country: z.string(),
-    employees: z.number(),
-  })),
-});
+);
 ```
 
-## Raw JSON Schema
+### Constrain values with enums
 
-If you don't want to use Zod, you can pass a raw JSON Schema directly:
+```typescript
+const Classification = fromZod(
+  z.object({
+    category: z.enum(['bug', 'feature', 'question', 'docs']),
+    priority: z.enum(['low', 'medium', 'high', 'critical']),
+  }),
+);
+```
+
+## JSON Schema only
+
+When you have a schema and no validator, pass `jsonSchema` in `output`:
 
 ```typescript
 const response = await model.chat(messages, {
   output: {
     jsonSchema: {
       type: 'object',
-      properties: {
-        name: { type: 'string' },
-        age: { type: 'number' },
-      },
+      properties: { name: { type: 'string' }, age: { type: 'number' } },
       required: ['name', 'age'],
     },
     name: 'user',
   },
 });
+
+response.structured; // parsed JSON, typed unknown
 ```
 
 ::: warning
-When using raw JSON Schema, responses are not type-checked at compile time and not validated at runtime by the Router. Use Zod schemas for full type safety.
+With no validator, the router parses the JSON but does not check it against the schema. Use a validator for runtime safety.
 :::
 
-## OpenAI Strict Mode
+## How each protocol receives the schema
 
-OpenAI supports a `strict` mode that guarantees the response matches the schema exactly. This is enabled by default:
+| Protocol | Request field | Notes |
+|---|---|---|
+| OpenAI Chat Completions | `response_format` of type `json_schema` | Sent with `strict: true` |
+| Gemini | `responseMimeType` and `responseSchema` | Keywords the format does not support are removed from the schema before sending |
+| Ollama | `format` | |
+| Anthropic Messages | None | The client sends no schema. Describe the format in the prompt; the response is still parsed and validated |
+
+Validation always runs in the router on the response, so it behaves the same whichever protocol answered, including during [failover](/guide/failover).
+
+### Strict mode and endpoints that reject `response_format`
+
+`OutputOptions.strict` is declared on the type, but the OpenAI Chat Completions client does not read it: the request always carries `strict: true`. For an endpoint that rejects `response_format`, set `omitResponseFormat: true` on that provider entry. The schema is then not sent, structured output relies on the prompt, and the response is validated as usual:
 
 ```typescript
-const result = await model.generateStructured(MySchema, messages, {
-  output: { strict: true }, // default for OpenAI
-});
+{ type: 'openai', url: 'https://llm.example.com/v1', omitResponseFormat: true }
 ```
 
-Set `strict: false` if you're using an OpenAI-compatible endpoint that doesn't support strict mode.
+## Combining with tools
 
-## Combining with Tools
-
-Structured output and tool calling can be used together. When both are provided:
-
-- The provider sends both the schema constraint **and** tool definitions in the request
-- If the model responds with **content**, it's validated against the schema as usual
-- If the model responds with **tool calls**, schema validation is skipped and the tool calling loop handles the response
+Structured output and tool calling can be used in one request. The provider receives both the schema and the tool definitions. If the model answers with text, the text is validated. If it answers with tool calls, validation is skipped and the calls are returned:
 
 ```typescript
 const result = await model.chat(messages, {
-  output: { schema: ResultSchema },
+  output: { schema: Result },
   tools: [myTool],
 });
 
-// result.structured is set if the model returned content
-// result.message.tool_calls is set if the model invoked tools
+// result.structured is set when the model returned content
+// result.message.tool_calls is set when the model called a tool
 ```
 
 ## Limitations
 
-- **Streaming** — use `generateStructuredStream()` instead of `chatStream()` with output options
-- **Provider support** — all built-in providers support structured output, but behavior varies (see [Providers](/guide/providers))
+- **Streaming.** Use `generateStructuredStream()`, not `chatStream()` with `output`.
+- **Protocols.** Enforcement differs by protocol (see the table above). The client-side validator is the guarantee.
+- **Reasoning models.** For a model that thinks first, pass `thinking: false` so the object is emitted directly. See [Reasoning](/guide/reasoning).
