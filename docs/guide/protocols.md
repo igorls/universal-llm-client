@@ -19,7 +19,7 @@
 | Structured output | Yes, sent as `response_format` | Validated client-side; the schema is not sent | Yes, sent as `responseSchema` | Yes, sent as `format` |
 | Vision | Yes | Yes | Yes | Yes |
 | Embeddings | Yes | No | Yes | Yes |
-| Native thinking | Through response fields or `<think>` tags | Yes, extended thinking | Yes, `thinkingConfig` | Yes, `think` |
+| Native thinking | Through response fields or `<think>` tags | Yes, adaptive or extended thinking | Yes, `thinkingConfig` | Yes, `think` |
 
 A row says what the library's client for that protocol implements. Whether a particular server honours a request field depends on the server; the sections below name the fields the client sends.
 
@@ -134,6 +134,7 @@ The client translates the library's message format to the Messages API:
 - Streaming reads the typed `content_block_*` events, including `thinking_delta` and `signature_delta`.
 - `maxTokens` defaults to 4096 when you do not set it.
 - `toolChoice: 'none'` is sent as `auto`, because the API has no `none`.
+- If a model answers that `temperature` is deprecated for it, the client sends the request again without it, warns once, and leaves it out of later requests to that model.
 
 ### Structured output
 
@@ -141,7 +142,14 @@ The client does not send a schema on this protocol. `generateStructured` and `ch
 
 ### Thinking
 
-`thinking` maps to extended thinking with a `budget_tokens` derived from the level. When thinking is on, the client omits `temperature` and raises `max_tokens` so there is room for the answer. See [Reasoning](/guide/reasoning).
+When you set `thinking`, the client reads the model's card from `GET /v1/models/{id}`, once per model, and sends the shape the card lists:
+
+- **Adaptive thinking**, where the model takes it. The level is sent as `output_config.effort`, and the reasoning comes back as a summary.
+- **Extended thinking** otherwise, or when the server has no model card, with a `budget_tokens` derived from the level.
+
+In both shapes the client omits `temperature` and raises `max_tokens` so there is room for the answer. `thinking: false` sends the off switch the card lists.
+
+In a tool loop, the signed thinking blocks that came before a tool call go back with the next request, so the model keeps its reasoning between calls. See [Reasoning](/guide/reasoning#anthropic-and-the-model-card).
 
 ### Prompt caching
 

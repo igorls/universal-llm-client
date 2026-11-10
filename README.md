@@ -223,7 +223,7 @@ See [Deep Research](docs/guide/deep-research.md).
 | Structured output | Yes, as `response_format` | Validated client-side; the schema is not sent | Yes, as `responseSchema` | Yes, as `format` |
 | Vision | Yes | Yes | Yes | Yes |
 | Embeddings | Yes | No | Yes | Yes |
-| Native thinking | Through response fields or `<think>` tags | Yes, extended thinking | Yes, `thinkingConfig` | Yes, `think` |
+| Native thinking | Through response fields or `<think>` tags | Yes, adaptive or extended thinking | Yes, `thinkingConfig` | Yes, `think` |
 
 `type: 'llamacpp'` uses the same client as `type: 'openai'`, with a different default `url`. On a self-hosted server, image input depends on the server and the loaded model.
 

@@ -35,7 +35,7 @@ The option is sent only when you set it, so endpoints that reject unknown fields
 |---|---|
 | OpenAI Chat Completions | `reasoning_effort` with the level, for model ids the client recognises as reasoning models. Otherwise `chat_template_kwargs.enable_thinking` (on or off), which is not sent to hosted gateways known to reject unknown fields. A few hosted gateways have their own rules in the client |
 | Gemini | `thinkingConfig`, using `thinkingLevel` or `thinkingBudget` depending on the model id, with `includeThoughts` on |
-| Anthropic Messages | Extended thinking, with `budget_tokens` derived from the level. The budget is kept below `max_tokens`, which is raised if needed, and `temperature` is omitted, as the API requires |
+| Anthropic Messages | Adaptive thinking where the model's card lists it, with the level sent as `output_config.effort`. Otherwise extended thinking, with `budget_tokens` derived from the level. In both, `max_tokens` is raised if needed and `temperature` is omitted, as the API requires |
 | Ollama | `think` on `/api/chat`: `false`, `true`, or `low`, `medium`, `high`, `max`. `minimal` becomes `low` and `xhigh` becomes `max`. Native chat does not send `reasoning_effort`. Requests to an Ollama URL through the OpenAI-compatible path still send `reasoning_effort`, as `none` when thinking is off |
 
 The model-id rules are in `src/thinking.ts` and `src/providers/google.ts`. To override Gemini's choice, pass your own `thinkingConfig` in `parameters`; it is left untouched.
@@ -43,6 +43,16 @@ The model-id rules are in `src/thinking.ts` and `src/providers/google.ts`. To ov
 ### Ollama and models without thinking
 
 With `thinking` unset, the Ollama client leaves `think` out and the server applies the model's default. When you ask for thinking (`true` or a level), the client checks `/api/show` for the model's `thinking` capability and leaves `think` out if the model lacks it, instead of failing with an HTTP 400. The check is cached per model and made only when thinking is requested. `false` is always sent.
+
+### Anthropic and the model card
+
+When you set `thinking`, the Anthropic client reads the model's card from `GET /v1/models/{id}`. The lookup is cached per model and is not made when `thinking` is unset.
+
+- A model that lists adaptive thinking gets it. A level becomes `output_config.effort`: `minimal` is sent as `low`, and a level the model does not list becomes the nearest one it does. `true` leaves the model's default effort.
+- A model that does not list it, or a server with no model card, gets extended thinking with a `budget_tokens` derived from the level.
+- `false` sends `disabled`, or `between_tools` on a model that lists only that. A model that lists neither always thinks, and nothing is sent.
+
+In a tool loop with thinking on, the client sends the signed thinking blocks back with the next request, so the model keeps its reasoning between tool calls. If you edit earlier messages in the history, the API drops the block that no longer matches instead of rejecting the request. Thinking from a final answer with no tool call is not sent back.
 
 ## Getting the reasoning back
 
