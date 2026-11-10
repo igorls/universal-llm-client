@@ -17,6 +17,7 @@
 import { BaseLLMClient } from '../client.js';
 import { resolveThinking, anthropicThinkingBudget } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE } from '../http.js';
+import { LLMHttpError } from '../errors.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import type {
     LLMClientOptions,
@@ -141,6 +142,13 @@ interface AnthropicModelInfo {
     readonly display_name: string;
     readonly created_at: string;
     readonly type: 'model';
+    /** Input window in tokens. Anthropic-compatible servers may omit it. */
+    readonly max_input_tokens?: number;
+    /** What the model accepts. Anthropic-compatible servers may omit it. */
+    readonly capabilities?: {
+        readonly image_input?: { readonly supported?: boolean };
+        readonly thinking?: { readonly supported?: boolean };
+    };
 }
 
 // ============================================================================
@@ -197,10 +205,11 @@ type AnthropicStreamEvent =
     | { readonly type: 'error'; readonly error: { readonly type: string; readonly message: string } };
 
 /**
- * Window reported when config declares none (`contextLengthSource: 'assumed'`).
- * One value for the whole protocol, not looked up by model name: the figure
- * this client has always reported. A server with a smaller window should be
- * given a declared `contextLength`.
+ * Window reported when config declares none and the endpoint's model card has
+ * no `max_input_tokens` (`contextLengthSource: 'assumed'`). One value for the
+ * whole protocol, not looked up by model name: the figure this client has
+ * always reported. A server with a smaller window should be given a declared
+ * `contextLength`.
  */
 const ANTHROPIC_ASSUMED_CONTEXT_LENGTH = 200_000;
 
@@ -210,6 +219,12 @@ const ANTHROPIC_ASSUMED_CONTEXT_LENGTH = 200_000;
 
 export class AnthropicClient extends BaseLLMClient {
     private readonly baseUrl: string;
+    /**
+     * `/v1/models` cards by model id, from {@link getModels} or a single-card
+     * lookup. `null` records an endpoint that has no card for the id (HTTP 404),
+     * so it is not asked again; other failures are not remembered.
+     */
+    private readonly modelCards = new Map<string, AnthropicModelInfo | null>();
 
     constructor(options: LLMClientOptions, auditor?: Auditor) {
         const url = (options.url || 'https://api.anthropic.com').replace(/\/+$/, '');
@@ -459,7 +474,10 @@ export class AnthropicClient extends BaseLLMClient {
     // Model Discovery
     // ========================================================================
 
-    /** The endpoint's model ids. A failed listing throws; nothing is made up. */
+    /**
+     * The endpoint's model ids. A failed listing throws; nothing is made up.
+     * The cards are kept, so {@link getModelInfo} needs no further request.
+     */
     override async getModels(): Promise<string[]> {
         const url = `${this.baseUrl}/v1/models`;
         const response = await httpRequest<{
@@ -468,25 +486,62 @@ export class AnthropicClient extends BaseLLMClient {
             headers: this.buildAnthropicHeaders(),
             timeout: 5000,
         });
+        for (const card of response.data.data) this.modelCards.set(card.id, card);
         return response.data.data.map((m) => m.id);
     }
 
     /**
-     * Declared values first. Otherwise the Messages protocol's own features
-     * (tool use and image input) and the protocol's usual window, both marked
-     * `assumed`: the model name is not read, and the endpoint is not asked.
+     * Declared values first, then the endpoint's model card
+     * (`GET /v1/models/{id}`): `max_input_tokens` for the window, and
+     * `capabilities` for image input and thinking. Tool use is part of the
+     * Messages protocol, so it is listed whenever the card has capabilities.
+     * Whatever the card leaves out is the protocol's assumed default: the
+     * window above, and tool use plus image input. The model name is never read.
      */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
-        return this.withDeclaredModelInfo(
-            {
-                model: modelName ?? this.options.model,
-                contextLength: ANTHROPIC_ASSUMED_CONTEXT_LENGTH,
-                contextLengthSource: 'assumed',
-                capabilities: ['tools', 'vision'],
-                capabilitiesSource: 'assumed',
-            },
-            modelName,
-        );
+        const model = modelName ?? this.options.model;
+        const info: ModelMetadata = {
+            model,
+            contextLength: ANTHROPIC_ASSUMED_CONTEXT_LENGTH,
+            contextLengthSource: 'assumed',
+            capabilities: ['tools', 'vision'],
+            capabilitiesSource: 'assumed',
+        };
+        if (this.declaresModelInfo(modelName)) return this.withDeclaredModelInfo(info, modelName);
+
+        const card = await this.modelCard(model);
+        if (typeof card?.max_input_tokens === 'number' && card.max_input_tokens > 0) {
+            info.contextLength = card.max_input_tokens;
+            info.contextLengthSource = 'endpoint';
+        }
+        if (card?.capabilities) {
+            const capabilities = ['tools'];
+            if (card.capabilities.image_input?.supported) capabilities.push('vision');
+            if (card.capabilities.thinking?.supported) capabilities.push('thinking');
+            info.capabilities = capabilities;
+            info.capabilitiesSource = 'endpoint';
+        }
+        return this.withDeclaredModelInfo(info, modelName);
+    }
+
+    /** The model's card, from the cache or `GET /v1/models/{id}`; undefined when unavailable. */
+    private async modelCard(model: string): Promise<AnthropicModelInfo | undefined> {
+        if (!model) return undefined;
+        const cached = this.modelCards.get(model);
+        if (cached !== undefined) return cached ?? undefined;
+        try {
+            const response = await httpRequest<AnthropicModelInfo>(
+                `${this.baseUrl}/v1/models/${encodeURIComponent(model)}`,
+                { headers: this.buildAnthropicHeaders(), timeout: 5000 },
+            );
+            this.modelCards.set(model, response.data);
+            return response.data;
+        } catch (error) {
+            // No such card: a server without the route, or an id it does not
+            // list. Anything else (auth, network, 5xx) may pass, so ask again.
+            if (error instanceof LLMHttpError && error.status === 404) this.modelCards.set(model, null);
+            return undefined;
+        }
     }
 
     // ========================================================================

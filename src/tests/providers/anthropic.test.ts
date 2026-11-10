@@ -6,8 +6,9 @@
  * (`thinking: { type: 'enabled', budget_tokens }`), with the API's
  * constraints handled (budget < max_tokens; temperature omitted when on).
  *
- * Model info is declared or assumed, never read from the model name, and a
- * failed listing rejects instead of returning made-up ids.
+ * Model info is declared, read from the endpoint's model card, or assumed,
+ * never read from the model name, and a failed listing rejects instead of
+ * returning made-up ids.
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
@@ -120,55 +121,186 @@ describe('AnthropicClient thinking flag', () => {
     });
 });
 
+/** A `/v1/models` card as the endpoint returns it. */
+function modelCard(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { type: 'model', id, display_name: id, created_at: '2026-01-01T00:00:00Z', ...extra };
+}
+
+/** The fields a current Anthropic card carries, trimmed to what matters here. */
+const FULL_CARD = {
+    max_input_tokens: 1_000_000,
+    max_tokens: 128_000,
+    capabilities: {
+        image_input: { supported: true },
+        thinking: { supported: true },
+        structured_outputs: { supported: true },
+    },
+};
+
+/**
+ * Serve `GET /v1/models` (all cards) and `GET /v1/models/{id}` (one card, or
+ * the API's 404 body). Returns the URLs requested, in order.
+ */
+function serveCards(cards: Record<string, Record<string, unknown>>): string[] {
+    const urls: string[] = [];
+    const respond = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        urls.push(url);
+        const path = new URL(url).pathname;
+        if (path === '/v1/models') return respond({ data: Object.values(cards), has_more: false });
+        const card = cards[decodeURIComponent(path.slice('/v1/models/'.length))];
+        return card
+            ? respond(card)
+            : respond({ type: 'error', error: { type: 'not_found_error', message: 'model not found' } }, 404);
+    }) as unknown as typeof fetch;
+    return urls;
+}
+
 describe('AnthropicClient getModelInfo', () => {
     let originalFetch: typeof globalThis.fetch;
-    let fetchMock: ReturnType<typeof mock>;
-    beforeEach(() => {
-        originalFetch = globalThis.fetch;
-        fetchMock = mock(async () => new Response('{}', { status: 200 }));
-        globalThis.fetch = fetchMock as unknown as typeof fetch;
-    });
+    beforeEach(() => { originalFetch = globalThis.fetch; });
     afterEach(() => { globalThis.fetch = originalFetch; });
 
-    test('reports the protocol features and window, marked assumed, without asking the endpoint', async () => {
+    test('reads the window and capabilities from the endpoint model card', async () => {
+        const urls = serveCards({ 'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', FULL_CARD) });
         const info = await createClient().getModelInfo();
         expect(info).toEqual({
             model: 'claude-sonnet-4-5',
+            contextLength: 1_000_000,
+            contextLengthSource: 'endpoint',
+            capabilities: ['tools', 'vision', 'thinking'],
+            capabilitiesSource: 'endpoint',
+        });
+        expect(urls).toEqual(['https://api.anthropic.com/v1/models/claude-sonnet-4-5']);
+    });
+
+    test('lists only what the card says the model supports', async () => {
+        serveCards({
+            'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', {
+                max_input_tokens: 200_000,
+                capabilities: { image_input: { supported: false }, thinking: { supported: false } },
+            }),
+        });
+        const info = await createClient().getModelInfo();
+        expect(info.contextLength).toBe(200_000);
+        expect(info.capabilities).toEqual(['tools']);
+        expect(info.capabilitiesSource).toBe('endpoint');
+    });
+
+    test('a card without those fields leaves the assumed protocol values', async () => {
+        serveCards({ 'model-id': modelCard('model-id') });
+        const info = await createClient({ model: 'model-id' }).getModelInfo();
+        expect(info).toEqual({
+            model: 'model-id',
             contextLength: 200_000,
             contextLengthSource: 'assumed',
             capabilities: ['tools', 'vision'],
             capabilitiesSource: 'assumed',
         });
-        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     test('does not read the model name', async () => {
+        serveCards({});
         const named = await createClient({ model: 'claude-opus-4-1' }).getModelInfo();
         const unnamed = await createClient({ model: 'model-id' }).getModelInfo();
         expect({ ...named, model: undefined }).toEqual({ ...unnamed, model: undefined });
         expect(named.capabilities).not.toContain('thinking');
+        expect(named.contextLengthSource).toBe('assumed');
     });
 
-    test('reports a declared contextLength', async () => {
+    test('URL-encodes the model id', async () => {
+        const urls = serveCards({ 'org/model:tag': modelCard('org/model:tag', FULL_CARD) });
+        const info = await createClient({ model: 'org/model:tag' }).getModelInfo();
+        expect(urls).toEqual(['https://api.anthropic.com/v1/models/org%2Fmodel%3Atag']);
+        expect(info.contextLengthSource).toBe('endpoint');
+    });
+
+    test('asks for a card once', async () => {
+        const urls = serveCards({ 'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', FULL_CARD) });
+        const client = createClient();
+        await client.getModelInfo();
+        await client.getModelInfo();
+        expect(urls).toHaveLength(1);
+    });
+
+    test('uses the cards getModels() already fetched', async () => {
+        const urls = serveCards({
+            'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', FULL_CARD),
+            'claude-haiku-4-5': modelCard('claude-haiku-4-5', { max_input_tokens: 200_000 }),
+        });
+        const client = createClient();
+        await client.getModels();
+        expect((await client.getModelInfo()).contextLength).toBe(1_000_000);
+        expect((await client.getModelInfo('claude-haiku-4-5')).contextLength).toBe(200_000);
+        expect(urls).toEqual(['https://api.anthropic.com/v1/models']);
+    });
+
+    test('remembers a card the endpoint does not have', async () => {
+        const urls = serveCards({});
+        const client = createClient();
+        expect((await client.getModelInfo()).contextLengthSource).toBe('assumed');
+        await client.getModelInfo();
+        expect(urls).toHaveLength(1);
+    });
+
+    test('a failed lookup reports the assumed values and is tried again', async () => {
+        let calls = 0;
+        globalThis.fetch = mock(async () => {
+            calls++;
+            throw new Error('connection refused');
+        }) as unknown as typeof fetch;
+        const client = createClient();
+        const info = await client.getModelInfo();
+        expect(info.contextLengthSource).toBe('assumed');
+        expect(info.capabilitiesSource).toBe('assumed');
+        const before = calls;
+        await client.getModelInfo();
+        expect(calls).toBeGreaterThan(before);
+    });
+
+    test('a declared contextLength wins over the card', async () => {
+        serveCards({ 'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', FULL_CARD) });
         const info = await createClient({ contextLength: 64_000 }).getModelInfo();
         expect(info.contextLength).toBe(64_000);
         expect(info.contextLengthSource).toBe('declared');
-        expect(info.capabilitiesSource).toBe('assumed');
+        expect(info.capabilities).toEqual(['tools', 'vision', 'thinking']);
+        expect(info.capabilitiesSource).toBe('endpoint');
     });
 
-    test('reports declared capabilities as given', async () => {
-        const info = await createClient({ capabilities: ['tools', 'vision', 'thinking'] }).getModelInfo();
-        expect(info.capabilities).toEqual(['tools', 'vision', 'thinking']);
+    test('declared capabilities replace the card', async () => {
+        serveCards({ 'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', FULL_CARD) });
+        const info = await createClient({ capabilities: ['tools'] }).getModelInfo();
+        expect(info.capabilities).toEqual(['tools']);
         expect(info.capabilitiesSource).toBe('declared');
-        expect(info.contextLengthSource).toBe('assumed');
+        expect(info.contextLength).toBe(1_000_000);
+        expect(info.contextLengthSource).toBe('endpoint');
+    });
+
+    test('asks nothing when both values are declared', async () => {
+        const urls = serveCards({ 'claude-sonnet-4-5': modelCard('claude-sonnet-4-5', FULL_CARD) });
+        const info = await createClient({ contextLength: 64_000, capabilities: ['tools'] }).getModelInfo();
+        expect(info).toMatchObject({
+            contextLength: 64_000,
+            contextLengthSource: 'declared',
+            capabilities: ['tools'],
+            capabilitiesSource: 'declared',
+        });
+        expect(urls).toEqual([]);
     });
 
     test('declared values do not describe another model', async () => {
+        serveCards({ 'some-other-model': modelCard('some-other-model', FULL_CARD) });
         const client = createClient({ contextLength: 64_000, capabilities: ['tools'] });
         const info = await client.getModelInfo('some-other-model');
-        expect(info.model).toBe('some-other-model');
-        expect(info.contextLengthSource).toBe('assumed');
-        expect(info.capabilitiesSource).toBe('assumed');
+        expect(info).toMatchObject({
+            model: 'some-other-model',
+            contextLength: 1_000_000,
+            contextLengthSource: 'endpoint',
+            capabilities: ['tools', 'vision', 'thinking'],
+            capabilitiesSource: 'endpoint',
+        });
     });
 });
 
