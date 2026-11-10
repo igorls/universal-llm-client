@@ -111,7 +111,7 @@ const changelogUrl = `${repoUrl}/blob/main/CHANGELOG.md`
                 depends on the server and the model it has loaded. On Anthropic Messages no response schema is
                 sent, so structured output is validated in your code.
             </p>
-            <a class="text-link" :href="withBase('/guide/providers')">
+            <a class="text-link" :href="withBase('/guide/protocols')">
                 Protocol notes, strict JSON mode and prompt caching
                 <UlcIcon name="arrow" />
             </a>
@@ -157,7 +157,7 @@ const changelogUrl = `${repoUrl}/blob/main/CHANGELOG.md`
                 <InstallCommand id-prefix="close" />
                 <nav class="close-links" aria-label="Where to go next">
                     <a :href="withBase('/guide/getting-started')">Getting started <UlcIcon name="arrow" /></a>
-                    <a :href="withBase('/guide/providers')">Providers <UlcIcon name="arrow" /></a>
+                    <a :href="withBase('/guide/protocols')">Protocols <UlcIcon name="arrow" /></a>
                     <a :href="withBase('/api/reference')">API reference <UlcIcon name="arrow" /></a>
                     <a :href="changelogUrl">Changelog <UlcIcon name="arrow" /></a>
                 </nav>

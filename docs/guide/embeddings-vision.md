@@ -70,7 +70,7 @@ The helpers `extractTextContent(content)` and `hasImages(content)` read a messag
 
 ### Support
 
-Image input works on the OpenAI Chat Completions, Anthropic Messages, Gemini and Ollama protocols. It is not supported with `type: 'llamacpp'`. Each client converts the parts to its protocol's image format.
+Image input works on the OpenAI Chat Completions, Anthropic Messages, Gemini and Ollama protocols. On a self-hosted Chat Completions server, including `type: 'llamacpp'`, it depends on the server and the loaded model. Each client converts the parts to its protocol's image format.
 
 ### With structured output
 

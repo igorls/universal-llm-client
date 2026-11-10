@@ -171,7 +171,7 @@ components:
 
 **Creative North Star: "The Audit Log"**
 
-**Scope.** This file covers the documentation site only: the homepage (`docs/index.md` and the components in `docs/.vitepress/theme/home/`) plus the tokens in `docs/.vitepress/theme/tokens.css` and the code themes in `docs/.vitepress/config.mts`, which the guide and API pages inherit. The local testing workbench described in `PRODUCT.md` is a different surface and is not covered here. Colour values in the frontmatter are light theme first; the same roles prefixed `dark-` are the dark theme.
+**Scope.** This file covers the documentation site only: the homepage (`docs/index.md` and the components in `docs/.vitepress/theme/home/`) plus the tokens in `docs/.vitepress/theme/tokens.css` and the code themes in `docs/.vitepress/config.mts`, which the guide and API pages inherit. Colour values in the frontmatter are light theme first; the same roles prefixed `dark-` are the dark theme.
 
 The site is a serious library site for developers and for AI agents building tools. It states the offer in plain words and then proves it with the thing the library actually produces: a list of audit events. Everything else follows from that log. Surfaces are near-white or near-black neutrals with a faint green cast, separated by one-pixel rules. Type is one sans family for prose and one monospace family for anything a machine says. A single green appears only where something answered, where something is live, or where the primary action is.
 

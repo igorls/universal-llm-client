@@ -17,7 +17,7 @@
 | Streaming | Yes | Yes | Yes | Yes |
 | Tool calling | Yes | Yes | Yes | Yes |
 | Structured output | Yes, sent as `response_format` | Validated client-side; the schema is not sent | Yes, sent as `responseSchema` | Yes, sent as `format` |
-| Vision | Yes. Not supported with `type: 'llamacpp'` | Yes | Yes | Yes |
+| Vision | Yes | Yes | Yes | Yes |
 | Embeddings | Yes | No | Yes | Yes |
 | Native thinking | Through response fields or `<think>` tags | Yes, extended thinking | Yes, `thinkingConfig` | Yes, `think` |
 

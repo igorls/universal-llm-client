@@ -1,6 +1,6 @@
 /**
  * Homepage content. Facts here come from the source, README.md and
- * docs/guide/providers.md. Change them here and every section follows.
+ * docs/guide/protocols.md. Change them here and every section follows.
  */
 
 export const repoUrl = 'https://github.com/igorls/universal-llm-client'
@@ -82,7 +82,7 @@ export const capabilities: Capability[] = [
             'A stalled stream is aborted on inactivity, not on an absolute deadline.',
             'Failover still applies until the first event reaches your code.',
         ],
-        link: { text: 'Streaming guide', href: '/guide/features#streaming' },
+        link: { text: 'Streaming guide', href: '/guide/streaming' },
     },
     {
         id: 'tools',
@@ -95,7 +95,7 @@ export const capabilities: Capability[] = [
             'Loosely typed arguments from small models are coerced and validated against your schema.',
             'Define tools with a plain JSON Schema or the fluent ToolBuilder.',
         ],
-        link: { text: 'Tool calling guide', href: '/guide/features#tool-calling' },
+        link: { text: 'Tool calling guide', href: '/guide/tools' },
     },
     {
         id: 'structured',
@@ -134,7 +134,7 @@ export const capabilities: Capability[] = [
             'Responses report token usage, duration and tokens per second.',
             'getProviderStatus() shows which providers are healthy or cooling down.',
         ],
-        link: { text: 'Observability guide', href: '/guide/features#observability' },
+        link: { text: 'Observability guide', href: '/guide/observability' },
     },
     {
         id: 'mcp',
@@ -147,11 +147,11 @@ export const capabilities: Capability[] = [
             'In browsers only the HTTP transport is available.',
             'Bridged tools run through the same chatWithTools() loop.',
         ],
-        link: { text: 'MCP guide', href: '/guide/features#mcp-integration' },
+        link: { text: 'MCP guide', href: '/guide/tools#mcp' },
     },
 ]
 
-/* ── Protocol support (docs/guide/providers.md) ──────────────────
+/* ── Protocol support (docs/guide/protocols.md) ──────────────────
    Compatibility is stated per wire protocol, never per provider or model.
    `types` are the values of a provider's `type` that select the protocol;
    `short` is the column head on narrow screens. */

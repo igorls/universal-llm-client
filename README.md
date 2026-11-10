@@ -221,11 +221,11 @@ See [Deep Research](docs/guide/deep-research.md).
 | Streaming | Yes | Yes | Yes | Yes |
 | Tool calling | Yes | Yes | Yes | Yes |
 | Structured output | Yes, as `response_format` | Validated client-side; the schema is not sent | Yes, as `responseSchema` | Yes, as `format` |
-| Vision | Yes. Not supported with `type: 'llamacpp'` | Yes | Yes | Yes |
+| Vision | Yes | Yes | Yes | Yes |
 | Embeddings | Yes | No | Yes | Yes |
 | Native thinking | Through response fields or `<think>` tags | Yes, extended thinking | Yes, `thinkingConfig` | Yes, `think` |
 
-`type: 'llamacpp'` uses the same client as `type: 'openai'`, with a different default `url`. Image input is not supported with `type: 'llamacpp'`.
+`type: 'llamacpp'` uses the same client as `type: 'openai'`, with a different default `url`. On a self-hosted server, image input depends on the server and the loaded model.
 
 Endpoints that speak OpenAI Chat Completions are reached with `type: 'openai'` and a `url`, with options for the key header, query parameters and base path. See [Protocols](docs/guide/protocols.md).
 

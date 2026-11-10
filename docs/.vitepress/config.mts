@@ -102,27 +102,36 @@ export default defineConfig({
 
     sidebar: [
       {
-        text: 'Guide',
+        text: 'Start',
         items: [
           { text: 'Getting Started', link: '/guide/getting-started' },
-          { text: 'Reasoning & Thinking', link: '/guide/reasoning' },
-          { text: 'Deep Research', link: '/guide/deep-research' },
-          { text: 'Structured Output', link: '/guide/structured-output' },
-          { text: 'Providers', link: '/guide/providers' },
+          { text: 'Protocols', link: '/guide/protocols' }
+        ]
+      },
+      {
+        text: 'Guides',
+        items: [
           { text: 'Features', link: '/guide/features' },
+          { text: 'Failover', link: '/guide/failover' },
+          { text: 'Streaming', link: '/guide/streaming' },
+          { text: 'Tools and MCP', link: '/guide/tools' },
+          { text: 'Structured Output', link: '/guide/structured-output' },
+          { text: 'Reasoning', link: '/guide/reasoning' },
+          { text: 'Observability', link: '/guide/observability' },
+          { text: 'Embeddings and Vision', link: '/guide/embeddings-vision' },
+          { text: 'Deep Research', link: '/guide/deep-research' }
+        ]
+      },
+      {
+        text: 'Concepts',
+        items: [
           { text: 'Architecture', link: '/guide/architecture' }
         ]
       },
       {
-        text: 'API',
+        text: 'Reference',
         items: [
-          { text: 'Reference', link: '/api/reference' }
-        ]
-      },
-      {
-        text: 'Research',
-        items: [
-          { text: 'Provider API Landscape 2026', link: '/research/provider-api-landscape-2026' }
+          { text: 'API Reference', link: '/api/reference' }
         ]
       }
     ],
