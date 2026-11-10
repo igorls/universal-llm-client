@@ -1,8 +1,10 @@
 # API Reference
 
+The package exports from `universal-llm-client`. These sub-paths export a subset: `/interfaces`, `/tools`, `/auditor`, `/stream-decoder`, `/http`, `/structured-output` and `/zod`.
+
 ## AIModel
 
-The main class — the only import most users need.
+The main class.
 
 ```typescript
 import { AIModel } from 'universal-llm-client';
@@ -14,292 +16,386 @@ import { AIModel } from 'universal-llm-client';
 new AIModel(config: AIModelConfig)
 ```
 
-| Config Option | Type | Default | Description |
-|---------------|------|---------|-------------|
-| `model` | `string` | — | Model name (e.g., `'gpt-4o-mini'`) |
-| `providers` | `ProviderConfig[]` | — | Array of provider configurations |
-| `retries` | `number` | `2` | Retries per provider before failover |
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `model` | `string` | none | Model name, shared by every provider unless an entry sets its own |
+| `providers` | `ProviderConfig[]` | none | Provider entries, in priority order |
+| `retries` | `number` | `2` | Retries per provider before failing over |
 | `timeout` | `number` | `30000` | Request timeout in ms |
-| `debug` | `boolean` | `false` | Enable debug logging |
-| `auditor` | `Auditor` | `NoopAuditor` | Observability interface |
-| `thinking` | `boolean` | `false` | Enable thinking/reasoning mode |
-| `defaultParameters` | `object` | — | Default params sent with every request |
+| `spillAfterMs` | `number` | `750` | How long a request waits for a slot in a full pool before spilling to the next priority. Used only when entries set `maxConcurrent` |
+| `thinking` | `boolean \| ThinkingLevel` | unset | Thinking for every request. Unset sends nothing |
+| `contextLength` | `number` | unset | Context window requested from the server, for providers that take one (Ollama `num_ctx`) |
+| `defaultParameters` | `Record<string, unknown>` | none | Default request parameters |
+| `auditor` | `Auditor` | `NoopAuditor` | Observability sink |
+| `debug` | `boolean` | `false` | Debug logging |
 
-### Chat Methods
+### Chat
 
 #### `chat(messages, options?)`
 
-Send a chat request with automatic provider failover.
-
 ```typescript
-async chat(messages: LLMChatMessage[], options?: ChatOptions): Promise<LLMChatResponse>
+chat(messages: LLMChatMessage[], options?: ChatOptions): Promise<LLMChatResponse>
 ```
+
+Sends a request with failover.
 
 #### `chatWithTools(messages, options?)`
 
-Chat with autonomous multi-turn tool execution.
-
 ```typescript
-async chatWithTools(
+chatWithTools(
   messages: LLMChatMessage[],
-  options?: ChatOptions & { maxIterations?: number }
+  options?: ChatOptions & { maxIterations?: number },
 ): Promise<LLMChatResponse>
 ```
 
+Runs the tool loop. See [Tools and MCP](/guide/tools).
+
 #### `chatStream(messages, options?)`
 
-Stream chat response with pluggable decoder.
-
 ```typescript
-async *chatStream(
+chatStream(
   messages: LLMChatMessage[],
-  options?: ChatOptions
+  options?: ChatOptions,
 ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown>
 ```
 
-### Structured Output Methods
+Yields typed events. Throws if `options.output` is set. See [Streaming](/guide/streaming).
 
-#### `generateStructured(schema, messages, options?)`
+### Structured output
 
-Generate validated structured output. Throws `StructuredOutputError` on failure.
-
-```typescript
-async generateStructured<T>(
-  schema: z.ZodType<T>,
-  messages: LLMChatMessage[],
-  options?: ChatOptions
-): Promise<T>
-```
-
-#### `tryParseStructured(schema, messages, options?)`
-
-Non-throwing variant. Returns a discriminated union result.
+All three take a `SchemaConfig<T>`. Build one from a Zod schema with `fromZod`.
 
 ```typescript
-async tryParseStructured<T>(
-  schema: z.ZodType<T>,
-  messages: LLMChatMessage[],
-  options?: ChatOptions
-): Promise<StructuredOutputResult<T>>
+generateStructured<T>(config: SchemaConfig<T>, messages: LLMChatMessage[], options?: ChatOptions): Promise<T>
+
+tryParseStructured<T>(config: SchemaConfig<T>, messages: LLMChatMessage[], options?: ChatOptions): Promise<StructuredOutputResult<T>>
+
+generateStructuredStream<T>(config: SchemaConfig<T>, messages: LLMChatMessage[], options?: ChatOptions): AsyncGenerator<T, T, unknown>
 ```
 
-#### `generateStructuredStream(schema, messages, options?)`
+`generateStructured` throws `StructuredOutputError` when the response does not parse or validate. `tryParseStructured` returns the failure instead. `generateStructuredStream` yields validated partial objects and returns the final one.
 
-Stream partial validated objects as JSON generates.
+### Deep Research
 
 ```typescript
-async *generateStructuredStream<T>(
-  schema: z.ZodType<T>,
-  messages: LLMChatMessage[],
-  options?: ChatOptions
-): AsyncGenerator<T, T, unknown>
+deepResearch(input: string, options?: DeepResearchOptions): Promise<DeepResearchResult>
+
+deepResearchStream(
+  input: string,
+  options?: DeepResearchOptions,
+): AsyncGenerator<DeepResearchEvent, DeepResearchResult, unknown>
 ```
 
-### Other Methods
+`deepResearch` creates a background interaction and polls until it completes or `timeoutMs` passes. `deepResearchStream` yields events as the agent works and returns the final result. Both need a `type: 'google'` provider and throw otherwise. See [Deep Research](/guide/deep-research).
+
+```typescript
+interface DeepResearchOptions {
+  agent?: string;                       // research agent id; the library supplies a default
+  tools?: string[];                     // for example 'google_search', 'url_context', 'code_execution'
+  thinkingSummaries?: 'auto' | 'none';  // default 'auto'
+  previousInteractionId?: string;       // continue a prior interaction
+  pollIntervalMs?: number;              // default 5000
+  timeoutMs?: number;                   // default 600000
+  signal?: AbortSignal;
+}
+
+interface DeepResearchResult {
+  id: string;
+  status: 'in_progress' | 'completed' | 'failed' | string;
+  report?: string;
+  steps?: DeepResearchStep[];
+  error?: unknown;
+  raw?: unknown;
+}
+
+type DeepResearchEvent =
+  | { type: 'thought'; content: string }
+  | { type: 'text'; content: string }
+  | { type: 'image'; content: unknown }
+  | { type: 'status'; status: string };
+```
+
+### Other methods
 
 | Method | Description |
 |--------|-------------|
-| `embed(text)` | Generate embedding for a single text |
-| `embedArray(texts)` | Generate embeddings for multiple texts |
-| `registerTool(name, description, parameters, handler)` | Register a callable tool |
-| `registerTools(tools[])` | Register multiple tools |
-| `getModels()` | Get available models from all providers |
-| `getModelInfo()` | Get metadata about the current model |
-| `setModel(name)` | Switch model at runtime |
-| `getProviderStatus()` | Get health status of all providers |
-| `dispose()` | Clean shutdown |
+| `embed(text)` | Embedding for one text: `Promise<number[]>` |
+| `embedArray(texts)` | Embeddings for several texts: `Promise<number[][]>` |
+| `registerTool(name, description, parameters, handler)` | Register a tool |
+| `registerTools(tools)` | Register several tools, each `{ name, description, parameters, handler }` |
+| `getModels()` | Models available from the configured providers: `Promise<string[]>` |
+| `getModelInfo()` | Metadata for the current model: `Promise<ModelMetadata>` |
+| `setModel(name)` | Change the model name |
+| `model` | The current model name (getter) |
+| `getProviderStatus()` | Health and load per provider: `ProviderStatus[]` |
+| `getPoolStatus()` | Load per priority tier: `PoolStatus[]` |
+| `dispose()` | Flush the auditor |
+
+---
+
+## ProviderConfig
+
+One entry in `providers`.
+
+```typescript
+interface ProviderConfig {
+  type: 'openai' | 'llamacpp' | 'anthropic' | 'google' | 'vertex' | 'ollama';
+  url?: string;                          // endpoint base URL; each type has a default
+  apiKey?: string;
+  model?: string;                        // overrides the shared model name for this entry
+  priority?: number;                     // lower is tried first; default is the array index
+  maxConcurrent?: number;                // in-flight cap for this entry; default no cap
+  contextLength?: number;                // overrides AIModelConfig.contextLength
+  defaultParameters?: Record<string, unknown>; // merged over the model-level block
+  region?: string;                       // vertex only
+  apiVersion?: 'v1' | 'v1beta';          // google, vertex; default 'v1beta'
+  headers?: Record<string, string>;      // openai, llamacpp, ollama
+  queryParams?: Record<string, string>;  // openai, llamacpp
+  authHeader?: string;                   // openai, llamacpp, ollama
+  authPrefix?: string;                   // openai, llamacpp, ollama
+  apiBasePath?: string;                  // openai, llamacpp; '' disables the /v1 suffix
+  omitResponseFormat?: boolean;          // openai, llamacpp; never send response_format
+}
+```
+
+`type` selects the wire protocol; see [Protocols](/guide/protocols). Entries with the same `priority` form a pool; see [Failover](/guide/failover).
 
 ---
 
 ## ChatOptions
 
-Options passed to chat and structured output methods.
+Per-call options for `chat`, `chatWithTools`, `chatStream` and the structured output methods.
 
 ```typescript
 interface ChatOptions {
   temperature?: number;
   maxTokens?: number;
-  topP?: number;
-  stop?: string[];
-  tools?: LLMToolDefinition[];
-  output?: OutputOptions;         // Structured output config
-  responseFormat?: ResponseFormat; // json_object or json_schema
-  decoder?: DecoderType;          // Stream decoder strategy
-  stream?: boolean;
+  model?: string;                  // use this model name for this call only
+  thinking?: boolean | ThinkingLevel;
+  contextLength?: number;
+  sessionKey?: string;             // routing affinity; never sent to the provider
+  tools?: LLMToolDefinition[];     // default: the registered tools
+  toolChoice?: 'none' | 'auto' | 'required';
+  parameters?: Record<string, unknown>; // extra provider-specific parameters
+  signal?: AbortSignal;
+  executeTools?: boolean;
+  maxIterations?: number;          // tool rounds; default 10
+  enablePromptCaching?: boolean;   // Anthropic Messages
+  decoder?: DecoderType | string | StreamDecoder;
+  output?: OutputOptions;          // structured output
+  responseFormat?: ResponseFormat; // raw response_format, without a schema
+  serviceTier?: 'flex' | 'priority' | 'standard'; // Gemini
+  conversationId?: string;         // used by the Responses client only
 
-  // Deprecated — use output instead
-  schema?: z.ZodType;
-  jsonSchema?: Record<string, unknown>;
+  // Deprecated. Use `output`, or the structured output methods.
+  schema?: SchemaConfig<unknown>;
+  jsonSchema?: JSONSchema;
   schemaName?: string;
   schemaDescription?: string;
 }
 ```
 
+`ThinkingLevel` is `'minimal' | 'low' | 'medium' | 'high' | 'xhigh'`. For provider-specific settings that have no dedicated option, use `parameters`.
+
 ---
 
 ## OutputOptions
 
-Configuration for structured output when using `chat()` directly.
+Structured output through `chat()`.
 
 ```typescript
 interface OutputOptions<T = unknown> {
-  /** Zod schema for validation and type inference */
-  schema?: z.ZodType<T>;
-
-  /** Raw JSON Schema (alternative to Zod) */
-  jsonSchema?: Record<string, unknown>;
-
-  /** Schema name — hint for the LLM */
-  name?: string;
-
-  /** Schema description — hint for the LLM */
-  description?: string;
-
-  /** Enable strict mode (OpenAI only, default true) */
-  strict?: boolean;
+  schema?: SchemaConfig<T>;        // JSON Schema plus validator; see fromZod
+  jsonSchema?: JSONSchema;         // JSON Schema without a validator
+  name?: string;                   // hint for the model
+  description?: string;            // hint for the model
+  strict?: boolean;                // declared; the OpenAI Chat Completions client does not read it
 }
+```
+
+The result is on `response.structured`. See [Structured Output](/guide/structured-output).
+
+---
+
+## SchemaConfig and fromZod
+
+```typescript
+interface SchemaConfig<T = unknown> {
+  readonly jsonSchema: JSONSchema;
+  readonly validate?: (data: unknown) => T;
+  readonly name?: string;
+  readonly description?: string;
+}
+```
+
+`fromZod` builds a `SchemaConfig` from a Zod 4 schema. It lives in the `/zod` sub-path because Zod is an optional peer dependency:
+
+```typescript
+import { fromZod } from 'universal-llm-client/zod';
+
+function fromZod<T>(
+  schema: z.ZodType<T>,
+  options?: { name?: string; description?: string },
+): SchemaConfig<T>
 ```
 
 ---
 
 ## StructuredOutputError
 
-Error thrown when structured output generation or validation fails.
+Thrown when a response cannot be parsed or fails validation.
 
 ```typescript
 class StructuredOutputError extends Error {
-  /** The raw text output from the LLM */
-  readonly rawOutput: string;
-
-  /** The underlying cause (ZodError or SyntaxError) */
-  readonly cause: Error;
+  readonly rawOutput: string;   // the text the model returned
+  readonly cause?: Error;       // SyntaxError for bad JSON; the validator's error otherwise
 }
 ```
-
-### Usage
-
-```typescript
-try {
-  await model.generateStructured(schema, messages);
-} catch (error) {
-  if (error instanceof StructuredOutputError) {
-    console.log(error.rawOutput);  // Raw LLM text
-    console.log(error.cause);      // ZodError or SyntaxError
-  }
-}
-```
-
----
 
 ## StructuredOutputResult\<T\>
 
-Discriminated union returned by `tryParseStructured()`.
-
 ```typescript
 type StructuredOutputResult<T> =
-  | { ok: true;  value: T }
-  | { ok: false; error: StructuredOutputError; rawOutput: string }
+  | { ok: true; value: T }
+  | { ok: false; error: StructuredOutputError; rawOutput: string };
 ```
 
-### Type Guards
+`isStructuredOutputSuccess(result)` and `isStructuredOutputFailure(result)` narrow it.
 
-```typescript
-import {
-  isStructuredOutputSuccess,
-  isStructuredOutputFailure,
-} from 'universal-llm-client';
+## Schema utilities
 
-const result = await model.tryParseStructured(schema, messages);
+Exported from the main package and from `/structured-output`:
 
-if (isStructuredOutputSuccess(result)) {
-  result.value; // T
-}
-if (isStructuredOutputFailure(result)) {
-  result.error;     // StructuredOutputError
-  result.rawOutput; // string
-}
-```
+| Export | Signature | Purpose |
+|---|---|---|
+| `parseStructured` | `(config, rawOutput) => T` | Parse text as JSON, unwrap a code fence if present, validate. Throws `StructuredOutputError` |
+| `tryParseStructured` | `(config, rawOutput) => StructuredOutputResult<T>` | The non-throwing variant |
+| `validateStructuredOutput` | `(config, data, rawOutput?) => T` | Validate already-parsed data |
+| `stripJsonFences` | `(rawOutput) => string` | Extract the first fenced block |
+| `getJsonSchemaFromConfig` | `(config) => JSONSchema` | The config's schema, cloned |
+| `normalizeJsonSchema` | `(schema) => JSONSchema` | Deep clone |
+| `stripUnsupportedFeatures` | `(schema, provider) => JSONSchema` | Remove keywords the Gemini format does not accept |
+| `convertToProviderSchema` | `(provider, options) => ProviderSchema` | Schema, name and description for one protocol |
+| `StreamingJsonParser` | `new StreamingJsonParser(config)` | Incremental parser. `feed(chunk)` returns `{ partial, complete }`; also `getBuffer()` and `reset()` |
+
+`parseStructured` and `tryParseStructured` here take a `SchemaConfig` and the raw text. They are not the `AIModel` methods of the same name.
 
 ---
 
-## Schema Utilities
-
-Exported from the main package and the `./structured-output` sub-path:
+## Tools
 
 ```typescript
-import {
-  zodToJsonSchema,
-  parseStructured,
-  tryParseStructured,
-  validateStructuredOutput,
-  StreamingJsonParser,
-  normalizeJsonSchema,
-  stripUnsupportedFeatures,
-  convertToProviderSchema,
-  getJsonSchema,
-} from 'universal-llm-client';
+import { ToolBuilder, ToolExecutor, createTimeTool, createRandomNumberTool } from 'universal-llm-client';
 ```
 
-### `zodToJsonSchema(schema)`
+### ToolBuilder
 
-Convert a Zod schema to JSON Schema using Zod 4's native `z.toJSONSchema()`.
+Builds a tool definition. It does not hold a handler.
 
 ```typescript
-function zodToJsonSchema<T>(schema: z.ZodType<T>): JSONSchema
+new ToolBuilder(name: string)
+  .description(text: string): this
+  .addParameter(name: string, type: string, description: string, required?: boolean, extra?: Record<string, unknown>): this
+  .build(): LLMToolDefinition      // { type: 'function', function: { name, description, parameters } }
+  .buildFunction(): LLMFunction    // the `function` part
 ```
 
-### `parseStructured(schema, rawOutput)`
-
-Parse a raw string as JSON and validate against a Zod schema. Throws `StructuredOutputError`.
-
 ```typescript
-function parseStructured<T>(schema: z.ZodType<T>, rawOutput: string): T
+const fn = new ToolBuilder('search')
+  .description('Search the web')
+  .addParameter('query', 'string', 'Search query', true)
+  .buildFunction();
+
+model.registerTool(fn.name, fn.description, fn.parameters, handler);
 ```
 
-### `StreamingJsonParser<T>`
+### ToolExecutor
 
-Incremental JSON parser for streaming structured output:
+Static methods that wrap a `ToolHandler` (`(args: unknown) => unknown | Promise<unknown>`):
+
+| Method | Effect |
+|---|---|
+| `withTimeout(handler, ms)` | Reject after `ms` |
+| `safe(handler)` | Return `{ error }` instead of throwing |
+| `withValidation(handler, requiredFields)` | Throw on a missing or null required field |
+| `timed(handler)` | Return `{ result, duration }` |
+| `compose(handler, ...wrappers)` | Apply wrappers; the last is innermost |
+
+`createTimeTool()` and `createRandomNumberTool()` return `{ name, description, parameters, handler }` for `registerTools`.
+
+### MCPToolBridge
 
 ```typescript
-const parser = new StreamingJsonParser(schema);
+import { MCPToolBridge } from 'universal-llm-client';
 
-// Feed tokens as they arrive
-const result = parser.feed(token);
+new MCPToolBridge(config: MCPBridgeConfig)
 
-if (result.partial) {
-  // Valid partial object
-  console.log(result.partial);
+interface MCPBridgeConfig {
+  servers: Record<string, MCPServerConfig>;  // keyed by server name
+  auditor?: Auditor;
+}
+
+interface MCPServerConfig {
+  command?: string;                  // stdio
+  args?: string[];                   // stdio
+  env?: Record<string, string>;      // stdio
+  url?: string;                      // HTTP
+  headers?: Record<string, string>;  // HTTP
 }
 ```
+
+| Method | Description |
+|---|---|
+| `connect(): Promise<void>` | Connect to every server and discover tools. Throws on the first failure |
+| `registerTools(model: AIModel): Promise<void>` | Register every discovered tool on the model, as `serverName:toolName`. Connects first if needed |
+| `getTools(): ReadonlyArray<MCPTool>` | Discovered tools: `{ serverName, name, qualifiedName, description, inputSchema }` |
+| `disconnect(): Promise<void>` | Close every connection |
+
+Requires the optional peer dependency `@modelcontextprotocol/sdk`.
 
 ---
 
-## ProviderConfig
-
-Configuration for individual providers.
+## Stream decoders
 
 ```typescript
-interface ProviderConfig {
-  type: 'openai' | 'google' | 'vertex' | 'ollama' | 'llamacpp' | 'anthropic';
-  apiKey?: string;
-  url?: string;
-  model?: string;        // Override the global model for this provider
-  priority?: number;     // Lower = higher priority (default: array index)
-  region?: string;       // Vertex AI region
-  apiVersion?: string;   // API version override (Google/Vertex)
-  headers?: Record<string, string>;     // OpenAI-compatible & Ollama (Azure api-key, etc.)
-  queryParams?: Record<string, string>; // OpenAI-compatible only (Azure api-version, etc.)
-  authHeader?: string;   // OpenAI-compatible & Ollama, e.g. 'api-key'
-  authPrefix?: string;   // OpenAI-compatible & Ollama, e.g. '' for api-key style
-  apiBasePath?: string;  // OpenAI-compatible only: '' to disable auto /v1 (Azure full deployment URLs)
-}
+import { createDecoder, registerDecoder, getRegisteredDecoders } from 'universal-llm-client';
 ```
+
+### `createDecoder(type, callback, options?)`
+
+```typescript
+function createDecoder(
+  type: DecoderType | string,
+  callback: (event: DecodedEvent) => void,
+  options?: { knownToolNames?: Set<string> },
+): StreamDecoder
+```
+
+Looks up `type` in the registry and returns a decoder. Throws if it is not registered. Built-in types: `'passthrough'`, `'standard-chat'`, `'interleaved-reasoning'`.
+
+```typescript
+interface StreamDecoder {
+  push(token: string): void;
+  flush(): void;
+  getCleanContent(): string;
+  getReasoning(): string | undefined;
+  pushReasoning?(content: string): void;
+  pushToolCalls?(calls: LLMToolCall[]): void;
+}
+
+type DecodedEvent =
+  | { type: 'text'; content: string }
+  | { type: 'thinking'; content: string }
+  | { type: 'progress'; content: string }
+  | { type: 'tool_call'; calls: LLMToolCall[] }
+  | { type: 'tool_call_delta'; calls: LLMToolCall[] };
+```
+
+`registerDecoder(type, factory)` adds a custom decoder, usable as `decoder: type` in `ChatOptions`. `getRegisteredDecoders()` lists the names. See [Streaming](/guide/streaming).
 
 ---
 
 ## Auditor
-
-Interface for observability:
 
 ```typescript
 interface Auditor {
@@ -308,17 +404,17 @@ interface Auditor {
 }
 ```
 
-### Built-in Implementations
-
-| Class | Behavior |
+| Class | Behaviour |
 |-------|----------|
-| `NoopAuditor` | Discards all events (default) |
-| `ConsoleAuditor` | Logs events to console |
-| `BufferedAuditor` | Buffers events for batch retrieval |
+| `NoopAuditor` | Discards events. The default |
+| `ConsoleAuditor(prefix?)` | Logs events to the console |
+| `BufferedAuditor({ maxBufferSize?, onFlush? })` | Buffers events. `getEvents()`, `flush()`, `clear()` |
+
+Event types are listed in [Observability](/guide/observability).
 
 ---
 
-## Message Helpers
+## Message helpers
 
 ```typescript
 import {
@@ -327,17 +423,26 @@ import {
   multimodalMessage,
   extractTextContent,
   hasImages,
+  audioContent,
+  hasAudio,
 } from 'universal-llm-client';
-
-// Create multimodal messages
-const msg = multimodalMessage('user', [
-  textContent('Describe this image'),
-  imageContent('data:image/png;base64,...'),
-]);
-
-// Extract text from any message format
-const text = extractTextContent(message);
-
-// Check if message contains images
-const hasImg = hasImages(message);
 ```
+
+| Helper | Signature |
+|---|---|
+| `multimodalMessage` | `(text: string, images: string[], mimeType = 'image/jpeg') => LLMChatMessage` |
+| `textContent` | `(text: string) => LLMTextContent` |
+| `imageContent` | `(base64DataOrUrl: string, mimeType = 'image/jpeg', detail?: 'auto' \| 'low' \| 'high') => LLMImageContent` |
+| `audioContent` | `(base64Data: string, mimeType: string) => LLMAudioContent` |
+| `extractTextContent` | `(content: LLMMessageContent) => string` |
+| `hasImages`, `hasAudio` | `(content: LLMMessageContent) => boolean` |
+
+```typescript
+// A user message with one text part and one image part
+const message = multimodalMessage('Describe this image', ['https://example.com/photo.jpg']);
+
+// Raw base64 data needs its type
+const png = multimodalMessage('Describe this chart', [base64Png], 'image/png');
+```
+
+`multimodalMessage` always returns a message with `role: 'user'`. See [Embeddings and Vision](/guide/embeddings-vision).

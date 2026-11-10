@@ -1,5 +1,7 @@
 # Provider API Landscape Research (2026)
 
+> **Note (2026-11-09):** This is a survey written in June 2026 and kept for background. It is not a list of recommendations, and the library documents compatibility per wire protocol; see [Protocols](/guide/protocols).
+
 > **Status update**: The key follow-up recommendations from this research (especially transport flexibility + prompt caching) have been implemented in the same change set as the documentation. See the "Follow-ups Implemented" section at the bottom.
 
 **Goal**: Understand the API shapes, wire formats, and feature surfaces of major AI/LLM inference providers so that `universal-llm-client` can be *truly universal* without creating one dedicated adapter per provider.
@@ -54,7 +56,7 @@ This approach scales to "truly universal" coverage while keeping the library sma
 | Together AI                 | Together OpenAI-compatible          | Many open models + fine-tunes.                      | Good             | Good        | Yes    | `openai`    |
 | Fireworks AI                | Fireworks OpenAI-compatible         | Strong on fine-tuning + inference.                  | Good             | Good        | Yes    | `openai`    |
 | OpenRouter                  | `https://openrouter.ai/api/v1`      | Router/aggregator. Provider routing via headers sometimes. | Varies by route  | Varies      | Varies | `openai`    |
-| vLLM (self-hosted)          | `http://.../v1`                     | Excellent OpenAI server. Some builds need gemma-native protocol handling (already supported). | Via outlines etc.| Good        | Depends on model | `openai` |
+| vLLM (self-hosted)          | `http://.../v1`                     | Excellent OpenAI server. Some builds need native channel protocol handling (already supported). | Via outlines etc.| Good        | Depends on model | `openai` |
 | llama.cpp server            | `http://localhost:8080/v1` (or direct) | Treated as openai/llamacpp. Good tool streaming.   | Limited grammar  | Good        | Yes (some) | `openai` or `llamacpp` |
 | LM Studio, Ollama (some), others | Local `/v1`                      | Drop-in.                                                | Varies           | Varies      | Varies | `openai`    |
 
@@ -78,8 +80,8 @@ This approach scales to "truly universal" coverage while keeping the library sma
 - Unique high-value features:
   - Extended thinking + `signature` (must be echoed for multi-turn in some cases).
   - Prompt caching (`cache_control` on blocks or system).
-  - Stronger "computer use" / agent tool types in newer Claude versions.
-  - Native structured output enforcement maturing (`output_config` / schema in recent Claude 4.x).
+  - Stronger "computer use" / agent tool types in newer versions of the API.
+  - Native structured output enforcement maturing (`output_config` / schema in recent API versions).
 - Auth: `x-api-key` + `anthropic-version` header (not Bearer).
 - The existing `AnthropicClient` correctly handles block conversion, tool_use ↔ tool_calls, thinking surfacing, and alternating-message cleanup. Good.
 
@@ -89,14 +91,14 @@ This approach scales to "truly universal" coverage while keeping the library sma
 
 **Why native**:
 - `contents` / `parts` model (text, inlineData for vision/audio, functionCall/functionResponse).
-- `systemInstruction` separate (Gemma special-cases by prepending).
+- `systemInstruction` separate (some served models special-case it by prepending).
 - Tool definitions as `functionDeclarations` (different shape).
 - Structured output via `responseMimeType: 'application/json'` + `responseSchema` (requires stripping unsupported JSON Schema keywords — already implemented with `stripUnsupportedFeatures`).
 - Native "thinking" / `thinkingConfig` + `thoughtsTokenCount` in usage (different from content reasoning).
 - Vertex AI: Bearer token + regional endpoint construction + project/location in path.
 - Service tiers: `service_tier: FLEX | PRIORITY` (cost/latency tradeoffs) — surfaced via response header.
 - Grounding / search integration in some configs.
-- The `GoogleClient` already handles Vertex vs AI Studio URLs, flex retry logic, thought signatures for Gemini 3.x function calling, Gemma system prompt folding, and schema stripping.
+- The `GoogleClient` already handles Vertex vs AI Studio URLs, flex retry logic, thought signatures for function calling on models that require them, system prompt folding for models that need it, and schema stripping.
 
 ### 5. Amazon Bedrock
 
@@ -108,7 +110,7 @@ This approach scales to "truly universal" coverage while keeping the library sma
   - Supports streaming (`converseStream`).
   - Structured output often achieved by defining a tool whose schema *is* the desired output (or model-specific features).
 - Not wire-compatible with OpenAI Chat Completions.
-- Many models on Bedrock are Anthropic Claude or Meta Llama (so you get their strengths under the Converse envelope).
+- Models on Bedrock come from several vendors, and the Converse envelope is the same across them.
 
 **Recommendation**: Do **not** add a native Bedrock client in the core library at this time. 
 - Users who want Bedrock + failover can front it with an OpenAI-compatible gateway (many exist) or use the library's `openai` type against a Bedrock-compatible proxy.
@@ -137,7 +139,7 @@ The OpenAICompatibleClient constructor forces `/v1` suffix.
 
 - **Ollama**: Dedicated client (good). NDJSON streaming, `/api/chat`, `think` flag, base64 images, `/api/show` for metadata, pull support.
 - **llama.cpp / llama-server**: OpenAI compat (or its own). Library treats as `llamacpp` → OpenAICompatibleClient.
-- **vLLM**: Excellent OpenAI server. Special "gemma diffusion native channel protocol" support already exists for certain builds.
+- **vLLM**: Excellent OpenAI server. Support for a native channel protocol already exists for certain builds.
 - **TGI (Text Generation Inference)**, **LM Studio**, **Oobabooga**, etc.: Generally OpenAI compat when enabled.
 - **Local structured output**: Often relies on grammar/JSON mode in the engine rather than API-level `response_format.json_schema`. The library still sends the schema where supported and does client-side validation via Router.
 
@@ -149,7 +151,7 @@ The OpenAICompatibleClient constructor forces `/v1` suffix.
 
 - **OpenAI compat**: `system` | `user` | `assistant` | `tool`. Content: string or `[{type:'text'|'image_url', ...}]`.
 - **Anthropic**: Only `user` | `assistant` in the messages array. `system` is top-level. Content always array of blocks. Tool results as `tool_result` *inside* a user message.
-- **Google**: `user` | `model` | `function`. `systemInstruction` separate. Parts array (text, inlineData, functionCall, functionResponse). Thought signatures on parts for Gemini 3+.
+- **Google**: `user` | `model` | `function`. `systemInstruction` separate. Parts array (text, inlineData, functionCall, functionResponse). Thought signatures on parts for models that use them.
 - **Bedrock Converse**: Similar block style to Anthropic for supported models.
 
 **Library approach**: Internal canonical is OpenAI-ish (with `tool` role + `tool_calls` + `tool_call_id`). Each native client does the translation (Anthropic and Google do significant work here; already implemented).
@@ -184,7 +186,7 @@ Good convergence here.
 - Google: SSE with `data: {candidates[0].content.parts[], usageMetadata}`. Library accumulates tools across parts.
 - Anthropic: Rich typed SSE events (`message_start`, `content_block_start/delta/stop`, `message_delta`, `message_stop`, `thinking_delta`, `signature_delta`).
 
-**Library**: `parseSSE` + `parseNDJSON` + per-client accumulation + pluggable `StreamDecoder` (passthrough / standard-chat / interleaved-reasoning). Gemma diffusion special handling already present. Good.
+**Library**: `parseSSE` + `parseNDJSON` + per-client accumulation + pluggable `StreamDecoder` (passthrough / standard-chat / interleaved-reasoning). Special handling for a native channel protocol is already present. Good.
 
 ### Auth & Endpoint Construction
 
@@ -263,7 +265,7 @@ This area is still evolving; the abstraction is already ahead of most single-pro
 - Router + centralized structured validation is excellent design (failover works even when schema formats differ).
 - Per-provider translation is isolated and maintainable.
 - Streaming + decoder strategy + tool execution loop are provider-agnostic.
-- Gemma diffusion edge case handling shows willingness to support real-world server quirks inside the compat path.
+- Handling for a native channel protocol on certain server builds shows willingness to support real-world server quirks inside the compat path.
 
 ---
 
@@ -305,7 +307,7 @@ The following items from the "Recommendations & Action Plan" have been baked int
 
 - **Prompt caching**:
   - `enablePromptCaching` in `ChatOptions` is now **actually implemented** for Anthropic.
-  - When true, the system prompt is sent as a content block with `cache_control: { type: 'ephemeral' }` (the standard high-ROI pattern for Claude).
+  - When true, the system prompt is sent as a content block with `cache_control: { type: 'ephemeral' }` (the standard pattern for this protocol).
   - Updated types, logic in `AnthropicClient`, JSDoc, and user docs.
   - Other providers get the flag passed through where possible (via `parameters` / headers) or documented as provider-specific.
 
