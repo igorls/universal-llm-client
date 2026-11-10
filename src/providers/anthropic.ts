@@ -119,7 +119,7 @@ interface AnthropicRequest {
     readonly thinking?:
         | { readonly type: 'enabled'; readonly budget_tokens: number }
         | { readonly type: 'adaptive'; readonly display?: 'summarized' | 'omitted' }
-        | { readonly type: 'disabled' };
+        | { readonly type: 'disabled' | 'between_tools' };
     readonly output_config?: { readonly effort: AnthropicEffort };
 }
 
@@ -169,6 +169,32 @@ interface AnthropicModelInfo {
             Record<AnthropicEffort, { readonly supported?: boolean }>
         >;
     };
+}
+
+/**
+ * The `thinking.type` that turns thinking off on this model: `disabled`, or
+ * `between_tools` where the card lists only that. Undefined when the card
+ * lists neither, as on models that always think.
+ */
+function thinkingOffSwitch(card: AnthropicModelInfo | undefined): 'disabled' | 'between_tools' | undefined {
+    const types = card?.capabilities?.thinking?.types;
+    if (types?.disabled?.supported) return 'disabled';
+    if (types?.between_tools?.supported) return 'between_tools';
+    return undefined;
+}
+
+/**
+ * The API's answer when a model takes no `temperature` at all ("`temperature`
+ * is deprecated for this model."). An out-of-range value gets a different
+ * error ("temperature: range: 0..1") and does not match.
+ */
+const TEMPERATURE_REJECTED = /`?temperature`? is (?:deprecated|not supported)/i;
+
+/** The same request without `temperature`. */
+function withoutTemperature(body: AnthropicRequest): AnthropicRequest {
+    const { temperature, ...rest } = body;
+    void temperature;
+    return rest;
 }
 
 /**
@@ -263,6 +289,12 @@ export class AnthropicClient extends BaseLLMClient {
      * so it is not asked again; other failures are not remembered.
      */
     private readonly modelCards = new Map<string, AnthropicModelInfo | null>();
+    /**
+     * Models that answered a request with `temperature` by rejecting it. The
+     * model card does not say which models take `temperature`, so the API's
+     * own answer is the signal; later requests to these models leave it out.
+     */
+    private readonly modelsRejectingTemperature = new Set<string>();
 
     constructor(options: LLMClientOptions, auditor?: Auditor) {
         const url = (options.url || 'https://api.anthropic.com').replace(/\/+$/, '');
@@ -306,13 +338,21 @@ export class AnthropicClient extends BaseLLMClient {
             model: this.options.model,
         });
 
-        const response = await httpRequest<AnthropicResponse>(url, {
-            method: 'POST',
-            headers: this.buildAnthropicHeaders(),
-            body,
-            signal: resolvedOptions?.signal,
-            timeout: this.options.timeout ?? 60000,
-        });
+        const send = (requestBody: AnthropicRequest) =>
+            httpRequest<AnthropicResponse>(url, {
+                method: 'POST',
+                headers: this.buildAnthropicHeaders(),
+                body: requestBody,
+                signal: resolvedOptions?.signal,
+                timeout: this.options.timeout ?? 60000,
+            });
+        let response: Awaited<ReturnType<typeof send>>;
+        try {
+            response = await send(body);
+        } catch (error) {
+            if (!this.temperatureRejected(body, error)) throw error;
+            response = await send(withoutTemperature(body));
+        }
 
         const data = response.data;
         const result = this.parseAnthropicResponse(data);
@@ -369,13 +409,7 @@ export class AnthropicClient extends BaseLLMClient {
         let usage: TokenUsageInfo | undefined;
         let rawUsage: Partial<AnthropicUsage> = {};
 
-        const stream = httpStream(url, {
-            method: 'POST',
-            headers: this.buildAnthropicHeaders(),
-            body,
-            signal: resolvedOptions?.signal,
-            timeout: this.options.timeout ?? 120000,
-        });
+        const stream = this.streamMessages(url, body, resolvedOptions?.signal);
 
         for await (const { data } of parseSSE(stream)) {
             try {
@@ -564,12 +598,57 @@ export class AnthropicClient extends BaseLLMClient {
 
     /**
      * The card of the model a request goes to, looked up only when the
-     * request turns thinking on: the card says which thinking shape the model
-     * takes. Cached like every card, so this costs one request per model.
+     * request sets thinking on or off: the card says which thinking shape the
+     * model takes and how it is turned off. Cached like every card, so this
+     * costs one request per model.
      */
     private async thinkingCard(options: ChatOptions | undefined): Promise<AnthropicModelInfo | undefined> {
-        if (resolveThinking(options?.thinking, this.options.thinking)?.enabled !== true) return undefined;
+        if (resolveThinking(options?.thinking, this.options.thinking) === undefined) return undefined;
         return this.modelCard(options?.model ?? this.options.model);
+    }
+
+    /**
+     * Whether `error` is the API rejecting the `temperature` this request
+     * sent. The model is remembered, so later requests leave `temperature`
+     * out, and the caller sends this one again without it.
+     */
+    private temperatureRejected(body: AnthropicRequest, error: unknown): boolean {
+        if (body.temperature === undefined) return false;
+        if (!(error instanceof LLMHttpError) || error.status !== 400 || !TEMPERATURE_REJECTED.test(error.body)) {
+            return false;
+        }
+        this.modelsRejectingTemperature.add(body.model);
+        console.warn(`[anthropic] ${body.model} does not accept \`temperature\`; requests to it are sent without one`);
+        return true;
+    }
+
+    /**
+     * Stream a Messages request. When the model rejects `temperature` (the
+     * API answers before any event), stream it again without one.
+     */
+    private async *streamMessages(
+        url: string,
+        body: AnthropicRequest,
+        signal: AbortSignal | undefined,
+    ): AsyncGenerator<string, void, unknown> {
+        const open = (requestBody: AnthropicRequest) =>
+            httpStream(url, {
+                method: 'POST',
+                headers: this.buildAnthropicHeaders(),
+                body: requestBody,
+                signal,
+                timeout: this.options.timeout ?? 120000,
+            });
+        let received = false;
+        try {
+            for await (const chunk of open(body)) {
+                received = true;
+                yield chunk;
+            }
+        } catch (error) {
+            if (received || !this.temperatureRejected(body, error)) throw error;
+            yield* open(withoutTemperature(body));
+        }
     }
 
     /** The model's card, from the cache or `GET /v1/models/{id}`; undefined when unavailable. */
@@ -646,12 +725,18 @@ export class AnthropicClient extends BaseLLMClient {
         // `adaptive` (the level becomes `output_config.effort`; a bare `true`
         // leaves the model's default effort), otherwise, or with no card,
         // extended thinking where the level sets `budget_tokens` (kept <
-        // max_tokens). The API forbids a custom temperature while thinking is
-        // on, so it is omitted in that case (the required default of 1 applies).
+        // max_tokens). `false` sends the card's off switch (`disabled`, or
+        // `between_tools`); a model whose card lists neither always thinks, and
+        // nothing is sent. The API forbids a custom temperature while thinking
+        // is on, so it is omitted in that case (the required default of 1
+        // applies), and for models that rejected it before.
+        const model = options?.model ?? this.options.model;
         const thinking = resolveThinking(options?.thinking, this.options.thinking);
         const thinkingOn = thinking?.enabled === true;
         const adaptive = thinkingOn && card?.capabilities?.thinking?.types?.adaptive?.supported === true;
         const effort = adaptive && card && thinking?.level ? effortForLevel(thinking.level, card) : undefined;
+        const offSwitch = thinking?.enabled === false ? thinkingOffSwitch(card) : undefined;
+        const temperature = this.modelsRejectingTemperature.has(model) ? undefined : options?.temperature;
         const requestedMax = options?.maxTokens ?? 4096;
         // Extended thinking requires budget_tokens >= 1024 AND < max_tokens, so when
         // thinking is on we bump max_tokens to guarantee headroom for the answer.
@@ -681,7 +766,7 @@ export class AnthropicClient extends BaseLLMClient {
         }
 
         const body: AnthropicRequest = {
-            model: options?.model ?? this.options.model,
+            model,
             messages: conversation,
             max_tokens: maxTokens,
             ...(system && { system }),
@@ -697,7 +782,10 @@ export class AnthropicClient extends BaseLLMClient {
                   }
                 : thinkingOn
                   ? { thinking: { type: 'enabled' as const, budget_tokens: budget } }
-                  : options?.temperature !== undefined && { temperature: options.temperature }),
+                  : {
+                        ...(offSwitch && { thinking: { type: offSwitch } }),
+                        ...(temperature !== undefined && { temperature }),
+                    }),
         };
 
         return body;

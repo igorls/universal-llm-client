@@ -6,13 +6,15 @@
  * thinking with `output_config.effort`, or else extended thinking
  * (`thinking: { type: 'enabled', budget_tokens }`), with the API's
  * constraints handled (budget < max_tokens; temperature omitted when on).
+ * `false` sends the card's off switch. A `temperature` the model rejects is
+ * dropped, the request sent again, and left out of later requests.
  *
  * Model info is declared, read from the endpoint's model card, or assumed,
  * never read from the model name, and a failed listing rejects instead of
  * returning made-up ids.
  */
 
-import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, test, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import { AnthropicClient } from '../../providers/anthropic.js';
 import type { LLMClientOptions } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
@@ -258,20 +260,46 @@ describe('AnthropicClient thinking shape from the model card', () => {
         expect(server.messageBody()['max_tokens']).toBe(2048);
     });
 
-    test('the card is looked up once per model, and not at all without thinking', async () => {
+    test('the card is looked up once per model, and not at all when thinking is unset', async () => {
         const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
         const client = createClient();
         await chat(client, { thinking: true });
         await chat(client, { thinking: 'high' });
+        await chat(client, { thinking: false });
         expect(server.cardRequests()).toHaveLength(1);
 
         const quiet = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
-        const unset = createClient();
-        await chat(unset, { temperature: 0.5 });
-        await chat(createClient({ thinking: true }), { thinking: false, temperature: 0.5 });
+        await chat(createClient(), { temperature: 0.5 });
         expect(quiet.cardRequests()).toEqual([]);
         expect(quiet.messageBody()['thinking']).toBeUndefined();
         expect(quiet.messageBody()['temperature']).toBe(0.5);
+    });
+
+    test('thinking: false sends disabled where the card lists it, and keeps temperature', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive', 'disabled'], ALL_EFFORTS) });
+        await chat(createClient({ thinking: true }), { thinking: false, temperature: 0.5 });
+        const body = server.messageBody();
+        expect(body['thinking']).toEqual({ type: 'disabled' });
+        expect(body['temperature']).toBe(0.5);
+        expect(body['output_config']).toBeUndefined();
+    });
+
+    test('thinking: false sends between_tools where the card lists only that', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive', 'between_tools'], ALL_EFFORTS) });
+        await chat(createClient(), { thinking: false });
+        expect(server.messageBody()['thinking']).toEqual({ type: 'between_tools' });
+    });
+
+    test('thinking: false sends nothing to a model that always thinks', async () => {
+        const server = serveThinking({ [MODEL]: thinkingModelCard(MODEL, ['adaptive'], ALL_EFFORTS) });
+        await chat(createClient(), { thinking: false });
+        expect(server.messageBody()['thinking']).toBeUndefined();
+    });
+
+    test('thinking: false sends nothing without a card', async () => {
+        const server = serveThinking({});
+        await chat(createClient(), { thinking: false });
+        expect(server.messageBody()['thinking']).toBeUndefined();
     });
 
     test('a per-call model uses that model\'s card', async () => {
@@ -298,6 +326,91 @@ describe('AnthropicClient thinking shape from the model card', () => {
         expect(body['stream']).toBe(true);
         expect(body['thinking']).toEqual({ type: 'adaptive', display: 'summarized' });
         expect(body['output_config']).toEqual({ effort: 'high' });
+    });
+});
+
+/** The API's answers for a temperature, verbatim. */
+const TEMPERATURE_DEPRECATED = { type: 'error', error: { type: 'invalid_request_error', message: '`temperature` is deprecated for this model.' } };
+const TEMPERATURE_OUT_OF_RANGE = { type: 'error', error: { type: 'invalid_request_error', message: 'temperature: range: 0..1' } };
+
+/**
+ * Serve `POST /v1/messages`: a request to one of `rejecting` that carries
+ * `temperature` gets `rejection` (HTTP 400); anything else succeeds (SSE when
+ * it asks to stream). Returns the bodies of the message requests, in order.
+ */
+function serveTemperature(rejecting: string[], rejection: unknown = TEMPERATURE_DEPRECATED) {
+    const bodies: Array<Record<string, unknown>> = [];
+    globalThis.fetch = mock(async (_input: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(init!.body as string) as Record<string, unknown>;
+        bodies.push(body);
+        if (rejecting.includes(body['model'] as string) && body['temperature'] !== undefined) {
+            return new Response(JSON.stringify(rejection), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+        if (body['stream']) {
+            return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+                status: 200,
+                headers: { 'Content-Type': 'text/event-stream' },
+            });
+        }
+        return new Response(JSON.stringify(ANTHROPIC_RESPONSE), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    return bodies;
+}
+
+describe('AnthropicClient temperature a model rejects', () => {
+    let originalFetch: typeof globalThis.fetch;
+    let warn: ReturnType<typeof spyOn>;
+    beforeEach(() => {
+        originalFetch = globalThis.fetch;
+        warn = spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+        globalThis.fetch = originalFetch;
+        warn.mockRestore();
+    });
+
+    const MODEL = 'claude-sonnet-4-5';
+    const hi = [{ role: 'user' as const, content: 'hi' }];
+
+    test('is dropped and the request sent again, then left out of later requests', async () => {
+        const bodies = serveTemperature([MODEL]);
+        const client = createClient();
+
+        const first = await client.chat(hi, { temperature: 0.5 });
+        expect(first.message.content).toBe('Hi there.');
+        expect(bodies.map((b) => b['temperature'])).toEqual([0.5, undefined]);
+
+        await client.chat(hi, { temperature: 0.5 });
+        expect(bodies).toHaveLength(3);
+        expect(bodies[2]!['temperature']).toBeUndefined();
+        expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    test('an out-of-range value is not retried', async () => {
+        const bodies = serveTemperature([MODEL], TEMPERATURE_OUT_OF_RANGE);
+        await expect(createClient().chat(hi, { temperature: 1.5 })).rejects.toThrow('range');
+        expect(bodies).toHaveLength(1);
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    test('other models keep their temperature', async () => {
+        const bodies = serveTemperature([MODEL]);
+        const client = createClient();
+        await client.chat(hi, { temperature: 0.5 });
+        await client.chat(hi, { model: 'model-b', temperature: 0.5 });
+        expect(bodies.at(-1)).toMatchObject({ model: 'model-b', temperature: 0.5 });
+    });
+
+    test('streaming drops it and streams again', async () => {
+        const bodies = serveTemperature([MODEL]);
+        const client = createClient();
+        for await (const _event of client.chatStream(hi, { temperature: 0.5 })) { /* drain */ }
+        expect(bodies.map((b) => b['temperature'])).toEqual([0.5, undefined]);
+        expect(bodies.every((b) => b['stream'] === true)).toBe(true);
+
+        for await (const _event of client.chatStream(hi, { temperature: 0.5 })) { /* drain */ }
+        expect(bodies).toHaveLength(3);
+        expect(bodies[2]!['temperature']).toBeUndefined();
     });
 });
 
