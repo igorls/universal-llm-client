@@ -1791,6 +1791,7 @@ export class OpenAICompatibleClient extends BaseLLMClient {
                 },
                 timeout: options?.timeout ?? this.options.timeout ?? 30000,
                 ...(options?.signal ? { signal: options.signal } : {}),
+                ...(options?.fetch ? { fetch: options.fetch } : {}),
             });
             return parseDecisionResponse(questions, response.data, this.options.url);
         } catch (error) {

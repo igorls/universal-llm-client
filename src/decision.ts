@@ -116,6 +116,8 @@ export interface DecideOptions {
      * Sent on the OpenAI-compatible protocol only; the Ollama protocol has none.
      */
     readonly extraBody?: Readonly<Record<string, unknown>>;
+    /** Transport for this call instead of the global `fetch` (a test double, a proxy-aware fetch). */
+    readonly fetch?: typeof fetch;
 }
 
 // ============================================================================
@@ -148,9 +150,13 @@ export class DecisionUnsupportedError extends DecisionError {
 
 /** The server answered, but not with a valid answer to every question asked. */
 export class DecisionResponseError extends DecisionError {
-    constructor(message: string) {
+    /** The type of the question whose answer was missing or malformed. */
+    readonly answer: DecisionQuestion['type'];
+
+    constructor(answer: DecisionQuestion['type'], message: string) {
         super(message);
         this.name = 'DecisionResponseError';
+        this.answer = answer;
     }
 }
 
@@ -173,16 +179,17 @@ export class DecisionContextLimitError extends LLMHttpError {
 // Request validation
 // ============================================================================
 
-export const MAX_DECISION_QUESTIONS = 64;
 export const MAX_DECISION_OPTIONS = 255;
 export const MAX_DECISION_LEVELS = 10;
 
-/** Reject a request no server accepts, before anything is sent. */
+/**
+ * Reject a request the protocol does not allow, before anything is sent. How
+ * many questions one request may carry is the server's limit, not the
+ * protocol's, so only an empty request is refused here.
+ */
 export function assertDecisionQuestions(questions: DecisionQuestions): void {
     const ids = Object.keys(questions);
-    if (ids.length < 1 || ids.length > MAX_DECISION_QUESTIONS) {
-        throw new Error(`A decision needs 1 to ${MAX_DECISION_QUESTIONS} questions`);
-    }
+    if (ids.length < 1) throw new Error('A decision needs at least one question');
     for (const id of ids) {
         const question = questions[id]!;
         if (question.type === 'choice') {
@@ -230,7 +237,7 @@ function normaliser(values: readonly number[], rounded: boolean): number | null 
 
 function choiceAnswer(question: DecisionChoiceQuestion, answer: unknown, rounded: boolean): DecisionChoiceAnswer {
     const invalid = (): never => {
-        throw new DecisionResponseError('The server returned an invalid choice answer');
+        throw new DecisionResponseError('choice', 'The server returned an invalid choice answer');
     };
     if (!isRecord(answer) || answer['type'] !== 'choice') return invalid();
     const choice = answer['choice'];
@@ -263,7 +270,7 @@ function choiceAnswer(question: DecisionChoiceQuestion, answer: unknown, rounded
 
 function scoreAnswer(question: DecisionScoreQuestion, answer: unknown, rounded: boolean): DecisionScoreAnswer {
     const invalid = (): never => {
-        throw new DecisionResponseError('The server returned an invalid score answer');
+        throw new DecisionResponseError('score', 'The server returned an invalid score answer');
     };
     if (!isRecord(answer) || answer['type'] !== 'score') return invalid();
     const score = answer['score'];
@@ -296,7 +303,7 @@ function noulAnswer(answer: unknown): number {
         !isRecord(answer)
         || (answer['type'] !== undefined && answer['type'] !== 'noul')
         || !isProbability(answer['noul'])
-    ) throw new DecisionResponseError('The server returned no answer to a yes/no question');
+    ) throw new DecisionResponseError('noul', 'The server returned no answer to a yes/no question');
     return answer['noul'];
 }
 

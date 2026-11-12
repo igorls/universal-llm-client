@@ -52,7 +52,7 @@ The state is a string, or a JSON object or array. Every question in the request 
 | `choice` | An object of option id to description; `null` lets the id describe itself. 1 to 255 options | `{ choice, probabilities, confidence }` with one probability per option |
 | `score` | An array of level descriptions, lowest first. 1 to 10 levels | `{ score, probabilities, confidence }`; `score` is the expected level index, `probabilities` is ordered by level |
 
-A request carries 1 to 64 questions. A request outside these bounds is rejected before anything is sent. A server may set lower limits of its own; the number of options a choice accepts depends on the model.
+A request needs at least one question. A request outside these bounds is rejected before anything is sent. A server sets limits of its own: how many questions one request may carry, and how many options a choice accepts, depend on the server and the model.
 
 The answer types follow the questions you pass: `answers.team.choice` is typed as the union of the option ids you declared.
 
@@ -76,6 +76,7 @@ await model.decide(state, questions, {
   signal: controller.signal,
   sessionKey: conversationId,   // keep hitting the same node of a pool
   extraBody: { temperature: 1.5 },
+  fetch: customFetch,           // transport for this call instead of the global fetch
 });
 ```
 
@@ -122,7 +123,7 @@ An aborted call rejects at once. It is not retried on another provider and does 
 | Error | When |
 |---|---|
 | `DecisionContextLimitError` | Every provider that answered refused the request as larger than its context. Extends `LLMHttpError`. |
-| `DecisionResponseError` | A server's response did not hold a valid answer to every question. |
+| `DecisionResponseError` | A server's response did not hold a valid answer to every question. `answer` is the type of the question concerned. |
 | `DecisionUnsupportedError` | The provider's protocol has no decision endpoint. |
 | `LLMHttpError` | Any other non-2xx reply, for example a model that is not a decision model. |
 

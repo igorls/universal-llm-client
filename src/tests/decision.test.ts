@@ -140,7 +140,7 @@ describe('request shape', () => {
     ])('%s is rejected before anything is sent', async (_name, questions) => {
         const calls = hosts({ 'server.test': body() });
         const ai = model([{ type: 'openai', url: 'http://server.test' }]);
-        await expect(ai.decide('state', questions as never)).rejects.toThrow(/needs 1 to/);
+        await expect(ai.decide('state', questions as never)).rejects.toThrow(/needs (1 to|at least)/);
         expect(calls).toHaveLength(0);
     });
 });
@@ -216,6 +216,36 @@ describe('answers', () => {
         ] as const) {
             await expect(model([provider]).decide('s', QUESTIONS)).rejects.toBeInstanceOf(DecisionResponseError);
         }
+    });
+
+    test('a malformed answer names the type of the question it belonged to', async () => {
+        const kinds: string[] = [];
+        for (const overrides of [
+            { team: { ...TEAM, choice: 'sales' } },
+            { urgency: { ...URGENCY, score: 9 } },
+            { refund: { type: 'noul' } },
+        ]) {
+            hosts({ 'server.test': body(overrides) });
+            const failure = await model([{ type: 'openai', url: 'http://server.test' }])
+                .decide('s', QUESTIONS)
+                .catch(error => error);
+            kinds.push((failure as DecisionResponseError).answer);
+        }
+        expect(kinds).toEqual(['choice', 'score', 'noul']);
+    });
+
+    test('a call can bring its own transport', async () => {
+        const calls = hosts({});
+        const seen: string[] = [];
+        const result = await model([{ type: 'openai', url: 'http://server.test' }]).decide('s', QUESTIONS, {
+            fetch: (async (input: string | URL | Request) => {
+                seen.push(String(input));
+                return Response.json(body());
+            }) as typeof fetch,
+        });
+        expect(result.answers.refund).toBe(0.97);
+        expect(seen).toEqual(['http://server.test/v1/systemone']);
+        expect(calls).toHaveLength(0);
     });
 
     test('a tie is returned as the server sent it', async () => {

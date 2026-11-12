@@ -142,6 +142,7 @@ interface DecideOptions {
   signal?: AbortSignal;
   sessionKey?: string;
   extraBody?: Record<string, unknown>;    // OpenAI-compatible protocol only
+  fetch?: typeof fetch;                   // transport for this call
 }
 
 interface DecisionResult<Questions> {

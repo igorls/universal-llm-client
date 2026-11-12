@@ -218,7 +218,6 @@ export {
     assertDecisionQuestions,
     parseDecisionResponse,
     isDecisionContextLimit,
-    MAX_DECISION_QUESTIONS,
     MAX_DECISION_OPTIONS,
     MAX_DECISION_LEVELS,
     type DecisionQuestion,
