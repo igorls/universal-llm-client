@@ -187,6 +187,22 @@ const vectors = await embedder.embedArray(['Hello', 'World']);           // numb
 
 The Anthropic Messages protocol has no embeddings endpoint. See [Embeddings and Vision](docs/guide/embeddings-vision.md).
 
+### Decisions
+
+```typescript
+const decider = new AIModel({ model: 'model-id', providers: [{ type: 'ollama' }] });
+
+const { answers } = await decider.decide('I was charged twice. Please refund me.', {
+  team: { type: 'choice', instructions: 'Which team handles this?', criteria: { billing: 'Payments', technical: 'Bugs' } },
+  refund: { type: 'noul', instructions: 'Does the customer ask for a refund?' },
+});
+
+answers.team.choice;   // 'billing' | 'technical'
+answers.refund;        // number: the probability of yes
+```
+
+One request and no generated text: a decision model returns probabilities for typed questions over the System One protocol (`/v1/systemone`), with the same failover as chat. See [Decisions](docs/guide/decisions.md).
+
 ### Vision
 
 ```typescript

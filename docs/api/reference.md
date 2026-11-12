@@ -115,6 +115,66 @@ type DeepResearchEvent =
   | { type: 'status'; status: string };
 ```
 
+### Decisions
+
+```typescript
+decide<Questions>(
+  state: DecisionState,
+  questions: Questions,
+  options?: DecideOptions,
+): Promise<DecisionResult<Questions>>
+```
+
+Asks a decision model typed questions about a state. See [Decisions](/guide/decisions).
+
+```typescript
+type DecisionState = string | Record<string, unknown> | unknown[];
+
+type DecisionQuestion =
+  | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
+  | { type: 'choice'; instructions: string; criteria: Record<string, string | null> }
+  | { type: 'score'; instructions: string; criteria: string[] };
+
+interface DecideOptions {
+  images?: string[];                      // raw base64, shared by every question
+  model?: string;                         // for this call
+  timeout?: number;
+  signal?: AbortSignal;
+  sessionKey?: string;
+  extraBody?: Record<string, unknown>;    // OpenAI-compatible protocol only
+}
+
+interface DecisionResult<Questions> {
+  answers: DecisionAnswers<Questions>;    // noul: number; choice and score: the objects below
+  model: string | null;                   // as the answering server named it
+  url: string;                            // base URL of the endpoint that answered
+  usage?: { inputTokens: number; details: Record<string, unknown> };
+}
+
+interface DecisionChoiceAnswer<Option> {
+  type: 'choice';
+  choice: Option;
+  confidence: number;
+  probabilities: Record<Option, number>;
+}
+
+interface DecisionScoreAnswer {
+  type: 'score';
+  score: number;                          // expected level index
+  confidence: number;
+  probabilities: number[];                // ordered by level
+}
+```
+
+| Export | Description |
+|--------|-------------|
+| `DecisionContextLimitError` | Every provider that answered refused the request as too large. Extends `LLMHttpError` |
+| `DecisionResponseError` | A response without a valid answer to every question. Extends `DecisionError` |
+| `DecisionUnsupportedError` | The provider's protocol has no decision endpoint. Extends `DecisionError` |
+| `parseDecisionResponse(questions, body, url, options?)` | Validates a `/v1/systemone` response body against the questions asked |
+| `assertDecisionQuestions(questions)` | Throws when a request is outside the protocol's bounds |
+| `isDecisionContextLimit(error)` | Whether an `LLMHttpError` is a refusal for context size |
+
 ### Other methods
 
 | Method | Description |

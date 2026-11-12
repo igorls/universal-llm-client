@@ -15,6 +15,14 @@ import { BaseLLMClient } from './client.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
 import { classifyFailure, type FailureDisposition } from './errors.js';
+import {
+    DecisionContextLimitError,
+    assertDecisionQuestions,
+    type DecideOptions,
+    type DecisionQuestions,
+    type DecisionResult,
+    type DecisionState,
+} from './decision.js';
 import type {
     LLMChatMessage,
     LLMChatResponse,
@@ -93,6 +101,11 @@ export interface RouteOptions {
      * Preference only — busy/unhealthy nodes fall through to the next-best.
      */
     sessionKey?: string;
+    /**
+     * The caller's abort signal. Once it fires, the failure is the caller's:
+     * it is rethrown without trying another provider or counting against one.
+     */
+    signal?: AbortSignal;
 }
 
 /**
@@ -356,6 +369,7 @@ export class Router {
                             return result;
                         } catch (error) {
                             lastError = error instanceof Error ? error : new Error(String(error));
+                            if (route?.signal?.aborted) throw lastError;
                             disposition = classifyFailure(lastError);
                             this.auditor.record({
                                 timestamp: Date.now(),
@@ -376,7 +390,8 @@ export class Router {
 
                 // Retries exhausted (or skipped) for this provider — record with the
                 // classified disposition (cooldown terminal/unavailable nodes now).
-                this.recordFailure(provider.id, { cooldown: disposition.cooldown });
+                // A blameless failure says nothing about the node's health.
+                if (!disposition.blameless) this.recordFailure(provider.id, { cooldown: disposition.cooldown });
 
                 // Try next node (same pool first, then the next tier — the loop
                 // structure IS the failover order).
@@ -808,6 +823,42 @@ export class Router {
             client => client.embedArray(texts),
             'embedArray',
         );
+    }
+
+    /**
+     * Decide with failover. A request one provider refuses as too large for
+     * its context still goes to the others, which may have room. The caller
+     * gets the context-limit error only when every provider that answered
+     * refused for size; an outage among them is reported as the outage.
+     */
+    async decide<const Questions extends DecisionQuestions>(
+        state: DecisionState,
+        questions: Questions,
+        options?: DecideOptions,
+    ): Promise<DecisionResult<Questions>> {
+        assertDecisionQuestions(questions);
+        const failures: unknown[] = [];
+        try {
+            return await this.execute(
+                async client => {
+                    try {
+                        return await client.decide(state, questions, options);
+                    } catch (error) {
+                        failures.push(error);
+                        throw error;
+                    }
+                },
+                'decide',
+                { sessionKey: options?.sessionKey, signal: options?.signal },
+            );
+        } catch (error) {
+            if (options?.signal?.aborted) throw error;
+            const tooLarge = (failure: unknown) => failure instanceof DecisionContextLimitError;
+            // A provider skipped without a call (cold probe, cooldown) was not asked.
+            const outage = failures.findLast(failure => !tooLarge(failure))
+                ?? (failures.includes(error) || tooLarge(error) ? undefined : error);
+            throw outage ?? failures.find(tooLarge) ?? error;
+        }
     }
 
     async getModels(): Promise<string[]> {

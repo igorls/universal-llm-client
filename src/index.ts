@@ -207,6 +207,37 @@ export {
 } from './errors.js';
 
 // ============================================================================
+// Decisions (the System One protocol)
+// ============================================================================
+
+export {
+    DecisionError,
+    DecisionUnsupportedError,
+    DecisionResponseError,
+    DecisionContextLimitError,
+    assertDecisionQuestions,
+    parseDecisionResponse,
+    isDecisionContextLimit,
+    MAX_DECISION_QUESTIONS,
+    MAX_DECISION_OPTIONS,
+    MAX_DECISION_LEVELS,
+    type DecisionQuestion,
+    type DecisionNoulQuestion,
+    type DecisionChoiceQuestion,
+    type DecisionScoreQuestion,
+    type DecisionQuestions,
+    type DecisionState,
+    type DecisionAnswer,
+    type DecisionAnswers,
+    type DecisionChoiceAnswer,
+    type DecisionScoreAnswer,
+    type DecisionUsage,
+    type DecisionResult,
+    type DecideOptions,
+    type ParseDecisionOptions,
+} from './decision.js';
+
+// ============================================================================
 // Structured Output
 // ============================================================================
 

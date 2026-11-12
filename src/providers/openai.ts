@@ -40,6 +40,16 @@ import type { Auditor } from '../auditor.js';
 import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
+import { LLMHttpError } from '../errors.js';
+import {
+    DecisionContextLimitError,
+    isDecisionContextLimit,
+    parseDecisionResponse,
+    type DecideOptions,
+    type DecisionQuestions,
+    type DecisionResult,
+    type DecisionState,
+} from '../decision.js';
 
 const VLLM_AUTO_TOOL_CHOICE_HINT =
     'vLLM rejected automatic tool choice. Retrying with text-level tool calling. To use native tool_calls, start vLLM with --enable-auto-tool-choice and --tool-call-parser <parser>.';
@@ -1752,6 +1762,43 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             timeout: this.options.timeout ?? 30000,
         });
         return response.data.data[0]?.embedding ?? [];
+    }
+
+    // ========================================================================
+    // Decisions
+    // ========================================================================
+
+    /**
+     * Ask a decision model on a server that adds `/systemone` beside its
+     * OpenAI-compatible routes. `extraBody` carries the fields such a server
+     * defines beyond the protocol.
+     */
+    override async decide<const Questions extends DecisionQuestions>(
+        state: DecisionState,
+        questions: Questions,
+        options?: DecideOptions,
+    ): Promise<DecisionResult<Questions>> {
+        try {
+            const response = await httpRequest<unknown>(this.buildUrl('/systemone'), {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: {
+                    ...options?.extraBody,
+                    model: options?.model ?? this.options.model,
+                    state,
+                    questions,
+                    ...(options?.images?.length ? { images: options.images } : {}),
+                },
+                timeout: options?.timeout ?? this.options.timeout ?? 30000,
+                ...(options?.signal ? { signal: options.signal } : {}),
+            });
+            return parseDecisionResponse(questions, response.data, this.options.url);
+        } catch (error) {
+            if (error instanceof LLMHttpError && isDecisionContextLimit(error)) {
+                throw new DecisionContextLimitError(error.status, error.body, error.url);
+            }
+            throw error;
+        }
     }
 
     // ========================================================================

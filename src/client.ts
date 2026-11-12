@@ -28,6 +28,13 @@ import type { DecodedEvent } from './stream-decoder.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
 import { coerceAndValidateToolArgs } from './tool-arg-coercion.js';
+import {
+    DecisionUnsupportedError,
+    type DecideOptions,
+    type DecisionQuestions,
+    type DecisionResult,
+    type DecisionState,
+} from './decision.js';
 
 /**
  * Context length reported when neither config nor the endpoint gives one
@@ -77,6 +84,19 @@ export abstract class BaseLLMClient {
     /** Generate embeddings for multiple texts */
     async embedArray(texts: string[]): Promise<number[][]> {
         return Promise.all(texts.map(t => this.embed(t)));
+    }
+
+    /**
+     * Answer typed questions about a state (the System One protocol,
+     * `POST /v1/systemone`). Implemented by the protocols that have the
+     * endpoint; the others reject, and a router moves on to the next provider.
+     */
+    async decide<const Questions extends DecisionQuestions>(
+        _state: DecisionState,
+        _questions: Questions,
+        _options?: DecideOptions,
+    ): Promise<DecisionResult<Questions>> {
+        throw new DecisionUnsupportedError(String(this.options.apiType ?? 'configured'));
     }
 
     /**

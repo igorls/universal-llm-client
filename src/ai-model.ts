@@ -35,6 +35,7 @@ import {
     type StructuredOutputResult,
     type SchemaConfig,
 } from './structured-output.js';
+import type { DecideOptions, DecisionQuestions, DecisionResult, DecisionState } from './decision.js';
 
 // ============================================================================
 // Default Provider URLs
@@ -237,6 +238,38 @@ export class AIModel {
     /** Generate embeddings for multiple texts */
     async embedArray(texts: string[]): Promise<number[][]> {
         return this.router.embedArray(texts);
+    }
+
+    // ========================================================================
+    // Decisions
+    // ========================================================================
+
+    /**
+     * Ask a decision model typed questions about a state, with the same
+     * failover as chat. One request, no generated text: a `noul` answers with
+     * P(yes), a `choice` and a `score` with their whole distribution.
+     *
+     * Providers on a lower priority tier answer only when the tiers above
+     * failed; `result.url` says which endpoint answered. Another model's
+     * probabilities are on another scale, so a caller that gates on a
+     * threshold should check it.
+     *
+     * @example
+     * ```typescript
+     * const { answers } = await model.decide('I was charged twice. Please refund me.', {
+     *   team: { type: 'choice', instructions: 'Which team handles this?', criteria: { billing: 'Payments', technical: 'Bugs' } },
+     *   refund: { type: 'noul', instructions: 'Does the customer ask for a refund?' },
+     * });
+     * answers.team.choice;   // 'billing' | 'technical'
+     * answers.refund;        // number, P(yes)
+     * ```
+     */
+    async decide<const Questions extends DecisionQuestions>(
+        state: DecisionState,
+        questions: Questions,
+        options?: DecideOptions,
+    ): Promise<DecisionResult<Questions>> {
+        return this.router.decide(state, questions, options);
     }
 
     // ========================================================================
