@@ -19,6 +19,7 @@
 | Structured output | Yes, sent as `response_format` | Validated client-side; the schema is not sent | Yes, sent as `responseSchema` | Yes, sent as `format` |
 | Vision | Yes | Yes | Yes | Yes |
 | Embeddings | Yes | No | Yes | Yes |
+| Decisions | Yes, on servers that add `/systemone` | No | No | Yes |
 | Native thinking | Through response fields or `<think>` tags | Yes, adaptive or extended thinking | Yes, `thinkingConfig` | Yes, `think` |
 
 A row says what the library's client for that protocol implements. Whether a particular server honours a request field depends on the server; the sections below name the fields the client sends.

@@ -18,6 +18,8 @@ export interface HttpRequestOptions {
     body?: unknown;
     timeout?: number;
     signal?: AbortSignal;
+    /** Transport for this request instead of the global `fetch` (a test double, a proxy-aware fetch). */
+    fetch?: typeof fetch;
 }
 
 /**
@@ -124,6 +126,7 @@ export async function httpRequest<T = unknown>(
     options: HttpRequestOptions = {},
 ): Promise<HttpResponse<T>> {
     const { method = 'GET', headers = {}, body, timeout = 30000, signal } = options;
+    const transport = options.fetch ?? fetch;
     const tapId = newTapId();
     const started = Date.now();
     emitTap({
@@ -146,7 +149,7 @@ export async function httpRequest<T = unknown>(
         : controller.signal;
 
     try {
-        const response = await fetch(url, {
+        const response = await transport(url, {
             method,
             headers: {
                 'Content-Type': 'application/json',

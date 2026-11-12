@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-11-12
+
 ### Fixed
 
 - **Ollama requests to models without thinking no longer fail** — with `thinking` unset, the native `/api/chat` request sent `think: true`, and Ollama rejects that for every model without the "thinking" capability (`HTTP 400: "<model>" does not support thinking`), so those models could not be used at all. Unset now leaves `think` out: Ollama applies the model's own default, which for thinking models is to think (same output as `true`, measured on Ollama 0.40). When thinking is asked for (`true` or a level) and `/api/show` reports no "thinking" capability, `think` is left out instead of failing; the lookup is cached per model and only made when thinking is asked for. When the capability cannot be read, the request goes as asked. `false` is always sent.
@@ -26,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Decisions: `AIModel.decide(state, questions, options?)`** — asks a decision model typed questions about a state over the System One protocol (`POST /v1/systemone`) and returns probabilities instead of text: a `noul` (yes/no) answers with P(yes), a `choice` and a `score` with their whole distribution. Answer types follow the questions passed. Implemented on the Ollama protocol and on the OpenAI-compatible protocol (for servers that add `/systemone` beside their other routes); the Anthropic and Gemini clients reject with `DecisionUnsupportedError` and a router passes them over. Calls go through the router, so priority tiers, pools, cooldowns and the HTTP tap apply; the result carries the answering endpoint's `url` and `model`, so a caller can tell a fallback model's probabilities from the primary's. A response is validated against the questions asked (`DecisionResponseError`), and a request every answering provider refused for context size rejects with `DecisionContextLimitError`. New guide: `docs/guide/decisions.md`.
+- **`blameless` on `FailureDisposition`, and errors that state their own disposition** — `classifyFailure` now reads a `failover` property from the error when it carries one, and a disposition marked `blameless` fails over without counting toward the provider's consecutive-failure threshold. The decision errors use it: a refusal for context size or a protocol without the endpoint no longer marks a healthy provider unhealthy.
+- **`fetch` on `HttpRequestOptions` and `DecideOptions`** — a transport for one request instead of the global `fetch`, for a test double or a proxy-aware fetch. `httpRequest` honours it; `decide()` passes it through. The HTTP tap still sees the request.
+- **`RouteOptions.signal`** — once the caller's signal has fired, `Router.execute` rethrows the failure instead of trying another provider or counting it against one. `decide()` passes its `signal`.
 - **`capabilities` override** on `AIModelConfig`, `ProviderConfig` and `LLMClientOptions` (the provider value wins over the model-level one). `getModelInfo()` reports the list as given for the configured model, ahead of anything the endpoint reports or the name suggests. It is not sent to the server.
 - **Every client's `getModelInfo()` reports a declared `contextLength`** — the override was only sent to Ollama as `num_ctx`; the OpenAI-compatible, Anthropic, Google/Vertex and Responses clients now report it too, for the configured model. It is still not sent to those servers, and it does not bound output.
 - **`contextLengthSource` and `capabilitiesSource` on `ModelMetadata`** — `'declared' | 'endpoint' | 'inferred' | 'assumed'` (exported as `ModelMetadataSource`), saying where each value came from.

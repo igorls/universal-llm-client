@@ -94,6 +94,12 @@ export interface FailureDisposition {
      * so subsequent turns skip it instead of re-probing it every call.
      */
     cooldown: boolean;
+    /**
+     * The node did nothing wrong (it has no such endpoint, or the request does
+     * not fit its context): fail over, but do not count this toward the
+     * consecutive-failure threshold that marks a node unhealthy.
+     */
+    blameless?: boolean;
 }
 
 /**
@@ -105,6 +111,18 @@ export interface FailureDisposition {
  * fast hop to the next healthy node.
  */
 export function classifyFailure(error: unknown): FailureDisposition {
+    // An error that states its own disposition (e.g. a decision the server
+    // answered badly: move on, but the node is not down).
+    const stated = (error as { failover?: unknown } | null)?.failover;
+    if (stated && typeof stated === 'object'
+        && typeof (stated as FailureDisposition).retry === 'boolean'
+        && typeof (stated as FailureDisposition).cooldown === 'boolean') {
+        return {
+            retry: (stated as FailureDisposition).retry,
+            cooldown: (stated as FailureDisposition).cooldown,
+            ...((stated as FailureDisposition).blameless === true ? { blameless: true } : {}),
+        };
+    }
     if (error instanceof LLMHttpError) {
         // Server hiccup or a request-level timeout: worth one more try on the node.
         if (error.status >= 500 || error.status === 408) return { retry: true, cooldown: false };

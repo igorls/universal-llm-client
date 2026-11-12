@@ -119,6 +119,7 @@ export default defineConfig({
           { text: 'Reasoning', link: '/guide/reasoning' },
           { text: 'Observability', link: '/guide/observability' },
           { text: 'Embeddings and Vision', link: '/guide/embeddings-vision' },
+          { text: 'Decisions', link: '/guide/decisions' },
           { text: 'Deep Research', link: '/guide/deep-research' }
         ]
       },

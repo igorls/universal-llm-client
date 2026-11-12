@@ -20,7 +20,16 @@ import {
     getJsonSchemaFromConfig,
 } from '../structured-output.js';
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
-import { LLMProviderError, extractProviderErrorMessage } from '../errors.js';
+import { LLMHttpError, LLMProviderError, extractProviderErrorMessage } from '../errors.js';
+import {
+    DecisionContextLimitError,
+    isDecisionContextLimit,
+    parseDecisionResponse,
+    type DecideOptions,
+    type DecisionQuestions,
+    type DecisionResult,
+    type DecisionState,
+} from '../decision.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 import type {
     LLMClientOptions,
@@ -447,6 +456,46 @@ export class OllamaClient extends BaseLLMClient {
             timeout: this.options.timeout ?? 30000,
         });
         return response.data.embeddings;
+    }
+
+    // ========================================================================
+    // Decisions
+    // ========================================================================
+
+    /**
+     * Ask a decision model (`POST /v1/systemone`). Ollama takes the context
+     * and batch size from the model, not from the request, and may round the
+     * probabilities it returns; those are renormalised.
+     */
+    override async decide<const Questions extends DecisionQuestions>(
+        state: DecisionState,
+        questions: Questions,
+        options?: DecideOptions,
+    ): Promise<DecisionResult<Questions>> {
+        const url = `${this.options.url.replace(/\/+$/, '')}/v1/systemone`;
+        const keepAlive = this.options.defaultParameters?.['keep_alive'];
+        try {
+            const response = await httpRequest<unknown>(url, {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: {
+                    model: options?.model ?? this.options.model,
+                    state,
+                    questions,
+                    ...(options?.images?.length ? { images: options.images } : {}),
+                    ...(keepAlive !== undefined ? { keep_alive: keepAlive } : {}),
+                },
+                timeout: options?.timeout ?? this.options.timeout ?? 30000,
+                ...(options?.signal ? { signal: options.signal } : {}),
+                ...(options?.fetch ? { fetch: options.fetch } : {}),
+            });
+            return parseDecisionResponse(questions, response.data, this.options.url, { roundedProbabilities: true });
+        } catch (error) {
+            if (error instanceof LLMHttpError && isDecisionContextLimit(error)) {
+                throw new DecisionContextLimitError(error.status, error.body, error.url);
+            }
+            throw error;
+        }
     }
 
     // ========================================================================
