@@ -191,8 +191,10 @@ describe('GoogleClient getModelInfo sources', () => {
 // ============================================================================
 
 describe('AIModel declared model info', () => {
-    // Anthropic answers getModelInfo() from config alone, so these isolate
-    // the plumbing; the listing route only serves the router's cold probe.
+    // Anthropic answers getModelInfo() from config alone when both values are
+    // declared, so these isolate the plumbing. The listing route serves the
+    // router's cold probe; a model card request gets a 404, so undeclared
+    // values fall back to the assumed defaults.
     const listing = () => json({ data: [] });
 
     test('model-level capabilities and contextLength reach the client', async () => {
