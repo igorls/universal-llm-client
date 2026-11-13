@@ -151,7 +151,38 @@ function applyMaxTokensParam(
         }
         return;
     }
-    if (params['max_tokens'] === undefined) params['max_tokens'] = maxTokens;
+    if (params['max_tokens'] === undefined && params['max_completion_tokens'] === undefined) {
+        params['max_tokens'] = maxTokens;
+    }
+}
+
+/** Shared worker settings may come from an Ollama route; only their OpenAI equivalents belong on this wire. */
+function normalizeServingParameters(params: Record<string, unknown>, options?: ChatOptions): number | undefined {
+    const legacyOutputBound = params['num_predict'];
+    delete params['num_predict'];
+    delete params['num_ctx'];
+    delete params['keep_alive'];
+
+    const legacyFormat = params['format'];
+    delete params['format'];
+    if (params['response_format'] === undefined) {
+        if (legacyFormat === 'json') {
+            params['response_format'] = { type: 'json_object' };
+        } else if (legacyFormat && typeof legacyFormat === 'object' && !Array.isArray(legacyFormat)) {
+            params['response_format'] = {
+                type: 'json_schema',
+                json_schema: { name: 'response', schema: legacyFormat },
+            };
+        }
+    }
+
+    // Ollama's negative sentinels mean unbounded generation and have no finite
+    // OpenAI equivalent. An explicit per-call bound takes priority over an alias.
+    return options?.maxTokens ?? (
+        typeof legacyOutputBound === 'number' && Number.isSafeInteger(legacyOutputBound) && legacyOutputBound > 0
+            ? legacyOutputBound
+            : undefined
+    );
 }
 
 function cerebrasReasoningEffort(level: ThinkingLevel | undefined): 'low' | 'medium' | 'high' {
@@ -1993,7 +2024,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             ...options?.parameters,
         };
         if (options?.temperature !== undefined) params['temperature'] = options.temperature;
-        applyMaxTokensParam(params, options?.maxTokens, this.options.url);
+        applyMaxTokensParam(params, normalizeServingParameters(params, options), this.options.url);
+        if (this.options.omitResponseFormat) delete params['response_format'];
 
         // Unified thinking flag. Per-call overrides model config; only emitted
         // when explicitly set for non-Gemma models (so servers that reject
