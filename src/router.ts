@@ -31,6 +31,7 @@ import type {
     OutputOptions,
 } from './interfaces.js';
 import type { DecodedEvent } from './stream-decoder.js';
+import type { EmbeddingInput, EmbeddingResult, EmbedOptions } from './embeddings.js';
 import {
     parseStructured,
     StructuredOutputError,
@@ -822,6 +823,14 @@ export class Router {
         return this.execute(
             client => client.embedArray(texts),
             'embedArray',
+        );
+    }
+
+    /** Embed many inputs for a task, with failover. See `BaseLLMClient.embedMany`. */
+    async embedMany(inputs: readonly (string | EmbeddingInput)[], options?: EmbedOptions): Promise<EmbeddingResult> {
+        return this.execute(
+            client => client.embedMany(inputs, options),
+            'embedMany',
         );
     }
 

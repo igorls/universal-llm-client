@@ -228,7 +228,7 @@ The client uses the native `/api/chat` endpoint and reads newline-delimited JSON
 - **Thinking** is sent as `think`: `true`, `false`, or `low`, `medium`, `high`, `max`. With `thinking` unset, `think` is left out and the server applies the model's default. When thinking is requested, the client checks `/api/show` for the model's `thinking` capability and leaves `think` out for a model that lacks it.
 - **Context window**: `contextLength` is sent as `num_ctx`. Without it the server uses its own default, which may truncate long prompts.
 - **Images** are sent in the message's `images` field.
-- **Embeddings** support single and batch input (`embed`, `embedArray`).
+- **Embeddings** support single and batch input (`embed`, `embedArray`), and `embedMany` with a task, prompt format and `dimensions`.
 - `headers`, `authHeader` and `authPrefix` apply, for a daemon behind an authenticating proxy.
 
 ## Failover across protocols

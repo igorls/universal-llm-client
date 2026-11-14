@@ -182,6 +182,7 @@ interface DecisionScoreAnswer {
 |--------|-------------|
 | `embed(text)` | Embedding for one text: `Promise<number[]>` |
 | `embedArray(texts)` | Embeddings for several texts: `Promise<number[][]>` |
+| `embedMany(inputs, options?)` | Embeddings for a task, with prompt format, batching and `dimensions`: `Promise<EmbeddingResult>` |
 | `registerTool(name, description, parameters, handler)` | Register a tool |
 | `registerTools(tools)` | Register several tools, each `{ name, description, parameters, handler }` |
 | `getModels()` | Models available from the configured providers: `Promise<string[]>` |

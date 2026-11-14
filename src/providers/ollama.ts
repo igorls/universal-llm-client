@@ -45,6 +45,15 @@ import type {
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
+import type { EmbeddingBatchRequest, EmbeddingBatchResponse } from '../embeddings.js';
+
+/** Shortest input an overflow retry cuts to. */
+const MIN_RETRY_CHARS = 128;
+
+/** Ollama's refusal for an embedding input longer than the model's window. */
+function isContextOverflow(body: string): boolean {
+    return body.toLowerCase().includes('input length exceeds the context length');
+}
 
 /** Whether a model lists Ollama's "thinking" capability; undefined when that cannot be told. */
 export type OllamaThinkingSupport = (model: string) => Promise<boolean | undefined>;
@@ -437,25 +446,109 @@ export class OllamaClient extends BaseLLMClient {
     // ========================================================================
 
     async embed(text: string): Promise<number[]> {
-        const url = `${this.options.url}/api/embed`;
-        const response = await httpRequest<{ embeddings: number[][] }>(url, {
-            method: 'POST',
-            headers: buildHeaders(this.options),
-            body: { model: this.options.model, input: text },
-            timeout: this.options.timeout ?? 30000,
-        });
-        return response.data.embeddings[0] ?? [];
+        const response = await this.requestEmbeddings({ texts: [text], titles: [undefined], truncate: true });
+        return response.embeddings[0] ?? [];
     }
 
     override async embedArray(texts: string[]): Promise<number[][]> {
-        const url = `${this.options.url}/api/embed`;
-        const response = await httpRequest<{ embeddings: number[][] }>(url, {
-            method: 'POST',
-            headers: buildHeaders(this.options),
-            body: { model: this.options.model, input: texts },
-            timeout: this.options.timeout ?? 30000,
-        });
-        return response.data.embeddings;
+        if (texts.length === 0) return [];
+        const response = await this.requestEmbeddings({ texts, titles: texts.map(() => undefined), truncate: true });
+        return response.embeddings;
+    }
+
+    /**
+     * `POST /api/embed` with the whole batch. An input the model's window
+     * cannot hold, when the server refuses instead of truncating, is cut to
+     * about two thirds and sent once more. A server without `/api/embed`
+     * (before 0.3) gets one legacy `/api/embeddings` call per input.
+     */
+    protected override async requestEmbeddings(request: EmbeddingBatchRequest): Promise<EmbeddingBatchResponse> {
+        try {
+            return await this.postEmbed(request, request.texts);
+        } catch (error) {
+            if (error instanceof LLMHttpError && isContextOverflow(error.body)) {
+                const longest = Math.max(...request.texts.map(text => text.length));
+                const budget = Math.max(MIN_RETRY_CHARS, Math.floor(longest * 0.65));
+                if (budget < longest) {
+                    return this.postEmbed(request, request.texts.map(text => text.slice(0, budget)));
+                }
+            }
+            if (error instanceof LLMHttpError && (error.status === 404 || error.status === 405)) {
+                if (!(await this.hasModel())) throw error;
+                return this.postLegacyEmbeddings(request);
+            }
+            throw error;
+        }
+    }
+
+    protected override embeddingBatchLimit(): number {
+        return 32;
+    }
+
+    private async postEmbed(request: EmbeddingBatchRequest, texts: string[]): Promise<EmbeddingBatchResponse> {
+        const response = await httpRequest<{ model?: string; embeddings?: number[][]; prompt_eval_count?: number }>(
+            `${this.options.url}/api/embed`,
+            {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: {
+                    model: this.options.model,
+                    input: texts.length === 1 ? texts[0] : texts,
+                    ...(request.truncate ? {} : { truncate: false }),
+                    ...(request.dimensions ? { dimensions: request.dimensions } : {}),
+                    ...(request.keepAlive !== undefined ? { keep_alive: request.keepAlive } : {}),
+                },
+                timeout: this.options.timeout ?? 30000,
+                signal: request.signal,
+            },
+        );
+        if (!Array.isArray(response.data.embeddings)) {
+            throw new LLMProviderError('ollama', 'Ollama /api/embed returned no embeddings array');
+        }
+        return {
+            embeddings: response.data.embeddings,
+            ...(response.data.model ? { model: response.data.model } : {}),
+            ...(typeof response.data.prompt_eval_count === 'number'
+                ? { inputTokens: response.data.prompt_eval_count }
+                : {}),
+        };
+    }
+
+    private async postLegacyEmbeddings(request: EmbeddingBatchRequest): Promise<EmbeddingBatchResponse> {
+        const embeddings: number[][] = [];
+        for (const prompt of request.texts) {
+            const response = await httpRequest<{ embedding?: number[] }>(`${this.options.url}/api/embeddings`, {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: {
+                    model: this.options.model,
+                    prompt,
+                    ...(request.keepAlive !== undefined ? { keep_alive: request.keepAlive } : {}),
+                },
+                timeout: this.options.timeout ?? 30000,
+                signal: request.signal,
+            });
+            if (!Array.isArray(response.data.embedding)) {
+                throw new LLMProviderError('ollama', 'Ollama /api/embeddings returned no embedding');
+            }
+            embeddings.push(response.data.embedding);
+        }
+        return { embeddings };
+    }
+
+    /** A 404 from `/api/embed` means either an old server or a missing model; only the first falls back. */
+    private async hasModel(): Promise<boolean> {
+        try {
+            await httpRequest(`${this.options.url}/api/show`, {
+                method: 'POST',
+                headers: buildHeaders(this.options),
+                body: { model: this.options.model },
+                timeout: 5000,
+            });
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     // ========================================================================

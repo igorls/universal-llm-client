@@ -39,6 +39,17 @@ import type {
 } from '../interfaces.js';
 import type { DecodedEvent } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
+import type { EmbeddingBatchRequest, EmbeddingBatchResponse, EmbeddingTask } from '../embeddings.js';
+
+/** Gemini's `taskType` for each embedding task. */
+const GEMINI_TASK_TYPES: Record<EmbeddingTask, string> = {
+    query: 'RETRIEVAL_QUERY',
+    document: 'RETRIEVAL_DOCUMENT',
+    similarity: 'SEMANTIC_SIMILARITY',
+    classification: 'CLASSIFICATION',
+    clustering: 'CLUSTERING',
+    code: 'CODE_RETRIEVAL_QUERY',
+};
 
 export class GoogleClient extends BaseLLMClient {
     private isVertex: boolean;
@@ -442,6 +453,67 @@ export class GoogleClient extends BaseLLMClient {
     // ========================================================================
 
     async embed(text: string): Promise<number[]> {
+        if (!this.isVertex) {
+            const response = await this.requestEmbeddings({ texts: [text], titles: [undefined], truncate: true });
+            return response.embeddings[0] ?? [];
+        }
+        return this.embedContent(text);
+    }
+
+    override async embedArray(texts: string[]): Promise<number[][]> {
+        if (texts.length === 0) return [];
+        if (this.isVertex) return Promise.all(texts.map(text => this.embedContent(text)));
+        const response = await this.requestEmbeddings({ texts, titles: texts.map(() => undefined), truncate: true });
+        return response.embeddings;
+    }
+
+    /**
+     * Gemini API: `batchEmbedContents` with the task as `taskType`, the
+     * document title as `title` (document task only) and `outputDimensionality`.
+     * Vertex keeps one plain `embedContent` call per text.
+     */
+    protected override async requestEmbeddings(request: EmbeddingBatchRequest): Promise<EmbeddingBatchResponse> {
+        if (this.isVertex) {
+            return { embeddings: await Promise.all(request.texts.map(text => this.embedContent(text))) };
+        }
+        const model = `models/${this.options.model}`;
+        const taskType = request.task ? GEMINI_TASK_TYPES[request.task] : undefined;
+        const url = `https://generativelanguage.googleapis.com/${this.apiVersion}/${model}:batchEmbedContents?key=${this.options.apiKey}`;
+        const response = await httpRequest<{ embeddings?: Array<{ values?: number[] }> }>(url, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: {
+                requests: request.texts.map((text, index) => {
+                    const title = request.task === 'document' ? request.titles[index]?.trim() : undefined;
+                    return {
+                        model,
+                        content: { parts: [{ text }] },
+                        ...(taskType ? { taskType } : {}),
+                        ...(title ? { title } : {}),
+                        ...(request.dimensions ? { outputDimensionality: request.dimensions } : {}),
+                    };
+                }),
+            },
+            timeout: this.options.timeout ?? 30000,
+            signal: request.signal,
+        });
+        const embeddings = response.data.embeddings;
+        if (!Array.isArray(embeddings) || embeddings.some(item => !Array.isArray(item?.values))) {
+            throw new Error('Gemini batchEmbedContents returned no embeddings');
+        }
+        return { embeddings: embeddings.map(item => item.values as number[]) };
+    }
+
+    protected override embeddingTasksAreNative(): boolean {
+        return !this.isVertex;
+    }
+
+    /** Gemini accepts up to 100 requests per `batchEmbedContents` call. */
+    protected override embeddingBatchLimit(): number {
+        return 100;
+    }
+
+    private async embedContent(text: string): Promise<number[]> {
         const url = this.getEmbedUrl();
         const response = await httpRequest<{
             embedding: { values: number[] };

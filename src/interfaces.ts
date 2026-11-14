@@ -5,6 +5,8 @@
  * Zero dependencies — pure TypeScript types.
  */
 
+import type { EmbeddingPromptFormat } from './embeddings.js';
+
 // ============================================================================
 // Enums
 // ============================================================================
@@ -78,6 +80,10 @@ export interface ProviderConfig {
      * {@link AIModelConfig.capabilities}. See {@link LLMClientOptions.capabilities}.
      */
     capabilities?: string[];
+    /** Per-provider embedding prompt format. Falls back to {@link AIModelConfig.embeddingPromptFormat}. */
+    embeddingPromptFormat?: EmbeddingPromptFormat | string;
+    /** Per-provider embedding output size. Falls back to {@link AIModelConfig.embeddingDimensions}. */
+    embeddingDimensions?: number;
     /**
      * Explicit priority (default: array order, lower = higher priority).
      * Providers sharing the SAME priority form a **pool**: the Router
@@ -192,6 +198,10 @@ export interface AIModelConfig {
      * {@link LLMClientOptions.capabilities}.
      */
     capabilities?: string[];
+    /** Embedding prompt format for every provider. See {@link LLMClientOptions.embeddingPromptFormat}. */
+    embeddingPromptFormat?: EmbeddingPromptFormat | string;
+    /** Embedding output size for every provider. See {@link LLMClientOptions.embeddingDimensions}. */
+    embeddingDimensions?: number;
     /** Request timeout in ms (default: 30000) */
     timeout?: number;
     /** Retries per provider before failover (default: 2) */
@@ -252,6 +262,15 @@ export interface LLMClientOptions {
      * It is not sent to the server.
      */
     capabilities?: string[];
+    /**
+     * Prompt format `embedMany()` applies when a call names a task, by name
+     * (a key of `EMBEDDING_PROMPT_FORMATS`) or as a format. Default: none, so
+     * inputs go as plain text. It is part of the vector space: vectors embedded
+     * with different formats are not comparable.
+     */
+    embeddingPromptFormat?: EmbeddingPromptFormat | string;
+    /** Default output size for `embedMany()`; a per-call `dimensions` wins. */
+    embeddingDimensions?: number;
     /** Enable debug logging */
     debug?: boolean;
     /** Vertex AI region */

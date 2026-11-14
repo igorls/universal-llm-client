@@ -36,6 +36,7 @@ import {
     type SchemaConfig,
 } from './structured-output.js';
 import type { DecideOptions, DecisionQuestions, DecisionResult, DecisionState } from './decision.js';
+import type { EmbeddingInput, EmbeddingResult, EmbedOptions } from './embeddings.js';
 
 // ============================================================================
 // Default Provider URLs
@@ -240,6 +241,14 @@ export class AIModel {
         return this.router.embedArray(texts);
     }
 
+    /**
+     * Embed many inputs for a task: prompt format, batching, `dimensions`, and
+     * the model and vector size in the result. See `BaseLLMClient.embedMany`.
+     */
+    async embedMany(inputs: readonly (string | EmbeddingInput)[], options?: EmbedOptions): Promise<EmbeddingResult> {
+        return this.router.embedMany(inputs, options);
+    }
+
     // ========================================================================
     // Decisions
     // ========================================================================
@@ -412,6 +421,8 @@ export class AIModel {
             defaultParameters,
             contextLength: providerConfig.contextLength ?? this.config.contextLength,
             capabilities: providerConfig.capabilities ?? this.config.capabilities,
+            embeddingPromptFormat: providerConfig.embeddingPromptFormat ?? this.config.embeddingPromptFormat,
+            embeddingDimensions: providerConfig.embeddingDimensions ?? this.config.embeddingDimensions,
             // Preserve `undefined` (not set) vs explicit false so providers can
             // decide whether to send a thinking toggle at all.
             thinking: this.config.thinking,

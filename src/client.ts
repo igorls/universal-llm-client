@@ -29,6 +29,18 @@ import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
 import { coerceAndValidateToolArgs } from './tool-arg-coercion.js';
 import {
+    formatEmbeddingInput,
+    promptFormatApplies,
+    resolveEmbeddingPromptFormat,
+    toEmbeddingInputs,
+    truncateEmbedding,
+    type EmbeddingBatchRequest,
+    type EmbeddingBatchResponse,
+    type EmbeddingInput,
+    type EmbeddingResult,
+    type EmbedOptions,
+} from './embeddings.js';
+import {
     DecisionUnsupportedError,
     type DecideOptions,
     type DecisionQuestions,
@@ -84,6 +96,81 @@ export abstract class BaseLLMClient {
     /** Generate embeddings for multiple texts */
     async embedArray(texts: string[]): Promise<number[][]> {
         return Promise.all(texts.map(t => this.embed(t)));
+    }
+
+    /**
+     * Embed many inputs for a task. Applies the prompt format (unless the
+     * protocol takes the task natively), splits the inputs into batches, asks
+     * for `dimensions` where the server accepts it, and cuts longer vectors to
+     * that size. Vectors come back in input order, one per input; a server that
+     * returns a different count fails the call.
+     */
+    async embedMany(
+        inputs: readonly (string | EmbeddingInput)[],
+        options: EmbedOptions = {},
+    ): Promise<EmbeddingResult> {
+        const items = toEmbeddingInputs(inputs);
+        const task = options.task;
+        const format = resolveEmbeddingPromptFormat(options.promptFormat ?? this.options.embeddingPromptFormat);
+        const formatted = !this.embeddingTasksAreNative() && promptFormatApplies(format, task);
+        const texts = items.map(item => (formatted ? formatEmbeddingInput(item, task, format) : item.text));
+        const titles = items.map(item => item.title);
+        const dimensions = options.dimensions ?? this.options.embeddingDimensions;
+        const batchSize = Math.max(1, Math.floor(options.batchSize ?? this.embeddingBatchLimit()));
+
+        const embeddings: number[][] = [];
+        let model: string | undefined;
+        let inputTokens: number | undefined;
+        for (let start = 0; start < texts.length; start += batchSize) {
+            const batch = texts.slice(start, start + batchSize);
+            const response = await this.requestEmbeddings({
+                texts: batch,
+                titles: titles.slice(start, start + batchSize),
+                task,
+                dimensions,
+                truncate: options.truncate ?? true,
+                keepAlive: options.keepAlive,
+                signal: options.signal,
+            });
+            if (response.embeddings.length !== batch.length) {
+                throw new Error(
+                    `Embedding server returned ${response.embeddings.length} vectors for ${batch.length} inputs`,
+                );
+            }
+            for (const vector of response.embeddings) {
+                embeddings.push(dimensions ? truncateEmbedding(vector, dimensions) : vector);
+            }
+            model ??= response.model;
+            if (response.inputTokens !== undefined) inputTokens = (inputTokens ?? 0) + response.inputTokens;
+        }
+
+        return {
+            embeddings,
+            model: model ?? this.options.model,
+            dimensions: embeddings[0]?.length ?? 0,
+            promptFormat: formatted ? format.id : 'none',
+            ...(task ? { task } : {}),
+            ...(inputTokens !== undefined ? { inputTokens } : {}),
+        };
+    }
+
+    /**
+     * Send one batch of already-formatted texts. Protocols override this with
+     * their batched endpoint; the default embeds the texts through `embedArray`
+     * and ignores the request options.
+     */
+    protected async requestEmbeddings(request: EmbeddingBatchRequest): Promise<EmbeddingBatchResponse> {
+        return { embeddings: await this.embedArray(request.texts) };
+    }
+
+    /** True when the protocol takes the task itself, so no prompt format is applied. */
+    protected embeddingTasksAreNative(): boolean {
+        return false;
+    }
+
+    /** Inputs per batch when the caller sets none. */
+    protected embeddingBatchLimit(): number {
+        return 64;
     }
 
     /**
