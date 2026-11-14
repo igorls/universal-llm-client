@@ -172,3 +172,30 @@ export function isConnectivityFailure(error: unknown): boolean {
     const code = errorCode(error).toUpperCase();
     return /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR)$/.test(code);
 }
+
+/**
+ * True when the endpoint itself could not be reached: refused, reset or
+ * aborted connection, DNS failure, no route. Narrower than
+ * {@link isConnectivityFailure}, because this is the signal shared between
+ * every caller of a host:
+ *
+ * - Decided from the transport error code only (Bun sets `code`, Node sets
+ *   `cause.code`), never from message text. Messages can carry text a server
+ *   sent back, and one caller's endpoint must not be able to mark a host down
+ *   for everyone by answering "connection refused".
+ * - Errors built from a server response (`LLMHttpError`, `LLMProviderError`,
+ *   any error stating its own `failover` disposition) are never unreachable:
+ *   something answered.
+ * - Timeouts are excluded: a healthy server can be slow (a long generation,
+ *   a model loading).
+ */
+export function isEndpointUnreachable(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    if (error instanceof LLMHttpError || error instanceof LLMProviderError) return false;
+    if ((error as { failover?: unknown }).failover !== undefined) return false;
+    return UNREACHABLE_CODES.test(errorCode(error).toUpperCase());
+}
+
+/** Transport codes for "nothing answered" across Node (`cause.code`) and Bun (`code`). */
+const UNREACHABLE_CODES =
+    /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR|FAILEDTOOPENSOCKET|UND_ERR_SOCKET)$/;

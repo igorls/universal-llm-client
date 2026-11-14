@@ -6,6 +6,7 @@
  */
 
 import type { EmbeddingPromptFormat } from './embeddings.js';
+import type { EndpointAvailability } from './endpoint-health.js';
 
 // ============================================================================
 // Enums
@@ -69,6 +70,14 @@ export interface ProviderConfig {
     apiKey?: string;
     /** Override model name for this specific provider */
     model?: string;
+    /**
+     * External signal that this endpoint is unreachable, for example from a
+     * control plane. Every router in the process then defers the endpoint
+     * (prefers other providers, still uses it when none is left) until a
+     * background probe or a successful request clears it. Connectivity only:
+     * key, quota and model errors are never shared.
+     */
+    availability?: EndpointAvailability;
     /**
      * Per-provider context-window override (tokens). Falls back to
      * {@link AIModelConfig.contextLength}. See

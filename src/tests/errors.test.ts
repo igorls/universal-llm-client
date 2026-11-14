@@ -6,6 +6,7 @@ import {
     extractProviderErrorMessage,
     looksLikeErrorPayload,
     classifyFailure,
+    isEndpointUnreachable,
 } from '../errors.js';
 
 describe('error helpers', () => {
@@ -81,5 +82,31 @@ describe('classifyFailure', () => {
 
     test('unknown errors preserve retry-then-failover', () => {
         expect(classifyFailure(new Error('something weird'))).toEqual({ retry: true, cooldown: false });
+    });
+});
+
+describe('isEndpointUnreachable', () => {
+    test('refused, reset and DNS failures are unreachable, by transport code', () => {
+        // Node: TypeError('fetch failed') with cause.code. Bun: TypeError with code.
+        expect(isEndpointUnreachable(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(true);
+        expect(isEndpointUnreachable(Object.assign(new TypeError('Unable to connect. Is the computer able to access the url?'), { code: 'ECONNREFUSED' }))).toBe(true);
+        expect(isEndpointUnreachable(Object.assign(new TypeError('getaddrinfo ENOTFOUND host.test'), { code: 'ENOTFOUND' }))).toBe(true);
+        expect(isEndpointUnreachable(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }))).toBe(true);
+    });
+
+    test('message text alone never counts, so a server cannot mark a host down', () => {
+        expect(isEndpointUnreachable(new Error('ECONNREFUSED: Unable to connect'))).toBe(false);
+        expect(isEndpointUnreachable(new TypeError('fetch failed'))).toBe(false);
+        expect(isEndpointUnreachable(new LLMProviderError('ollama', 'upstream: connection refused'))).toBe(false);
+        expect(isEndpointUnreachable(Object.assign(new LLMProviderError('ollama', 'x'), { code: 'ECONNREFUSED' }))).toBe(false);
+        expect(isEndpointUnreachable(Object.assign(new Error('x'), { code: 'ECONNREFUSED', failover: { retry: false, cooldown: false } }))).toBe(false);
+    });
+
+    test('timeouts and HTTP responses are not', () => {
+        expect(isEndpointUnreachable(new Error('Request timeout after 30000ms: http://host.test/v1'))).toBe(false);
+        expect(isEndpointUnreachable(Object.assign(new Error('The operation timed out.'), { name: 'TimeoutError' }))).toBe(false);
+        expect(isEndpointUnreachable(new LLMHttpError(504, 'Gateway Timeout'))).toBe(false);
+        expect(isEndpointUnreachable(new LLMHttpError(401, 'connection refused by policy'))).toBe(false);
+        expect(isEndpointUnreachable(new Error('something else'))).toBe(false);
     });
 });
