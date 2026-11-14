@@ -13,6 +13,15 @@ describe('httpRequest', () => {
         setLlmHttpTap(null);
     });
 
+    it('keeps API keys in the URL out of HTTP errors', async () => {
+        globalThis.fetch = mock(async () => new Response('bad request', { status: 400 })) as unknown as typeof fetch;
+
+        const error = await httpRequest('https://api.test/v1/models?key=secret-value').catch((e: unknown) => e);
+
+        expect(String((error as Error).message)).not.toContain('secret-value');
+        expect(String((error as { url?: string }).url)).not.toContain('secret-value');
+    });
+
     it('makes a GET request and parses JSON', async () => {
         globalThis.fetch = mock(async () =>
             new Response(JSON.stringify({ ok: true }), {

@@ -478,10 +478,11 @@ export class GoogleClient extends BaseLLMClient {
         }
         const model = `models/${this.options.model}`;
         const taskType = request.task ? GEMINI_TASK_TYPES[request.task] : undefined;
-        const url = `https://generativelanguage.googleapis.com/${this.apiVersion}/${model}:batchEmbedContents?key=${this.options.apiKey}`;
+        // The key goes in a header, never in the URL, so it cannot surface in errors or logs.
+        const url = `https://generativelanguage.googleapis.com/${this.apiVersion}/${model}:batchEmbedContents`;
         const response = await httpRequest<{ embeddings?: Array<{ values?: number[] }> }>(url, {
             method: 'POST',
-            headers: this.getHeaders(),
+            headers: { ...this.getHeaders(), 'x-goog-api-key': this.options.apiKey ?? '' },
             body: {
                 requests: request.texts.map((text, index) => {
                     const title = request.task === 'document' ? request.titles[index]?.trim() : undefined;

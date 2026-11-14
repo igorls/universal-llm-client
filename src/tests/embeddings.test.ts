@@ -19,6 +19,7 @@ import { AIModel } from '../ai-model.js';
 
 interface Captured {
     url: string;
+    headers: Record<string, string>;
     body: Record<string, unknown>;
 }
 
@@ -30,6 +31,7 @@ function serve(handler: (call: Captured) => Response | Promise<Response>): void 
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const call = {
             url: String(input),
+            headers: Object.fromEntries(new Headers(init?.headers).entries()),
             body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {},
         };
         calls.push(call);
@@ -311,7 +313,8 @@ describe('Gemini batchEmbedContents', () => {
         });
 
         expect(calls).toHaveLength(1);
-        expect(calls[0]!.url).toContain('/models/embed-model:batchEmbedContents?key=test-key');
+        expect(calls[0]!.url).toEndWith('/models/embed-model:batchEmbedContents');
+        expect(calls[0]!.headers['x-goog-api-key']).toBe('test-key');
         expect(calls[0]!.body).toEqual({
             requests: [
                 {
