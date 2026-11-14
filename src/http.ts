@@ -175,7 +175,7 @@ export async function httpRequest<T = unknown>(
                 durationMs: Date.now() - started,
                 error: errorText.slice(0, 2000),
             });
-            throw new LLMHttpError(response.status, errorText, url);
+            throw new LLMHttpError(response.status, errorText, redactUrl(url));
         }
 
         const data = (await response.json()) as T;
@@ -202,7 +202,7 @@ export async function httpRequest<T = unknown>(
         clearTimeout(timeoutId);
 
         if (error instanceof Error && error.name === 'AbortError') {
-            const message = `Request timeout after ${timeout}ms: ${url}`;
+            const message = `Request timeout after ${timeout}ms: ${redactUrl(url)}`;
             emitTap({
                 id: tapId,
                 at: Date.now(),
@@ -308,7 +308,7 @@ export async function* httpStream(
                 durationMs: Date.now() - started,
                 error: errorText.slice(0, 2000),
             });
-            throw new LLMHttpError(response.status, errorText, url);
+            throw new LLMHttpError(response.status, errorText, redactUrl(url));
         }
 
         if (!response.body) {
@@ -373,7 +373,7 @@ export async function* httpStream(
                 });
                 throw error;
             }
-            const message = `Stream idle timeout after ${timeout}ms: ${url}`;
+            const message = `Stream idle timeout after ${timeout}ms: ${redactUrl(url)}`;
             emitTap({
                 id: tapId,
                 at: Date.now(),

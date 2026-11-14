@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`embedMany(inputs, options)` on every client, `AIModel` and the router** — embeds a batch for a task (`query`, `document`, `similarity`, `classification`, `clustering`, `code`) and returns `{ embeddings, model, dimensions, promptFormat, task, inputTokens }`. Inputs are strings or `{ text, title }`. Options: `task`, `promptFormat`, `dimensions`, `batchSize`, `truncate` and `keepAlive` (Ollama). Fails over across providers like chat.
+- **Embedding prompt formats** — a declared format (`LLMClientOptions.embeddingPromptFormat`, or `promptFormat` per call) turns the task into model input using model-card templates. `EMBEDDING_PROMPT_FORMATS` ships `none`, `embeddinggemma`, `qwen3-embedding`, `nomic`, `e5` and `mxbai`; any `{ id, templates }` object works. Nothing is inferred from the model name, and `embed()`/`embedArray()` keep sending plain text, so existing vectors stay comparable.
+- **Output dimensions** — `dimensions` (or `LLMClientOptions.embeddingDimensions`) is sent as Ollama `dimensions`, OpenAI-compatible `dimensions` and Gemini `outputDimensionality`; a longer vector that comes back is cut and re-normalized. Helpers `truncateEmbedding`, `normalizeEmbedding`, `formatEmbeddingInput` and `resolveEmbeddingPromptFormat` are exported.
+
+### Changed
+
+- **Batched embedding requests on every protocol** — OpenAI-compatible `embedArray` sends one `/embeddings` request instead of one per text, puts vectors back in input order by `index`, and sends `encoding_format: "float"`. Gemini `embedArray` uses `batchEmbedContents` (100 per request; Vertex keeps one `embedContent` call per text) and takes the task natively as `taskType`, with `title` on documents. Ollama retries an input its server refuses as longer than the context once, cut to about two thirds, and falls back to `/api/embeddings` on servers without `/api/embed`. A response with a different number of vectors than inputs now fails instead of returning a short array.
+
 ### Fixed
 
+- **API keys no longer appear in error URLs** — `LLMHttpError.url`, its message, and the request and stream timeout messages carried the raw URL, so a key sent as `?key=` (Gemini) could reach logs and error reports. They now use the same redaction the HTTP tap applies. The new `batchEmbedContents` call sends the key as `x-goog-api-key` instead of in the query string.
 - **OpenAI-compatible requests no longer leak Ollama serving parameters** — shared worker or route parameters now translate a positive `num_predict` into the endpoint's existing output-token field, and `format` into `response_format` (`json_object` or `json_schema`). A per-call `maxTokens` overrides the legacy bound, native output and format fields retain priority over aliases, and `omitResponseFormat` still wins. Ollama's `num_ctx`, `keep_alive`, and unbounded `num_predict` sentinels are omitted from Chat Completions requests. Native Ollama behavior and the Responses transport's allowlisted body are unchanged.
 
 ## [4.7.0] - 2026-11-12

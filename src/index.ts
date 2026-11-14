@@ -92,6 +92,24 @@ export {
 } from './interfaces.js';
 
 // ============================================================================
+// Embeddings
+// ============================================================================
+
+export {
+    EMBEDDING_PROMPT_FORMATS,
+    formatEmbeddingInput,
+    normalizeEmbedding,
+    resolveEmbeddingPromptFormat,
+    truncateEmbedding,
+    type EmbeddingInput,
+    type EmbeddingPromptFormat,
+    type EmbeddingPromptFormatName,
+    type EmbeddingResult,
+    type EmbeddingTask,
+    type EmbedOptions,
+} from './embeddings.js';
+
+// ============================================================================
 // Observability
 // ============================================================================
 

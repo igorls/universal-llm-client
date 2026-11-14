@@ -37,6 +37,7 @@ import type {
 } from '../interfaces.js';
 import type { DecodedEvent, StreamDecoder } from '../stream-decoder.js';
 import type { Auditor } from '../auditor.js';
+import type { EmbeddingBatchRequest, EmbeddingBatchResponse } from '../embeddings.js';
 import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } from '../gemma-diffusion.js';
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
@@ -1780,19 +1781,65 @@ export class OpenAICompatibleClient extends BaseLLMClient {
     // ========================================================================
 
     async embed(text: string): Promise<number[]> {
-        const url = this.buildUrl('/embeddings');
+        const response = await this.requestEmbeddings({ texts: [text], titles: [undefined], truncate: true });
+        return response.embeddings[0] ?? [];
+    }
+
+    /** One `/embeddings` request for the whole array, instead of a request per text. */
+    override async embedArray(texts: string[]): Promise<number[][]> {
+        if (texts.length === 0) return [];
+        const response = await this.requestEmbeddings({ texts, titles: texts.map(() => undefined), truncate: true });
+        return response.embeddings;
+    }
+
+    /**
+     * `POST /embeddings` with the batch. A single input goes as a string, the
+     * form every compatible server accepts. Vectors are put back in input order
+     * by their `index`. `dimensions` is sent only when asked for: servers that
+     * do not know the field may reject it.
+     */
+    protected override async requestEmbeddings(request: EmbeddingBatchRequest): Promise<EmbeddingBatchResponse> {
         const response = await httpRequest<{
-            data: Array<{ embedding: number[] }>;
-        }>(url, {
+            model?: string;
+            data?: Array<{ index?: number; embedding?: number[] }>;
+            usage?: { prompt_tokens?: number };
+        }>(this.buildUrl('/embeddings'), {
             method: 'POST',
             headers: buildHeaders(this.options),
             body: {
                 model: this.options.model,
-                input: text,
+                input: request.texts.length === 1 ? request.texts[0] : request.texts,
+                encoding_format: 'float',
+                ...(request.dimensions ? { dimensions: request.dimensions } : {}),
             },
             timeout: this.options.timeout ?? 30000,
+            signal: request.signal,
         });
-        return response.data.data[0]?.embedding ?? [];
+        const data = response.data.data;
+        if (!Array.isArray(data)) {
+            throw new Error('Embedding response has no data array');
+        }
+        const ordered: number[][] = new Array(request.texts.length);
+        data.forEach((item, position) => {
+            const index = item.index ?? position;
+            if (Array.isArray(item.embedding) && index >= 0 && index < ordered.length) {
+                ordered[index] = item.embedding;
+            }
+        });
+        const embeddings = Array.from(ordered, vector => vector ?? []);
+        if (embeddings.some(vector => vector.length === 0)) {
+            throw new Error(`Embedding response is missing vectors for some of ${request.texts.length} inputs`);
+        }
+        const inputTokens = response.data.usage?.prompt_tokens;
+        return {
+            embeddings,
+            ...(response.data.model ? { model: response.data.model } : {}),
+            ...(typeof inputTokens === 'number' ? { inputTokens } : {}),
+        };
+    }
+
+    protected override embeddingBatchLimit(): number {
+        return 128;
     }
 
     // ========================================================================

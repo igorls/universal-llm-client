@@ -19,6 +19,39 @@ Embeddings work on the OpenAI Chat Completions, Gemini and Ollama protocols. The
 
 Use a separate `AIModel` for embeddings. The model name and the provider chain for embeddings usually differ from those for chat, and `AIModel` holds no conversation state, so two instances cost nothing.
 
+### Tasks, prompt formats and dimensions
+
+`embedMany(inputs, options)` embeds a batch for a task and says what came back:
+
+```typescript
+const embedder = new AIModel({
+  model: 'model-id',
+  providers: [{ type: 'ollama', embeddingPromptFormat: 'embeddinggemma' }],
+});
+
+const query = await embedder.embedMany(['how do I cancel?'], { task: 'query' });
+const docs = await embedder.embedMany(
+  [{ text: 'Open Settings and choose Plan.', title: 'Billing' }],
+  { task: 'document', dimensions: 256 },
+);
+// { embeddings: number[][], model, dimensions, promptFormat, task, inputTokens? }
+```
+
+| Option | Meaning |
+|---|---|
+| `task` | `query`, `document`, `similarity`, `classification`, `clustering` or `code`. Without a task, inputs go as plain text |
+| `promptFormat` | A format for this call, by name or value. Overrides the provider's `embeddingPromptFormat` |
+| `dimensions` | Output size. Sent where the protocol accepts it; a longer vector is cut to this size and re-normalized (meaningful only for Matryoshka-trained models) |
+| `batchSize` | Inputs per request. Default: 32 (Ollama), 128 (OpenAI Chat Completions servers), 100 (Gemini) |
+| `truncate` | Ollama only: let the server truncate long inputs. Default `true` |
+| `keepAlive` | Ollama only: `keep_alive` for the embedding model |
+
+Retrieval models embed a query and the documents it searches differently. A prompt format turns the task into the model's input, using the templates its model card publishes. The library never picks one from the model name: declare it, because the format is part of the vector space and vectors embedded with different formats do not compare. `EMBEDDING_PROMPT_FORMATS` holds the built-in formats (`none`, `embeddinggemma`, `qwen3-embedding`, `nomic`, `e5`, `mxbai`); any `{ id, templates }` object works too.
+
+The Gemini protocol takes the task natively, as `taskType`, with the document title as `title`, so no prompt format is applied there.
+
+Each protocol sends one request per batch: Ollama `/api/embed`, OpenAI-compatible `/embeddings` (vectors reordered by `index`), Gemini `batchEmbedContents`. A response with a different number of vectors than inputs fails the call. `embed()` and `embedArray()` keep sending plain text.
+
 ## Vision
 
 Send images in a user message. `multimodalMessage(text, images, mimeType?)` builds one:
