@@ -549,7 +549,7 @@ describe("shared endpoint circuit breaker", () => {
         let secondPrimaryCalls = 0;
         const firstPrimary = new MockClient("shared-connectivity", {
             chatFn: async () => {
-                throw new Error("fetch failed");
+                throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
             },
         });
         const secondPrimary = new MockClient("shared-connectivity", {
@@ -734,7 +734,7 @@ describe("shared endpoint circuit breaker", () => {
         const dropping = new MockClient("shared-stream", {
             streamFn: async function* () {
                 yield { type: "text", content: "partial" };
-                throw new Error("connection reset by peer");
+                throw Object.assign(new Error("connection reset by peer"), { code: "ECONNRESET" });
             },
         });
         const router = new Router({ coldProbeTimeoutMs: 0, retriesPerProvider: 0 });

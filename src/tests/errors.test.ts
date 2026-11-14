@@ -86,11 +86,20 @@ describe('classifyFailure', () => {
 });
 
 describe('isEndpointUnreachable', () => {
-    test('refused, reset and DNS failures are unreachable, by code or message', () => {
+    test('refused, reset and DNS failures are unreachable, by transport code', () => {
+        // Node: TypeError('fetch failed') with cause.code. Bun: TypeError with code.
         expect(isEndpointUnreachable(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(true);
-        expect(isEndpointUnreachable(new Error('Unable to connect. Is the computer able to access the url?'))).toBe(true);
-        expect(isEndpointUnreachable(new Error('getaddrinfo ENOTFOUND host.test'))).toBe(true);
-        expect(isEndpointUnreachable(new Error('socket hang up'))).toBe(true);
+        expect(isEndpointUnreachable(Object.assign(new TypeError('Unable to connect. Is the computer able to access the url?'), { code: 'ECONNREFUSED' }))).toBe(true);
+        expect(isEndpointUnreachable(Object.assign(new TypeError('getaddrinfo ENOTFOUND host.test'), { code: 'ENOTFOUND' }))).toBe(true);
+        expect(isEndpointUnreachable(Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }))).toBe(true);
+    });
+
+    test('message text alone never counts, so a server cannot mark a host down', () => {
+        expect(isEndpointUnreachable(new Error('ECONNREFUSED: Unable to connect'))).toBe(false);
+        expect(isEndpointUnreachable(new TypeError('fetch failed'))).toBe(false);
+        expect(isEndpointUnreachable(new LLMProviderError('ollama', 'upstream: connection refused'))).toBe(false);
+        expect(isEndpointUnreachable(Object.assign(new LLMProviderError('ollama', 'x'), { code: 'ECONNREFUSED' }))).toBe(false);
+        expect(isEndpointUnreachable(Object.assign(new Error('x'), { code: 'ECONNREFUSED', failover: { retry: false, cooldown: false } }))).toBe(false);
     });
 
     test('timeouts and HTTP responses are not', () => {

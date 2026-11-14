@@ -176,18 +176,26 @@ export function isConnectivityFailure(error: unknown): boolean {
 /**
  * True when the endpoint itself could not be reached: refused, reset or
  * aborted connection, DNS failure, no route. Narrower than
- * {@link isConnectivityFailure}: an HTTP response of any status proves the
- * host is reachable, and a timeout is excluded because a healthy server can be
- * slow (a long generation, a model loading). This is the signal that is safe
- * to share between callers of the same host.
+ * {@link isConnectivityFailure}, because this is the signal shared between
+ * every caller of a host:
+ *
+ * - Decided from the transport error code only (Bun sets `code`, Node sets
+ *   `cause.code`), never from message text. Messages can carry text a server
+ *   sent back, and one caller's endpoint must not be able to mark a host down
+ *   for everyone by answering "connection refused".
+ * - Errors built from a server response (`LLMHttpError`, `LLMProviderError`,
+ *   any error stating its own `failover` disposition) are never unreachable:
+ *   something answered.
+ * - Timeouts are excluded: a healthy server can be slow (a long generation,
+ *   a model loading).
  */
 export function isEndpointUnreachable(error: unknown): boolean {
-    if (error instanceof LLMHttpError) return false;
-    const code = errorCode(error).toUpperCase();
-    if (/^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR|FAILEDTOOPENSOCKET)$/.test(code)) {
-        return true;
-    }
-    const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
-    if (/timeout|timed out/.test(message)) return false;
-    return /unable to connect|connection (refused|reset|closed|error)|econnrefused|econnreset|econnaborted|enotfound|eai_again|ehostunreach|enetunreach|getaddrinfo|fetch failed|failed to fetch|socket hang up/.test(message);
+    if (!(error instanceof Error)) return false;
+    if (error instanceof LLMHttpError || error instanceof LLMProviderError) return false;
+    if ((error as { failover?: unknown }).failover !== undefined) return false;
+    return UNREACHABLE_CODES.test(errorCode(error).toUpperCase());
 }
+
+/** Transport codes for "nothing answered" across Node (`cause.code`) and Bun (`code`). */
+const UNREACHABLE_CODES =
+    /^(ECONNREFUSED|ECONNRESET|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPIPE|CONNECTIONREFUSED|CONNECTIONCLOSED|CONNECTIONERROR|FAILEDTOOPENSOCKET|UND_ERR_SOCKET)$/;
