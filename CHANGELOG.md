@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **API keys no longer appear in error URLs** — `LLMHttpError.url`, its message, and the request and stream timeout messages carried the raw URL, so a key sent as `?key=` (Gemini) could reach logs and error reports. They now use the same redaction the HTTP tap applies. The new `batchEmbedContents` call sends the key as `x-goog-api-key` instead of in the query string.
 - **OpenAI-compatible requests no longer leak Ollama serving parameters** — shared worker or route parameters now translate a positive `num_predict` into the endpoint's existing output-token field, and `format` into `response_format` (`json_object` or `json_schema`). A per-call `maxTokens` overrides the legacy bound, native output and format fields retain priority over aliases, and `omitResponseFormat` still wins. Ollama's `num_ctx`, `keep_alive`, and unbounded `num_predict` sentinels are omitted from Chat Completions requests. Native Ollama behavior and the Responses transport's allowlisted body are unchanged.
 
 ## [4.7.0] - 2026-11-12
