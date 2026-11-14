@@ -151,7 +151,7 @@ describe('applyQwenRequestDefaults', () => {
         const body: Record<string, unknown> = {};
         applyQwenRequestDefaults({
             model: 'qwen3.8:27b-mtp-q4_K_M',
-            url: 'http://z690-ex-glacial-win:11434/v1',
+            url: 'http://gpu-host:11434/v1',
             body,
             thinking: { enabled: false },
         });

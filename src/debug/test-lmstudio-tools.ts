@@ -8,7 +8,7 @@ async function testLMStudioTools() {
     // Create LM Studio model using OpenAI-compatible API
     const model = AIModelFactory.createOpenAIChatModel(
         'qwen/qwen3-8b',  // Tool-trained model
-        'http://192.168.100.136:1234/v1'  // LM Studio URL
+        'http://localhost:1234/v1'  // LM Studio URL
     );
 
     // Create simple test tools (same as our router test)

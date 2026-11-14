@@ -3,16 +3,16 @@
  * Live confirmation: ULC thinking levels against Ollama qwen3.8.
  *
  *   bun tests/smoke/smoke-ollama-qwen38-thinking.ts
- *   OLLAMA_URL=http://z690-ex-glacial-win:11434 bun tests/smoke/smoke-ollama-qwen38-thinking.ts
+ *   OLLAMA_URL=http://gpu-host:11434 bun tests/smoke/smoke-ollama-qwen38-thinking.ts
  *
- * Default host is z590 (idle 3090). Do not point this at a box that must
+ * Default host is a local Ollama. Do not point this at a box that must
  * keep Gemma pinned unless you accept a 16 GB evict.
  */
 import { OllamaClient } from '../../src/providers/ollama.js';
 import { OpenAICompatibleClient } from '../../src/providers/openai.js';
 import { AIModelApiType, type ThinkingLevel } from '../../src/interfaces.js';
 
-const URL = (process.env['OLLAMA_URL'] ?? 'http://z590-vision-d:11434').replace(/\/+$/, '');
+const URL = (process.env['OLLAMA_URL'] ?? 'http://localhost:11434').replace(/\/+$/, '');
 const MODEL = process.env['OLLAMA_MODEL'] ?? 'qwen3.8:27b-mtp-q4_K_M';
 const PROMPT =
   process.env['PROMPT'] ??

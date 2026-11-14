@@ -51,7 +51,7 @@ describe('isOpenAIReasoningModel', () => {
 
 describe('isOllamaEndpoint', () => {
     test('matches local listeners and ollama.com', () => {
-        expect(isOllamaEndpoint('http://z690-ex-glacial-win:11434')).toBe(true);
+        expect(isOllamaEndpoint('http://gpu-host:11434')).toBe(true);
         expect(isOllamaEndpoint('http://127.0.0.1:11434/v1')).toBe(true);
         expect(isOllamaEndpoint('https://ollama.com')).toBe(true);
         expect(isOllamaEndpoint('http://localhost:8010/v1')).toBe(false);
@@ -97,7 +97,7 @@ describe('applyQwenRequestDefaults (Qwen3.5+ chat_template_kwargs)', () => {
         const body: Record<string, unknown> = {};
         applyQwenRequestDefaults({
             model: 'qwen3.8-27b-nvfp4_dflash2',
-            url: 'http://100.81.253.45:8010/v1',
+            url: 'http://192.0.2.30:8010/v1',
             body,
             thinking: { enabled: true, level: 'medium' },
         });
@@ -115,7 +115,7 @@ describe('applyQwenRequestDefaults (Qwen3.5+ chat_template_kwargs)', () => {
         };
         applyQwenRequestDefaults({
             model: 'qwen3.8-27b-nvfp4_dflash2',
-            url: 'http://100.81.253.45:8010/v1',
+            url: 'http://192.0.2.30:8010/v1',
             body,
             thinking: { enabled: true },
         });

@@ -5,7 +5,7 @@
  * Works with: OpenAI, OpenRouter, Groq, LM Studio, vLLM, LlamaCpp.
  *
  * For LlamaCpp server:
- *   OPENAI_API_URL=http://blade14:8080/v1 bun run tests/smoke/smoke-test-openai-structured.ts
+ *   OPENAI_API_URL=http://localhost:8080/v1 bun run tests/smoke/smoke-test-openai-structured.ts
  *
  * For OpenAI:
  *   OPENAI_API_KEY=sk-xxx bun run tests/smoke/smoke-test-openai-structured.ts
@@ -369,7 +369,7 @@ async function main() {
     // ---- 11) Vision with Structured Output (VAL-PROVIDER-OPENAI-003, VAL-CROSS-002) ----
     log('11. Vision with Structured Output', 'Testing image + structured output...');
     await test('vision with structured output', async () => {
-        // The model on blade14 supports multimodal (Qwen3-VL)
+        // The served model must support multimodal input (e.g. Qwen3-VL)
         
         // Simple 1x1 red pixel PNG in base64
         const base64Image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKMIawAAAABJRU5ErkJggg==';
