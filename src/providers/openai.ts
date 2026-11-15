@@ -8,6 +8,7 @@
 import { BaseLLMClient, ASSUMED_CONTEXT_LENGTH } from '../client.js';
 import {
     resolveThinking,
+    inferOpenAIContextLength,
     isOpenAIReasoningModel,
     supportsChatTemplateKwargs,
     isStrictOpenAICompatHost,
@@ -2051,10 +2052,13 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             // Capabilities are almost never on the card — name inference is the
             // last resort so multimodal models are not treated as text-only.
             const probed = await this.resolveKnownContextLength(model);
+            // OpenAI's own endpoint reports no window; its families are known by name.
+            const inferred = probed === undefined ? inferOpenAIContextLength(model, this.options.url) : undefined;
             info = withInferredCapabilities(model, {
                 model,
-                contextLength: probed ?? ASSUMED_CONTEXT_LENGTH,
-                contextLengthSource: probed !== undefined ? 'endpoint' : 'assumed',
+                contextLength: probed ?? inferred ?? ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource:
+                    probed !== undefined ? 'endpoint' : inferred !== undefined ? 'inferred' : 'assumed',
             });
             this.modelInfoCache.set(model, info);
         }

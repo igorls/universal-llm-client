@@ -4,6 +4,7 @@
 import { describe, test, expect } from 'bun:test';
 import {
     resolveThinking,
+    inferOpenAIContextLength,
     isOpenAIReasoningModel,
     isOllamaEndpoint,
     ollamaThinkValue,
@@ -42,10 +43,32 @@ describe('isOpenAIReasoningModel', () => {
             expect(isOpenAIReasoningModel(m)).toBe(true);
         }
     });
+    test('matches later GPT generations by number, not by the literal 5', () => {
+        for (const m of ['gpt-5.4-mini', 'gpt-6', 'gpt-6-luna', 'gpt-7-pro', 'gpt-12']) {
+            expect(isOpenAIReasoningModel(m)).toBe(true);
+        }
+    });
     test('does not match chat / vLLM model names', () => {
-        for (const m of ['gpt-4o', 'qwen3.6-nvfp4', 'gemini-3.5-flash', 'claude-sonnet-4-5']) {
+        for (const m of ['gpt-4o', 'gpt-4.1-mini', 'gpt-500', 'qwen3.6-nvfp4', 'gemini-3.5-flash', 'claude-sonnet-4-5']) {
             expect(isOpenAIReasoningModel(m)).toBe(false);
         }
+    });
+});
+
+describe('inferOpenAIContextLength', () => {
+    const openai = 'https://api.openai.com/v1';
+    test('knows the OpenAI families by name', () => {
+        expect(inferOpenAIContextLength('gpt-6-luna', openai)).toBe(200_000);
+        expect(inferOpenAIContextLength('gpt-5-mini-2025-08-07', openai)).toBe(200_000);
+        expect(inferOpenAIContextLength('o4-mini', openai)).toBe(200_000);
+        expect(inferOpenAIContextLength('gpt-4.1-mini', openai)).toBe(1_000_000);
+        expect(inferOpenAIContextLength('gpt-4o', openai)).toBe(128_000);
+    });
+    test('says nothing about other hosts or non-chat models', () => {
+        expect(inferOpenAIContextLength('gpt-6-luna', 'http://localhost:8000/v1')).toBeUndefined();
+        expect(inferOpenAIContextLength('gpt-6-luna', undefined)).toBeUndefined();
+        expect(inferOpenAIContextLength('tts-1', openai)).toBeUndefined();
+        expect(inferOpenAIContextLength('text-embedding-3-small', openai)).toBeUndefined();
     });
 });
 

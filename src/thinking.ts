@@ -41,9 +41,33 @@ export function resolveThinking(
     return undefined; // unknown string — ignore defensively
 }
 
-/** Heuristic: OpenAI reasoning models use `reasoning_effort` (o-series, GPT-5). */
+/**
+ * Heuristic: OpenAI reasoning models use `reasoning_effort` (o-series, GPT-5 and
+ * every later GPT generation). The generation is matched as a number, not as the
+ * literal "5": a model one generation on is rejected with the same HTTP 400 for
+ * `max_tokens` as GPT-5 is.
+ */
 export function isOpenAIReasoningModel(model: string): boolean {
-    return /^(o\d|gpt-5)/i.test(model);
+    return /^(o\d|gpt-(?:[5-9]|[1-9]\d)(?!\d))/i.test(model);
+}
+
+/**
+ * Context window of a model served by api.openai.com, from its name.
+ *
+ * OpenAI's `/v1/models` reports no window, so without this every OpenAI model is
+ * budgeted as the conservative 8K default: the system prompt is cut, most tools
+ * are dropped and short conversations are evicted. The figures are deliberate
+ * floors for each family, never above what the family is documented to accept, so
+ * a wrong guess costs unused room rather than a rejected request.
+ * Returns undefined for any other host and for names that are not chat models.
+ */
+export function inferOpenAIContextLength(model: string, url: string | undefined): number | undefined {
+    if (!(url ?? '').toLowerCase().includes('api.openai.com')) return undefined;
+    const name = model.toLowerCase();
+    if (/^gpt-4\.1/.test(name)) return 1_000_000;
+    if (isOpenAIReasoningModel(name)) return 200_000;
+    if (/^(gpt-4o|gpt-4-turbo|chatgpt-)/.test(name)) return 128_000;
+    return undefined;
 }
 
 /**
