@@ -7,9 +7,17 @@ const CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
 ]);
 
 export function publishedOpenAIContextWindow(model: string, baseUrl: string): number | undefined {
+    return isPublicOpenAI(baseUrl) ? CONTEXT_WINDOWS.get(model) : undefined;
+}
+
+export function isPublicOpenAI(baseUrl: string): boolean {
     try {
-        return new URL(baseUrl).origin === 'https://api.openai.com' ? CONTEXT_WINDOWS.get(model) : undefined;
+        return new URL(baseUrl).origin === 'https://api.openai.com';
     } catch {
-        return undefined;
+        return false;
     }
+}
+
+export function isGPT62ReasoningModel(model: string): boolean {
+    return model === 'gpt-6.2-astra' || model === 'gpt-6.2-sol';
 }

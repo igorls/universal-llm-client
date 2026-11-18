@@ -30,7 +30,9 @@ import { httpStream, parseSSE } from '../http.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
 import { OPENAI_SERVICE_TIERS } from '../interfaces.js';
 import { ResponsesWebSocketTransport, type ResponsesWebSocketFactory } from './responses-websocket.js';
-import { publishedOpenAIContextWindow } from './openai-model-catalog.js';
+import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIContextWindow } from './openai-model-catalog.js';
+import { resolveThinking } from '../thinking.js';
+import { getJsonSchemaFromConfig } from '../structured-output.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -195,7 +197,7 @@ export class ResponsesClient extends BaseLLMClient {
             Authorization: `Bearer ${auth.accessToken}`,
             // The backend streams SSE unconditionally; asking for JSON gets a 406.
             accept: 'text/event-stream',
-            'OpenAI-Beta': 'responses=experimental',
+            ...(!isPublicOpenAI(this.responsesOptions.url) ? { 'OpenAI-Beta': 'responses=experimental' } : {}),
         };
 
         if (auth.accountId) headers['chatgpt-account-id'] = auth.accountId;
@@ -355,16 +357,22 @@ export class ResponsesClient extends BaseLLMClient {
     }
 
     private buildBody(messages: LLMChatMessage[], options?: ChatOptions): Record<string, unknown> {
-        if (!this.responsesOptions.model) {
+        if (!this.options.model) {
             throw new LLMProviderError('openai-responses', 'No model configured: set `model` on the client options', {
                 retryable: false,
             });
         }
-        const { model, effort } = parseModelVariant(this.responsesOptions.model);
+        const { model, effort } = parseModelVariant(this.options.model);
         const { input, instructions } = this.toInput(messages);
 
-        const resolvedEffort: ReasoningEffort = effort ?? this.responsesOptions.reasoningEffort ?? 'medium';
+        let resolvedEffort: ReasoningEffort = effort ?? this.responsesOptions.reasoningEffort ?? 'medium';
+        const thinking = resolveThinking(options?.thinking, this.options.thinking);
+        if (thinking) resolvedEffort = thinking.enabled ? thinking.level ?? 'medium' : 'none';
+        if (isGPT62ReasoningModel(model) && (resolvedEffort === 'none' || resolvedEffort === 'minimal')) {
+            resolvedEffort = 'low';
+        }
 
+        const text: Record<string, unknown> = { verbosity: this.responsesOptions.textVerbosity ?? 'medium' };
         const body: Record<string, unknown> = {
             model,
             input,
@@ -374,10 +382,28 @@ export class ResponsesClient extends BaseLLMClient {
             store: false,
             stream: true,
             include: ['reasoning.encrypted_content'],
-            text: { verbosity: this.responsesOptions.textVerbosity ?? 'medium' },
+            text,
         };
 
         if (instructions) body['instructions'] = instructions;
+        if (isPublicOpenAI(this.responsesOptions.url)) {
+            if (options?.maxTokens !== undefined) body['max_output_tokens'] = options.maxTokens;
+            if (!this.options.omitResponseFormat) {
+                const schema = this.extractSchemaOptions(options);
+                const format = options?.responseFormat;
+                if (schema) {
+                    text['format'] = {
+                        type: 'json_schema',
+                        name: schema.name ?? schema.schemaConfig.name ?? 'response',
+                        description: schema.description ?? schema.schemaConfig.description,
+                        schema: getJsonSchemaFromConfig(schema.schemaConfig),
+                        strict: true,
+                    };
+                } else if (format) {
+                    text['format'] = { type: format.type, ...format.json_schema };
+                }
+            }
+        }
         const tier = options?.serviceTier ?? this.responsesOptions.serviceTier;
         if (tier) body['service_tier'] = tier === 'standard' ? 'default' : tier;
 
@@ -394,9 +420,7 @@ export class ResponsesClient extends BaseLLMClient {
             if (options?.toolChoice) body['tool_choice'] = options.toolChoice;
         }
 
-        // Deliberately NOT forwarded: temperature, top_p, max_tokens. The Codex
-        // backend rejects sampling overrides on these reasoning models, and
-        // `max_output_tokens` truncates mid-tool-call rather than degrading.
+        // The subscription backend rejects sampling overrides and output caps.
         return body;
     }
 
@@ -795,7 +819,7 @@ export class ResponsesClient extends BaseLLMClient {
      * then the conservative default marked `assumed`.
      */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
-        const { model } = parseModelVariant(modelName ?? this.responsesOptions.model ?? '');
+        const { model } = parseModelVariant(modelName ?? this.options.model ?? '');
         const published = publishedOpenAIContextWindow(model, this.responsesOptions.url);
         return this.withDeclaredModelInfo(
             {

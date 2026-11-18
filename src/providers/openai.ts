@@ -42,7 +42,8 @@ import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } fro
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 import { LLMHttpError } from '../errors.js';
-import { publishedOpenAIContextWindow } from './openai-model-catalog.js';
+import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIContextWindow } from './openai-model-catalog.js';
+import { ResponsesClient, parseModelVariant } from './openai-responses.js';
 import {
     DecisionContextLimitError,
     isDecisionContextLimit,
@@ -966,6 +967,16 @@ function withoutNativeTools(body: Record<string, unknown>, tools: LLMToolDefinit
 }
 
 export class OpenAICompatibleClient extends BaseLLMClient {
+    private responses?: ResponsesClient;
+
+    private responsesClient(): ResponsesClient | undefined {
+        if (!isGPT62ReasoningModel(parseModelVariant(this.options.model).model) || !isPublicOpenAI(this.options.url)) {
+            return undefined;
+        }
+        this.responses ??= new ResponsesClient(this.options, this.auditor);
+        if (this.responses.model !== this.options.model) this.responses.setModel(this.options.model);
+        return this.responses;
+    }
     private warnedVllmToolFallback = false;
 
     /**
@@ -1090,6 +1101,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<LLMChatResponse> {
+        const responses = this.responsesClient();
+        if (responses) return responses.chat(messages, options);
         // Structured output and tools can now be used together.\n        // The provider sends both response_format and tools in the request.\n        // The Router handles skipping validation when the response contains tool calls.
 
         const url = this.buildUrl('/chat/completions');
@@ -1291,6 +1304,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+        const responses = this.responsesClient();
+        if (responses) return yield* responses.chatStream(messages, options);
         const url = this.buildUrl('/chat/completions');
         const tools = options?.tools;
         const knownToolNames = new Set(tools?.map(tool => tool.function.name) ?? []);

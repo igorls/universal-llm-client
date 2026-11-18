@@ -9,6 +9,8 @@
 
 import { describe, test, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { ResponsesClient, parseModelVariant } from '../../providers/openai-responses.js';
+import { OpenAICompatibleClient } from '../../providers/openai.js';
+import { AIModelApiType } from '../../interfaces.js';
 import { LLMHttpError, LLMProviderError, classifyFailure } from '../../errors.js';
 import type { LLMChatMessage, LLMToolDefinition } from '../../interfaces.js';
 import type { DecodedEvent } from '../../stream-decoder.js';
@@ -85,6 +87,27 @@ const TEXT_STREAM = [
 // ============================================================================
 
 describe('ResponsesClient', () => {
+    test('the public OpenAI client sends GPT-6.2 tool turns and session effort through Responses', async () => {
+        const cap = mockSSE(TEXT_STREAM);
+        const client = new OpenAICompatibleClient({
+            model: 'gpt-6.2-sol:medium', url: 'https://api.openai.com/v1',
+            apiKey: 'fixture', apiType: AIModelApiType.OpenAI,
+        });
+        const tools: LLMToolDefinition[] = [{
+            type: 'function', function: { name: 'fixture_tool', description: '', parameters: { type: 'object' } },
+        }];
+        const messages: LLMChatMessage[] = [{ role: 'user', content: 'Test' }];
+        await drain(client.chatStream(messages, { thinking: 'max', tools }));
+        expect(cap.url).toBe('https://api.openai.com/v1/responses');
+        expect(cap.body).toMatchObject({
+            model: 'gpt-6.2-sol', reasoning: { effort: 'max' }, tools: [{ name: 'fixture_tool' }],
+        });
+        await client.chat(messages, { thinking: false });
+        expect(cap.body['reasoning']).toMatchObject({ effort: 'low' });
+        await client.chat(messages, { thinking: 'xhigh' });
+        expect(cap.body['reasoning']).toMatchObject({ effort: 'xhigh' });
+    });
+
     test('reports the public GPT-6.2 window without applying it to the subscription backend', async () => {
         const model = 'gpt-6.2-sol:medium';
         const publicApi = createClient({ model, url: 'https://api.openai.com/v1' });

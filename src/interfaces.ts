@@ -180,7 +180,7 @@ export interface ProviderConfig {
  *
  * `xhigh` is Qwen3.8's official top rung (there is no `high` on that card).
  */
-export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 // ============================================================================
 // AIModel Configuration (user-facing)
