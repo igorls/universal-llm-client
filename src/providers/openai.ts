@@ -42,7 +42,7 @@ import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } fro
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 import { LLMHttpError } from '../errors.js';
-import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIContextWindow } from './openai-model-catalog.js';
+import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIModelInfo } from './openai-model-catalog.js';
 import { ResponsesClient, parseModelVariant } from './openai-responses.js';
 import {
     DecisionContextLimitError,
@@ -2064,14 +2064,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             // output-bounding uses resolveKnownContextLength() alone, which never
             // applies it. Sharing that cache means one probe serves both.
             //
-            // Capabilities are almost never on the card — name inference is the
-            // last resort so multimodal models are not treated as text-only.
+            // /models rarely includes modalities. Prefer the published public
+            // model card before falling back to compatible model name inference.
             const probed = await this.resolveKnownContextLength(model);
-            const published = probed === undefined ? publishedOpenAIContextWindow(model, this.options.url) : undefined;
+            const published = publishedOpenAIModelInfo(parseModelVariant(model).model, this.options.url);
             info = withInferredCapabilities(model, {
                 model,
-                contextLength: probed ?? published ?? ASSUMED_CONTEXT_LENGTH,
+                contextLength: probed ?? published?.contextLength ?? ASSUMED_CONTEXT_LENGTH,
                 contextLengthSource: probed !== undefined ? 'endpoint' : published !== undefined ? 'inferred' : 'assumed',
+                ...(published ? { capabilities: [...published.capabilities], capabilitiesSource: 'inferred' } : {}),
             });
             this.modelInfoCache.set(model, info);
         }

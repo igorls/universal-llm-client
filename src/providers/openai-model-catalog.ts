@@ -1,13 +1,23 @@
-/** Published limits for exact model IDs on the public OpenAI API. */
-const CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
-    ['gpt-6.2-astra', 1_050_000],
-    ['gpt-6.2-sol', 1_050_000],
-    ['gpt-6.1-terra', 1_050_000],
-    ['gpt-6-luna', 1_050_000],
+interface PublishedModelInfo {
+    readonly contextLength: number;
+    readonly capabilities: readonly string[];
+}
+
+const multimodalChat: PublishedModelInfo = {
+    contextLength: 1_050_000,
+    capabilities: ['completion', 'vision', 'tools'],
+};
+
+/** Published model cards for exact IDs on the public OpenAI API. */
+const MODEL_CATALOG: ReadonlyMap<string, PublishedModelInfo> = new Map([
+    ['gpt-6.2-astra', multimodalChat],
+    ['gpt-6.2-sol', multimodalChat],
+    ['gpt-6.1-terra', multimodalChat],
+    ['gpt-6-luna', multimodalChat],
 ]);
 
-export function publishedOpenAIContextWindow(model: string, baseUrl: string): number | undefined {
-    return isPublicOpenAI(baseUrl) ? CONTEXT_WINDOWS.get(model) : undefined;
+export function publishedOpenAIModelInfo(model: string, baseUrl: string): PublishedModelInfo | undefined {
+    return isPublicOpenAI(baseUrl) ? MODEL_CATALOG.get(model) : undefined;
 }
 
 export function isPublicOpenAI(baseUrl: string): boolean {

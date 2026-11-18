@@ -30,7 +30,7 @@ import { httpStream, parseSSE } from '../http.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
 import { OPENAI_SERVICE_TIERS } from '../interfaces.js';
 import { ResponsesWebSocketTransport, type ResponsesWebSocketFactory } from './responses-websocket.js';
-import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIContextWindow } from './openai-model-catalog.js';
+import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIModelInfo } from './openai-model-catalog.js';
 import { resolveThinking } from '../thinking.js';
 import { getJsonSchemaFromConfig } from '../structured-output.js';
 import type {
@@ -820,12 +820,13 @@ export class ResponsesClient extends BaseLLMClient {
      */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         const { model } = parseModelVariant(modelName ?? this.options.model ?? '');
-        const published = publishedOpenAIContextWindow(model, this.responsesOptions.url);
+        const published = publishedOpenAIModelInfo(model, this.responsesOptions.url);
         return this.withDeclaredModelInfo(
             {
                 ...(model ? { model } : {}),
-                contextLength: published ?? ASSUMED_CONTEXT_LENGTH,
+                contextLength: published?.contextLength ?? ASSUMED_CONTEXT_LENGTH,
                 contextLengthSource: published === undefined ? 'assumed' : 'inferred',
+                ...(published ? { capabilities: [...published.capabilities], capabilitiesSource: 'inferred' } : {}),
             },
             modelName,
         );

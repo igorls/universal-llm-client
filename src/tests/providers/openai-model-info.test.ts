@@ -15,6 +15,7 @@ import {
     OpenAICompatibleClient,
     inferOpenAICompatCapabilities,
 } from '../../providers/openai.js';
+import { ResponsesClient } from '../../providers/openai-responses.js';
 import type { LLMClientOptions } from '../../interfaces.js';
 import { AIModelApiType } from '../../interfaces.js';
 
@@ -113,13 +114,29 @@ describe('OpenAICompatibleClient getModelInfo', () => {
         expect(info.contextLength).toBe(500_000);
     });
 
-    test('uses the published GPT-6.2 Sol window when the OpenAI model card omits it', async () => {
+    test('uses the published GPT-6.2 Sol window and capabilities when /models omits them', async () => {
         mockModels([{ id: 'gpt-6.2-sol', object: 'model' }]);
         const client = createClient({ model: 'gpt-6.2-sol', url: 'https://api.openai.com/v1' });
         expect(await client.getModelInfo()).toMatchObject({
             contextLength: 1_050_000,
             contextLengthSource: 'inferred',
+            capabilities: ['completion', 'vision', 'tools'],
+            capabilitiesSource: 'inferred',
         });
+    });
+
+    test('uses public capabilities for Responses variants while respecting explicit config and other endpoints', async () => {
+        const options = { model: 'gpt-6.2-sol:medium', url: 'https://api.openai.com/v1', apiType: AIModelApiType.OpenAI };
+        expect(await new ResponsesClient(options).getModelInfo()).toMatchObject({
+            model: 'gpt-6.2-sol',
+            capabilities: ['completion', 'vision', 'tools'],
+        });
+        expect(await new ResponsesClient({ ...options, capabilities: ['completion'] }).getModelInfo()).toMatchObject({
+            capabilities: ['completion'],
+            capabilitiesSource: 'declared',
+        });
+        expect((await new ResponsesClient({ ...options, url: 'https://compatible.example/v1' }).getModelInfo()).capabilities)
+            .toBeUndefined();
     });
 
     test('keeps endpoint and configured windows ahead of the public catalog', async () => {
@@ -138,7 +155,12 @@ describe('OpenAICompatibleClient getModelInfo', () => {
         const local = createClient({ model: 'gpt-6.2-sol' });
         const unknown = createClient({ model: 'gpt-6.9-fixture', url: 'https://api.openai.com/v1' });
         for (const client of [local, unknown]) {
-            expect(await client.getModelInfo()).toMatchObject({ contextLength: 8192, contextLengthSource: 'assumed' });
+            expect(await client.getModelInfo()).toMatchObject({
+                contextLength: 8192,
+                contextLengthSource: 'assumed',
+                capabilities: ['completion'],
+                capabilitiesSource: 'assumed',
+            });
         }
     });
 
