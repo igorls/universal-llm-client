@@ -86,7 +86,7 @@ export interface ResponsesClientOptions extends LLMClientOptions {
     readonly reasoningSummary?: ReasoningSummary;
     readonly textVerbosity?: TextVerbosity;
     readonly serviceTier?: OpenAIServiceTier;
-    readonly transport?: 'http' | 'websocket';
+    readonly transport?: import('../interfaces.js').OpenAIResponsesTransport;
     readonly webSocketFactory?: ResponsesWebSocketFactory;
 }
 
@@ -481,6 +481,8 @@ export class ResponsesClient extends BaseLLMClient {
         let usage: TokenUsageInfo | undefined;
         let finishReason: string | undefined;
         let serviceTier: OpenAIServiceTier | undefined;
+        let model: string | undefined;
+        let reasoningEffort: string | undefined;
         const toolCalls: LLMToolCall[] = [];
         const toolNameAliases = this.toolAliases(options?.tools);
         /** Reasoning items seen since the last function_call, awaiting a call_id to key on. */
@@ -627,19 +629,20 @@ export class ResponsesClient extends BaseLLMClient {
                     break;
                 }
 
-                case 'response.completed': {
-                    const response = payload['response'] as Record<string, unknown> | undefined;
-                    usage = this.toUsage(response?.['usage'] as ResponsesUsage | undefined, start);
-                    serviceTier = OPENAI_SERVICE_TIERS.find((tier) => tier === response?.['service_tier']);
-                    finishReason = toolCalls.length ? 'tool_calls' : 'stop';
-                    break;
-                }
-
+                case 'response.completed':
                 case 'response.incomplete': {
                     const response = payload['response'] as Record<string, unknown> | undefined;
-                    const details = response?.['incomplete_details'] as { reason?: string } | undefined;
+                    if (typeof response?.['model'] === 'string') model = response['model'];
+                    const effort = (response?.['reasoning'] as { effort?: unknown } | undefined)?.effort;
+                    if (typeof effort === 'string') reasoningEffort = effort;
                     serviceTier = OPENAI_SERVICE_TIERS.find((tier) => tier === response?.['service_tier']);
-                    finishReason = details?.reason ?? 'incomplete';
+                    if (type === 'response.completed') {
+                        usage = this.toUsage(response?.['usage'] as ResponsesUsage | undefined, start);
+                        finishReason = toolCalls.length ? 'tool_calls' : 'stop';
+                    } else {
+                        const details = response?.['incomplete_details'] as { reason?: string } | undefined;
+                        finishReason = details?.reason ?? 'incomplete';
+                    }
                     break;
                 }
 
@@ -691,6 +694,8 @@ export class ResponsesClient extends BaseLLMClient {
             ...(finishReason ? { finishReason } : {}),
             ...(reasoning ? { reasoning } : {}),
             ...(usage ? { usage, lastCallUsage: usage } : {}),
+            ...(model ? { model } : {}),
+            ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(serviceTier ? { serviceTier } : {}),
             provider: 'openai-responses',
         };

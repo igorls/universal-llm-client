@@ -238,8 +238,11 @@ export type OpenAIServiceTier = (typeof OPENAI_SERVICE_TIERS)[number];
 
 /** Inference tier names across providers. Consult the selected provider for support. */
 export type ServiceTier = OpenAIServiceTier | 'standard';
+export type OpenAIResponsesTransport = 'http' | 'websocket';
 
 export interface LLMClientOptions {
+    /** Transport for models routed through the public OpenAI Responses API. Defaults to HTTP SSE. */
+    responsesTransport?: OpenAIResponsesTransport;
     /** Model name */
     model: string;
     /** Base URL for the API */
@@ -719,6 +722,8 @@ export interface LLMChatResponse<T = unknown> {
      * `default`, which a server answers with whichever model it loaded.
      */
     model?: string;
+    /** Reasoning effort reported by the provider for this response, when available. */
+    reasoningEffort?: string;
     /**
      * Validated structured output when `output` parameter is provided to chat().
      * This is the same type as inferred from the schema provided in `output.schema`.

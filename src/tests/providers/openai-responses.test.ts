@@ -116,12 +116,17 @@ describe('ResponsesClient', () => {
     });
 
     test('sends an explicit OpenAI tier over SSE and reports the tier the server used', async () => {
-        const cap = mockSSE([{ type: 'response.completed', response: { service_tier: 'priority' } }]);
+        const cap = mockSSE([{
+            type: 'response.completed',
+            response: { model: 'fixture-served-snapshot', service_tier: 'priority', reasoning: { effort: 'medium' } },
+        }]);
         const client = createClient({ url: 'https://api.openai.com/v1', serviceTier: 'ultrafast' });
         const result = await client.chat([{ role: 'user', content: 'Hello' }], { serviceTier: 'fast' });
         expect(cap.body['service_tier']).toBe('fast');
         expect(cap.body['stream']).toBe(true);
         expect(result.serviceTier).toBe('priority');
+        expect(result.model).toBe('fixture-served-snapshot');
+        expect(result.reasoningEffort).toBe('medium');
     });
 
     let originalFetch: typeof globalThis.fetch;

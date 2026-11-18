@@ -973,7 +973,10 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         if (!isGPT62ReasoningModel(parseModelVariant(this.options.model).model) || !isPublicOpenAI(this.options.url)) {
             return undefined;
         }
-        this.responses ??= new ResponsesClient(this.options, this.auditor);
+        this.responses ??= new ResponsesClient({
+            ...this.options,
+            transport: this.options.responsesTransport,
+        }, this.auditor);
         if (this.responses.model !== this.options.model) this.responses.setModel(this.options.model);
         return this.responses;
     }
