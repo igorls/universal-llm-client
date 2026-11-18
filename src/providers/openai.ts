@@ -42,6 +42,7 @@ import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } fro
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 import { LLMHttpError } from '../errors.js';
+import { publishedOpenAIContextWindow } from './openai-model-catalog.js';
 import {
     DecisionContextLimitError,
     isDecisionContextLimit,
@@ -2051,10 +2052,11 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             // Capabilities are almost never on the card — name inference is the
             // last resort so multimodal models are not treated as text-only.
             const probed = await this.resolveKnownContextLength(model);
+            const published = probed === undefined ? publishedOpenAIContextWindow(model, this.options.url) : undefined;
             info = withInferredCapabilities(model, {
                 model,
-                contextLength: probed ?? ASSUMED_CONTEXT_LENGTH,
-                contextLengthSource: probed !== undefined ? 'endpoint' : 'assumed',
+                contextLength: probed ?? published ?? ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource: probed !== undefined ? 'endpoint' : published !== undefined ? 'inferred' : 'assumed',
             });
             this.modelInfoCache.set(model, info);
         }

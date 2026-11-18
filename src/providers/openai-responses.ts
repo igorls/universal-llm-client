@@ -30,6 +30,7 @@ import { httpStream, parseSSE } from '../http.js';
 import { LLMHttpError, LLMProviderError } from '../errors.js';
 import { OPENAI_SERVICE_TIERS } from '../interfaces.js';
 import { ResponsesWebSocketTransport, type ResponsesWebSocketFactory } from './responses-websocket.js';
+import { publishedOpenAIContextWindow } from './openai-model-catalog.js';
 import type {
     LLMClientOptions,
     LLMChatMessage,
@@ -790,14 +791,18 @@ export class ResponsesClient extends BaseLLMClient {
     }
 
     /**
-     * Declared values, otherwise the conservative default marked `assumed`.
-     * The backend lists no models, so there is no endpoint value to read, and
-     * the model name is not used to guess a window.
+     * Prefer declared metadata, then published limits for the public API,
+     * then the conservative default marked `assumed`.
      */
     override async getModelInfo(modelName?: string): Promise<ModelMetadata> {
         const { model } = parseModelVariant(modelName ?? this.responsesOptions.model ?? '');
+        const published = publishedOpenAIContextWindow(model, this.responsesOptions.url);
         return this.withDeclaredModelInfo(
-            { ...(model ? { model } : {}), contextLength: ASSUMED_CONTEXT_LENGTH, contextLengthSource: 'assumed' },
+            {
+                ...(model ? { model } : {}),
+                contextLength: published ?? ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource: published === undefined ? 'assumed' : 'inferred',
+            },
             modelName,
         );
     }

@@ -113,6 +113,35 @@ describe('OpenAICompatibleClient getModelInfo', () => {
         expect(info.contextLength).toBe(500_000);
     });
 
+    test('uses the published GPT-6.2 Sol window when the OpenAI model card omits it', async () => {
+        mockModels([{ id: 'gpt-6.2-sol', object: 'model' }]);
+        const client = createClient({ model: 'gpt-6.2-sol', url: 'https://api.openai.com/v1' });
+        expect(await client.getModelInfo()).toMatchObject({
+            contextLength: 1_050_000,
+            contextLengthSource: 'inferred',
+        });
+    });
+
+    test('keeps endpoint and configured windows ahead of the public catalog', async () => {
+        mockModels([{ id: 'gpt-6.2-sol', context_length: 128_000 }]);
+        const options = { model: 'gpt-6.2-sol', url: 'https://api.openai.com/v1' };
+        expect(await createClient(options).getModelInfo()).toMatchObject({
+            contextLength: 128_000, contextLengthSource: 'endpoint',
+        });
+        expect(await createClient({ ...options, contextLength: 64_000 }).getModelInfo()).toMatchObject({
+            contextLength: 64_000, contextLengthSource: 'declared',
+        });
+    });
+
+    test('does not apply the public catalog to a compatible server or an unknown model', async () => {
+        mockModels([{ id: 'gpt-6.2-sol' }, { id: 'gpt-6.9-fixture' }]);
+        const local = createClient({ model: 'gpt-6.2-sol' });
+        const unknown = createClient({ model: 'gpt-6.9-fixture', url: 'https://api.openai.com/v1' });
+        for (const client of [local, unknown]) {
+            expect(await client.getModelInfo()).toMatchObject({ contextLength: 8192, contextLengthSource: 'assumed' });
+        }
+    });
+
     test('caches the probe per model id', async () => {
         const probe = mockModels([{ id: 'gemma-4-26b-a4b-nvfp4', object: 'model', max_model_len: 32768 }]);
         const client = createClient();

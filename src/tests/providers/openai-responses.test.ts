@@ -85,6 +85,13 @@ const TEXT_STREAM = [
 // ============================================================================
 
 describe('ResponsesClient', () => {
+    test('reports the public GPT-6.2 window without applying it to the subscription backend', async () => {
+        const model = 'gpt-6.2-sol:medium';
+        const publicApi = createClient({ model, url: 'https://api.openai.com/v1' });
+        expect(await publicApi.getModelInfo()).toMatchObject({ model: 'gpt-6.2-sol', contextLength: 1_050_000 });
+        expect(await createClient({ model }).getModelInfo()).toMatchObject({ contextLengthSource: 'assumed' });
+    });
+
     test('sends an explicit OpenAI tier over SSE and reports the tier the server used', async () => {
         const cap = mockSSE([{ type: 'response.completed', response: { service_tier: 'priority' } }]);
         const client = createClient({ url: 'https://api.openai.com/v1', serviceTier: 'ultrafast' });
