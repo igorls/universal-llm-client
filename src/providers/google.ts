@@ -589,9 +589,8 @@ export class GoogleClient extends BaseLLMClient {
 
         // Inference tier (Flex / Priority)
         const tier = options?.serviceTier;
-        if (tier && tier !== 'standard') {
-            body.service_tier = tier.toUpperCase() as 'FLEX' | 'PRIORITY';
-        }
+        if (tier === 'flex') body.service_tier = 'FLEX';
+        if (tier === 'priority') body.service_tier = 'PRIORITY';
 
         return body;
     }

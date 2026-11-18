@@ -85,6 +85,15 @@ const TEXT_STREAM = [
 // ============================================================================
 
 describe('ResponsesClient', () => {
+    test('sends an explicit OpenAI tier over SSE and reports the tier the server used', async () => {
+        const cap = mockSSE([{ type: 'response.completed', response: { service_tier: 'priority' } }]);
+        const client = createClient({ url: 'https://api.openai.com/v1', serviceTier: 'ultrafast' });
+        const result = await client.chat([{ role: 'user', content: 'Hello' }], { serviceTier: 'fast' });
+        expect(cap.body['service_tier']).toBe('fast');
+        expect(cap.body['stream']).toBe(true);
+        expect(result.serviceTier).toBe('priority');
+    });
+
     let originalFetch: typeof globalThis.fetch;
 
     beforeEach(() => {

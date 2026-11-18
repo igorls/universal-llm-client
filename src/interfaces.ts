@@ -232,6 +232,13 @@ export interface AIModelConfig {
 // Internal Client Options
 // ============================================================================
 
+/** Service tiers accepted by the OpenAI Responses API. */
+export const OPENAI_SERVICE_TIERS = ['auto', 'default', 'flex', 'scale', 'priority', 'fast', 'ultrafast'] as const;
+export type OpenAIServiceTier = (typeof OPENAI_SERVICE_TIERS)[number];
+
+/** Inference tier names across providers. Consult the selected provider for support. */
+export type ServiceTier = OpenAIServiceTier | 'standard';
+
 export interface LLMClientOptions {
     /** Model name */
     model: string;
@@ -630,11 +637,8 @@ export interface ChatOptions {
     // Inference Tier Selection
     // ========================================================================
 
-    /** Inference tier selection (provider-specific; Google supports 'flex' and 'priority').
-     *  - 'flex': 50% cost reduction, best-effort, higher latency (background tasks)
-     *  - 'priority': Premium pricing, lowest latency, highest reliability (interactive)
-     *  - 'standard': Default behavior (omitted from request) */
-    serviceTier?: 'flex' | 'priority' | 'standard';
+    /** Inference tier selection. Supported tiers and defaults are provider-specific. */
+    serviceTier?: ServiceTier;
 }
 
 // ============================================================================
@@ -735,7 +739,7 @@ export interface LLMChatResponse<T = unknown> {
      */
     structured?: T;
     /** Which inference tier actually served this response (from provider response headers, e.g. x-gemini-service-tier) */
-    serviceTier?: 'flex' | 'priority' | 'standard';
+    serviceTier?: ServiceTier;
 }
 
 // ============================================================================
