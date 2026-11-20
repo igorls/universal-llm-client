@@ -17,7 +17,7 @@ export interface ResolvedThinking {
     level?: ThinkingLevel;
 }
 
-const LEVELS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+const LEVELS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 function isLevel(v: unknown): v is ThinkingLevel {
     return typeof v === 'string' && LEVELS.includes(v);

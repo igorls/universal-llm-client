@@ -55,6 +55,30 @@ Each client implements one wire protocol and translates the library's canonical 
 
 `openai-responses.ts` also contains a client for the OpenAI Responses wire format. It is exported as `ResponsesClient`, but `AIModel` does not construct it and it is not part of the four protocols described in these guides.
 
+```typescript
+import { AIModelApiType, ResponsesClient } from 'universal-llm-client';
+
+const client = new ResponsesClient({
+  apiType: AIModelApiType.OpenAI,
+  url: 'https://api.openai.com/v1',
+  apiKey: process.env.OPENAI_API_KEY,
+  model: 'gpt-6.2-sol',
+  transport: 'websocket',
+  serviceTier: 'ultrafast',
+});
+
+try {
+  const result = await client.chat([{ role: 'user', content: 'Hello' }]);
+  console.log(result.message.content, result.serviceTier);
+} finally {
+  client.close();
+}
+```
+
+HTTP streaming is the default. Both transports accept a client default and a per-call `serviceTier` override. The result reports the tier from the server when available. For example, a `fast` request can report `priority`. Tier availability depends on the model and API project.
+
+WebSocket mode reuses an idle connection for subsequent requests with matching headers. The client sends the full input history with `store: false`. It closes interrupted sockets and opens a fresh one for the next call. The default socket uses the server runtime's authenticated WebSocket constructor. Supply `webSocketFactory` when the runtime needs a different implementation that supports upgrade headers.
+
 ## Structured output flow
 
 ```

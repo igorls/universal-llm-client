@@ -42,6 +42,8 @@ import { gemmaArgsToJson, isGemmaDiffusionModel, parseGemmaDiffusionOutput } fro
 import { extractGemmaThoughtChannels, stripGemmaChannelMarkers } from '../gemma-channel.js';
 import { StreamLoopGuard } from '../stream-guard.js';
 import { LLMHttpError } from '../errors.js';
+import { isGPT62ReasoningModel, isPublicOpenAI, publishedOpenAIModelInfo } from './openai-model-catalog.js';
+import { ResponsesClient, parseModelVariant } from './openai-responses.js';
 import {
     DecisionContextLimitError,
     isDecisionContextLimit,
@@ -965,6 +967,19 @@ function withoutNativeTools(body: Record<string, unknown>, tools: LLMToolDefinit
 }
 
 export class OpenAICompatibleClient extends BaseLLMClient {
+    private responses?: ResponsesClient;
+
+    private responsesClient(): ResponsesClient | undefined {
+        if (!isGPT62ReasoningModel(parseModelVariant(this.options.model).model) || !isPublicOpenAI(this.options.url)) {
+            return undefined;
+        }
+        this.responses ??= new ResponsesClient({
+            ...this.options,
+            transport: this.options.responsesTransport,
+        }, this.auditor);
+        if (this.responses.model !== this.options.model) this.responses.setModel(this.options.model);
+        return this.responses;
+    }
     private warnedVllmToolFallback = false;
 
     /**
@@ -1089,6 +1104,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): Promise<LLMChatResponse> {
+        const responses = this.responsesClient();
+        if (responses) return responses.chat(messages, options);
         // Structured output and tools can now be used together.\n        // The provider sends both response_format and tools in the request.\n        // The Router handles skipping validation when the response contains tool calls.
 
         const url = this.buildUrl('/chat/completions');
@@ -1290,6 +1307,8 @@ export class OpenAICompatibleClient extends BaseLLMClient {
         messages: LLMChatMessage[],
         options?: ChatOptions,
     ): AsyncGenerator<DecodedEvent, LLMChatResponse | void, unknown> {
+        const responses = this.responsesClient();
+        if (responses) return yield* responses.chatStream(messages, options);
         const url = this.buildUrl('/chat/completions');
         const tools = options?.tools;
         const knownToolNames = new Set(tools?.map(tool => tool.function.name) ?? []);
@@ -2048,13 +2067,15 @@ export class OpenAICompatibleClient extends BaseLLMClient {
             // output-bounding uses resolveKnownContextLength() alone, which never
             // applies it. Sharing that cache means one probe serves both.
             //
-            // Capabilities are almost never on the card — name inference is the
-            // last resort so multimodal models are not treated as text-only.
+            // /models rarely includes modalities. Prefer the published public
+            // model card before falling back to compatible model name inference.
             const probed = await this.resolveKnownContextLength(model);
+            const published = publishedOpenAIModelInfo(parseModelVariant(model).model, this.options.url);
             info = withInferredCapabilities(model, {
                 model,
-                contextLength: probed ?? ASSUMED_CONTEXT_LENGTH,
-                contextLengthSource: probed !== undefined ? 'endpoint' : 'assumed',
+                contextLength: probed ?? published?.contextLength ?? ASSUMED_CONTEXT_LENGTH,
+                contextLengthSource: probed !== undefined ? 'endpoint' : published !== undefined ? 'inferred' : 'assumed',
+                ...(published ? { capabilities: [...published.capabilities], capabilitiesSource: 'inferred' } : {}),
             });
             this.modelInfoCache.set(model, info);
         }

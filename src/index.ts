@@ -26,6 +26,8 @@ export {
 // Responses API transport (ChatGPT backend / api.openai.com /responses).
 // Separate from the chat/completions client above — different wire format.
 export { ResponsesClient, parseModelVariant } from './providers/openai-responses.js';
+export { OPENAI_SERVICE_TIERS, type OpenAIServiceTier, type ServiceTier, type OpenAIResponsesTransport } from './interfaces.js';
+export type { ResponsesWebSocketFactory } from './providers/responses-websocket.js';
 export type {
     ResponsesAuth,
     ResponsesClientOptions,
