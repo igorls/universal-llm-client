@@ -10,6 +10,7 @@ import { BaseLLMClient } from '../client.js';
 import { resolveThinking, geminiThinkingBudget } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE, type HttpRequestOptions } from '../http.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
+import { classifyTransient, DEFAULT_RETRY_AFTER_CAP_MS, DEFAULT_RETRY_AFTER_MIN_MS, retryAfterFrom, sleep } from '../retry.js';
 import {
     normalizeJsonSchema,
     stripUnsupportedFeatures,
@@ -885,25 +886,34 @@ export class GoogleClient extends BaseLLMClient {
     // Flex Retry Logic
     // ========================================================================
 
+    /** First Flex retry wait, doubled each time (5s → 10s → 20s, as Google recommends). */
+    protected flexRetryBaseMs = 5000;
+
     /**
-     * Retry HTTP requests for Flex tier when receiving 503/429 errors.
-     * Uses exponential backoff (5s → 10s → 20s) as recommended by Google.
+     * Retry HTTP requests for the Flex tier on a rate limit or a provider
+     * failure, as {@link classifyTransient} decides (429, 408, 500, 502, 503,
+     * 504, …). Waits what Google asked for (`Retry-After`, `"retryDelay"`) when
+     * it said, up to a minute; otherwise exponential backoff from
+     * {@link flexRetryBaseMs}. A longer requested wait is not retried early.
      */
     private async fetchWithFlexRetry<T>(
         url: string,
-        reqOptions: { method: 'POST'; headers: Record<string, string>; body: unknown; timeout: number },
+        reqOptions: { method: 'POST'; headers: Record<string, string>; body: unknown; timeout: number; signal?: AbortSignal },
         maxRetries = 3,
-        baseDelay = 5000,
     ): Promise<import('../http.js').HttpResponse<T>> {
         for (let attempt = 0; attempt < maxRetries; attempt++) {
             try {
                 return await httpRequest<T>(url, reqOptions);
             } catch (error) {
-                const isRetryable = error instanceof Error
-                    && (error.message.includes('HTTP 503') || error.message.includes('HTTP 429'));
-                if (!isRetryable || attempt >= maxRetries - 1) throw error;
-                const delay = baseDelay * (2 ** attempt);
-                await new Promise(r => setTimeout(r, delay));
+                const failure = classifyTransient(error);
+                const retryable = failure.kind === 'rate_limited' || failure.kind === 'provider_error';
+                if (!retryable || attempt >= maxRetries - 1) throw error;
+                const asked = retryAfterFrom(error);
+                if (asked !== undefined && asked > DEFAULT_RETRY_AFTER_CAP_MS) throw error;
+                const delay = asked !== undefined
+                    ? Math.max(asked, DEFAULT_RETRY_AFTER_MIN_MS)
+                    : this.flexRetryBaseMs * (2 ** attempt);
+                await sleep(delay, reqOptions.signal);
             }
         }
         throw new Error('Unreachable');

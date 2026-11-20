@@ -216,6 +216,12 @@ export interface AIModelConfig {
     /** Retries per provider before failover (default: 2) */
     retries?: number;
     /**
+     * Backoff between those retries (`Retry-After` honoured, full jitter
+     * otherwise) and an `onRetry` hook, including streams retried before
+     * their first event. See {@link RetryPolicy}.
+     */
+    retryPolicy?: import('./retry.js').RetryPolicy;
+    /**
      * How long (ms) a request waits for a busy pool to free a slot before
      * spilling to the next priority tier (default: 750). Only meaningful when
      * providers declare {@link ProviderConfig.maxConcurrent}; a pool with no

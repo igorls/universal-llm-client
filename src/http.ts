@@ -6,7 +6,7 @@
  */
 
 import type { LLMClientOptions } from './interfaces.js';
-import { LLMHttpError } from './errors.js';
+import { LLMHttpError, LLMTimeoutError } from './errors.js';
 
 // ============================================================================
 // Types
@@ -175,7 +175,7 @@ export async function httpRequest<T = unknown>(
                 durationMs: Date.now() - started,
                 error: errorText.slice(0, 2000),
             });
-            throw new LLMHttpError(response.status, errorText, redactUrl(url));
+            throw new LLMHttpError(response.status, errorText, redactUrl(url), response.headers);
         }
 
         const data = (await response.json()) as T;
@@ -202,7 +202,23 @@ export async function httpRequest<T = unknown>(
         clearTimeout(timeoutId);
 
         if (error instanceof Error && error.name === 'AbortError') {
-            const message = `Request timeout after ${timeout}ms: ${redactUrl(url)}`;
+            // A caller abort is the caller's, not a timeout: rethrow it as is.
+            if (signal?.aborted) {
+                emitTap({
+                    id: tapId,
+                    at: Date.now(),
+                    phase: 'error',
+                    stream: false,
+                    method,
+                    url: redactUrl(url),
+                    headers: redactHeaders(headers),
+                    durationMs: Date.now() - started,
+                    error: 'aborted',
+                });
+                throw error;
+            }
+            const timeoutError = new LLMTimeoutError('request', timeout, redactUrl(url));
+            const message = timeoutError.message;
             emitTap({
                 id: tapId,
                 at: Date.now(),
@@ -214,7 +230,7 @@ export async function httpRequest<T = unknown>(
                 durationMs: Date.now() - started,
                 error: message,
             });
-            throw new Error(message);
+            throw timeoutError;
         }
         if (!(error instanceof LLMHttpError)) {
             emitTap({
@@ -308,7 +324,7 @@ export async function* httpStream(
                 durationMs: Date.now() - started,
                 error: errorText.slice(0, 2000),
             });
-            throw new LLMHttpError(response.status, errorText, redactUrl(url));
+            throw new LLMHttpError(response.status, errorText, redactUrl(url), response.headers);
         }
 
         if (!response.body) {
@@ -373,7 +389,8 @@ export async function* httpStream(
                 });
                 throw error;
             }
-            const message = `Stream idle timeout after ${timeout}ms: ${redactUrl(url)}`;
+            const timeoutError = new LLMTimeoutError('idle', timeout, redactUrl(url));
+            const message = timeoutError.message;
             emitTap({
                 id: tapId,
                 at: Date.now(),
@@ -385,7 +402,7 @@ export async function* httpStream(
                 durationMs: Date.now() - started,
                 error: message,
             });
-            throw new Error(message);
+            throw timeoutError;
         }
         if (!(error instanceof LLMHttpError)) {
             emitTap({

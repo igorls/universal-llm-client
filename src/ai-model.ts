@@ -65,6 +65,7 @@ export class AIModel {
 
         const routerConfig: RouterConfig = {
             retriesPerProvider: config.retries ?? 2,
+            ...(config.retryPolicy !== undefined ? { retry: config.retryPolicy } : {}),
             ...(config.spillAfterMs !== undefined ? { spillAfterMs: config.spillAfterMs } : {}),
             auditor: this.auditor,
         };

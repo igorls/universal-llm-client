@@ -36,6 +36,7 @@ providers: [
 
 - **Priority.** A lower `priority` is tried first. It defaults to the entry's position in the array.
 - **Retries.** `retries` (default 2) is the number of retries on one provider before moving on. A failure that cannot be helped by retrying, such as an authentication or rate-limit response, skips the retries.
+- **Backoff.** Retries wait between attempts: what the provider asked for (`Retry-After`, `retry-after-ms`, or Gemini's `retryDelay`) when it said, otherwise full-jitter exponential backoff (500 ms unit, 10 s ceiling). A provider that asks for longer than a minute is failed over instead of retried early. `retryPolicy` on `AIModel` (or `retry` on a `Router`) changes these and adds an `onRetry` hook; `{ baseMs: 0 }` restores immediate retries.
 - **Health tracking.** A provider that fails three times in a row is marked unhealthy and skipped for a 30 second cooldown. A provider that is unreachable, unauthorised, rate limited or missing the endpoint enters the cooldown at once. These thresholds are router defaults; `AIModel` does not expose them.
 - **If every provider is cooling down**, the router re-admits the one whose cooldown ends soonest instead of failing every request for the whole cooldown.
 - **Cold nodes.** A provider with no recent success is probed with a short liveness check before a request is sent to it, so a powered-off host does not stall the first request for the length of an OS connect timeout.
@@ -43,7 +44,27 @@ providers: [
 
 ## Streaming
 
-A stream can fail over only before it has produced its first event. Once events have been emitted, a failure is raised to the caller instead of replaying the request on another provider, which would duplicate output.
+A stream can be retried on the same provider, or fail over, only before it has produced its first event. Once events have been emitted, a failure is raised to the caller instead of replaying the request, which would duplicate output. The raised error carries `afterFirstEvent: true` (read it with `streamErrorPhase(error)`), so a caller that retries the whole message knows to discard what it already showed.
+
+## Transient failures
+
+`classifyTransient(error)` answers whether sending the same request again could work, and why: `rate_limited` (429, `rate_limit_error`), `provider_error` (408, 500, 502, 503, 504, 520–524, 529, `overloaded_error`, `api_error`), `connection_lost` (transport codes such as `ECONNRESET` or `ECONNREFUSED`, socket and fetch failures, `LLMTimeoutError`) or `terminal` (other 4xx, 501, aborts). It reads the HTTP status, the provider's error type and the transport code, never a bare number in a message. `retryAfterFrom(error)`, `parseRetryAfter(value)`, `backoffDelay(attempt, options)`, `retryDelay(error, attempt, policy)` and `sleep(ms, signal)` are the pieces the router uses, exported for hosts that retry whole messages themselves.
+
+```typescript
+const model = new AIModel({
+  model: 'model-id',
+  retries: 2,
+  retryPolicy: {
+    baseMs: 500,
+    capMs: 10_000,
+    retryAfterCapMs: 60_000,
+    onRetry: (e) => console.warn(`retry ${e.attempt} on ${e.provider} in ${e.delayMs}ms (${e.kind})`),
+  },
+  providers: [/* … */],
+});
+```
+
+`LLMHttpError` carries the response `headers` and a parsed `retryAfterMs`. Timeouts are `LLMTimeoutError` (`kind: 'request' | 'idle'`) with the same messages as before. An Anthropic stream `error` event is an `LLMProviderError` with `errorType` and the status it stands for (`overloaded_error` is 529, a provider error, not a rate limit).
 
 ## Pools
 

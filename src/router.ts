@@ -3,7 +3,7 @@
  *
  * Manages the ordered provider chain with:
  *  - Priority ordering
- *  - Per-provider retries
+ *  - Per-provider retries with full-jitter backoff (honouring `Retry-After`)
  *  - Health tracking with failure thresholds
  *  - Cooldown periods for unhealthy providers
  *  - Audit integration for every retry/failover event
@@ -14,7 +14,8 @@
 import { BaseLLMClient } from './client.js';
 import type { Auditor } from './auditor.js';
 import { NoopAuditor } from './auditor.js';
-import { classifyFailure, isEndpointUnreachable, type FailureDisposition } from './errors.js';
+import { classifyFailure, isEndpointUnreachable, tagStreamError, type FailureDisposition } from './errors.js';
+import { classifyTransient, retryDelay, sleep, type RetryPolicy } from './retry.js';
 import {
     applyEndpointAvailability,
     defaultConnectivityProbe,
@@ -134,6 +135,14 @@ const SATURATED = Symbol('pool-saturated');
 export interface RouterConfig {
     /** Max retries per provider before failover (default: 2) */
     retriesPerProvider?: number;
+    /**
+     * Backoff between those retries, and an `onRetry` hook. A retry waits
+     * the provider's `Retry-After` / `retryDelay` when it sent one (up to
+     * `retryAfterCapMs`; a longer one fails over instead), otherwise
+     * full-jitter exponential backoff (`baseMs` 500, `capMs` 10000 by
+     * default). `{ baseMs: 0 }` restores immediate retries.
+     */
+    retry?: RetryPolicy;
     /** Max consecutive failures before marking unhealthy (default: 3) */
     maxFailures?: number;
     /** Cooldown period in ms for unhealthy providers (default: 30000) */
@@ -237,10 +246,12 @@ export class Router {
     /** Wake-ups for requests waiting on a `maxConcurrent` slot. */
     private slotWaiters: Array<() => void> = [];
     private auditor: Auditor;
-    private config: Required<Omit<RouterConfig, 'auditor'>>;
+    private config: Required<Omit<RouterConfig, 'auditor' | 'retry'>>;
+    private retryPolicy: RetryPolicy;
 
     constructor(config: RouterConfig = {}) {
         this.auditor = config.auditor ?? new NoopAuditor();
+        this.retryPolicy = config.retry ?? {};
         this.config = {
             retriesPerProvider: config.retriesPerProvider ?? 2,
             maxFailures: config.maxFailures ?? 3,
@@ -385,16 +396,6 @@ export class Router {
                 try {
                     for (let attempt = 0; attempt <= this.config.retriesPerProvider; attempt++) {
                         try {
-                            if (attempt > 0) {
-                                this.auditor.record({
-                                    timestamp: Date.now(),
-                                    type: 'retry',
-                                    provider: provider.id,
-                                    model: provider.modelOverride ?? provider.client.model,
-                                    metadata: { attempt, context },
-                                });
-                            }
-
                             const result = await fn(provider.client);
                             this.recordSuccess(provider.id, Date.now() - started);
                             return result;
@@ -414,6 +415,10 @@ export class Router {
                             // Terminal for this node (quota/auth/down/timeout) — stop burning
                             // retries on it and move on.
                             if (!disposition.retry) break;
+                            if (attempt >= this.config.retriesPerProvider) break;
+                            // Back off before the next try. A provider that asked for a
+                            // longer wait than we honour is failed over instead.
+                            if (!(await this.waitBeforeRetry(provider, lastError, attempt, context, false, route?.signal))) break;
                         }
                     }
                 } finally {
@@ -485,6 +490,74 @@ export class Router {
         return null;
     }
 
+    /**
+     * Wait before retrying `provider` after its 0-based `attempt` failed with
+     * `error`. Records a `retry` audit event and calls `retry.onRetry`.
+     * Returns false when the provider asked for a longer wait than the policy
+     * honours: the caller should fail over instead. Throws `error` when the
+     * caller's signal aborts during the wait.
+     */
+    private async waitBeforeRetry(
+        provider: ProviderEntry,
+        error: Error,
+        attempt: number,
+        context: string,
+        stream: boolean,
+        signal?: AbortSignal,
+    ): Promise<boolean> {
+        const plan = retryDelay(error, attempt, this.retryPolicy);
+        const model = provider.modelOverride ?? provider.client.model;
+        const kind = classifyTransient(error).kind;
+        if (!plan.retry) {
+            this.auditor.record({
+                timestamp: Date.now(),
+                type: 'error',
+                provider: provider.id,
+                model,
+                error: error.message,
+                metadata: { context, phase: 'retry-after-exceeds-cap', retryAfterMs: plan.retryAfterMs },
+            });
+            return false;
+        }
+        this.auditor.record({
+            timestamp: Date.now(),
+            type: 'retry',
+            provider: provider.id,
+            model,
+            error: error.message,
+            metadata: {
+                attempt: attempt + 1,
+                context,
+                delayMs: plan.delayMs,
+                providerRequested: plan.providerRequested,
+                kind,
+                ...(stream ? { phase: 'pre-stream' } : {}),
+            },
+        });
+        try {
+            this.retryPolicy.onRetry?.({
+                attempt: attempt + 1,
+                delayMs: plan.delayMs,
+                providerRequested: plan.providerRequested,
+                kind,
+                error,
+                provider: provider.id,
+                model,
+                context,
+                stream,
+                beforeFirstEvent: stream,
+            });
+        } catch {
+            // A throwing observer must not change the retry.
+        }
+        try {
+            await sleep(plan.delayMs, signal);
+        } catch {
+            throw error;
+        }
+        return true;
+    }
+
     /** Run `fn` on one node with this router's retry/cooldown accounting. */
     private async dispatchTo<T>(
         provider: ProviderEntry,
@@ -553,47 +626,66 @@ export class Router {
                     continue;
                 }
                 // Has this attempt emitted anything yet? Once it has, we are past the
-                // first-token boundary and can no longer fail over without duplicating.
+                // first-token boundary and can no longer retry or fail over without
+                // duplicating.
                 let emitted = false;
                 this.acquireSlot(provider.id);
                 const started = Date.now();
                 try {
-                    const stream = fn(provider.client);
-                    let returnValue: LLMChatResponse | void;
+                    for (let attempt = 0; ; attempt++) {
+                        try {
+                            const stream = fn(provider.client);
+                            let returnValue: LLMChatResponse | void;
 
-                    while (true) {
-                        const result = await stream.next();
-                        if (result.done) {
-                            returnValue = result.value;
+                            while (true) {
+                                const result = await stream.next();
+                                if (result.done) {
+                                    returnValue = result.value;
+                                    break;
+                                }
+                                emitted = true;
+                                yield result.value;
+                            }
+
+                            this.recordSuccess(provider.id, Date.now() - started);
+                            return returnValue;
+                        } catch (error) {
+                            lastError = error instanceof Error ? error : new Error(String(error));
+
+                            if (emitted) {
+                                // A node that already streamed events is alive — the
+                                // connection dropped, the node did not. Cooling it would take
+                                // the only node of a single-node chain out for cooldownMs over
+                                // one blip. Past the first-token boundary, re-streaming here
+                                // or elsewhere would double the output: surface the error,
+                                // tagged so a caller that retries knows to drop what it showed.
+                                this.recordFailure(provider.id, { cooldown: false });
+                                this.auditor.record({
+                                    timestamp: Date.now(),
+                                    type: 'error',
+                                    provider: provider.id,
+                                    error: lastError.message,
+                                    metadata: { context, phase: 'mid-stream', failedOver: false },
+                                });
+                                throw tagStreamError(lastError, true);
+                            }
+
+                            // Only a failure before the first event says anything about the endpoint.
+                            this.noteUnreachable(provider, lastError);
+                            // The caller cancelled: rethrow without retrying or failing over.
+                            if (route?.signal?.aborted) throw tagStreamError(lastError, false);
+
+                            const disposition = classifyFailure(lastError);
+                            if (
+                                disposition.retry
+                                && attempt < this.config.retriesPerProvider
+                                && (await this.waitBeforeRetry(provider, lastError, attempt, context, true, route?.signal))
+                            ) {
+                                continue; // same node, nothing emitted yet: safe to re-stream
+                            }
+                            this.recordFailure(provider.id, { cooldown: disposition.cooldown });
                             break;
                         }
-                        emitted = true;
-                        yield result.value;
-                    }
-
-                    this.recordSuccess(provider.id, Date.now() - started);
-                    return returnValue;
-                } catch (error) {
-                    lastError = error instanceof Error ? error : new Error(String(error));
-                    // A node that already streamed events was reachable: only a failure
-                    // before the first event says anything about the endpoint.
-                    if (!emitted) this.noteUnreachable(provider, lastError);
-                    // A node that already streamed events is alive — the connection
-                    // dropped, the node did not. Cooling it would take the only node
-                    // of a single-node chain out for cooldownMs over one blip.
-                    this.recordFailure(provider.id, { cooldown: !emitted && classifyFailure(lastError).cooldown });
-
-                    if (emitted) {
-                        // Past the first-token boundary — re-streaming elsewhere would
-                        // double the output. Surface the error rather than fail over.
-                        this.auditor.record({
-                            timestamp: Date.now(),
-                            type: 'error',
-                            provider: provider.id,
-                            error: lastError.message,
-                            metadata: { context, phase: 'mid-stream', failedOver: false },
-                        });
-                        throw lastError;
                     }
 
                     // Nothing emitted yet — safe to fail over to the next provider.
@@ -601,7 +693,7 @@ export class Router {
                         timestamp: Date.now(),
                         type: 'failover',
                         provider: provider.id,
-                        error: lastError.message,
+                        error: lastError?.message,
                         metadata: { context, phase: 'pre-stream' },
                     });
                 } finally {
@@ -622,15 +714,28 @@ export class Router {
             if (provider) {
                 this.acquireSlot(provider.id);
                 const started = Date.now();
+                let emitted = false;
+                let finished = false;
+                const stream = fn(provider.client);
                 try {
-                    const result = yield* fn(provider.client);
-                    this.recordSuccess(provider.id, Date.now() - started);
-                    return result;
+                    while (true) {
+                        const result = await stream.next();
+                        if (result.done) {
+                            finished = true;
+                            this.recordSuccess(provider.id, Date.now() - started);
+                            return result.value;
+                        }
+                        emitted = true;
+                        yield result.value;
+                    }
                 } catch (error) {
+                    finished = true;
                     const failure = error instanceof Error ? error : new Error(String(error));
-                    this.recordFailure(provider.id, { cooldown: classifyFailure(failure).cooldown });
-                    throw failure;
+                    this.recordFailure(provider.id, { cooldown: !emitted && classifyFailure(failure).cooldown });
+                    throw tagStreamError(failure, emitted);
                 } finally {
+                    // The consumer stopped early: close the provider stream, as `yield*` did.
+                    if (!finished) await stream.return?.(undefined);
                     this.releaseSlot(provider.id);
                 }
             }
@@ -639,7 +744,7 @@ export class Router {
             );
         }
 
-        throw lastError ?? new Error('All providers failed for streaming');
+        throw tagStreamError(lastError ?? new Error('All providers failed for streaming'), false);
     }
 
     // ========================================================================
