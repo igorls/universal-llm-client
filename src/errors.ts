@@ -16,19 +16,83 @@ function truncate(text: string, max = 500): string {
  * A non-2xx HTTP response from a provider endpoint (transport-level failure).
  * Carries the status + raw body so the failover engine can classify it
  * (e.g. 429/quota → fail over immediately rather than retrying the same node).
+ *
+ * `headers` are the response headers when the error was built from a real
+ * response; `retryAfterMs` is the wait the provider asked for (`Retry-After`
+ * delta-seconds or HTTP-date, or OpenAI's `retry-after-ms`), parsed once here.
  */
 export class LLMHttpError extends Error {
     readonly status: number;
     readonly body: string;
     readonly url?: string;
+    readonly headers?: Headers;
+    readonly retryAfterMs?: number;
 
-    constructor(status: number, body: string, url?: string) {
+    constructor(status: number, body: string, url?: string, headers?: Headers) {
         super(`HTTP ${status}: ${truncate(body)}`);
         this.name = 'LLMHttpError';
         this.status = status;
         this.body = body;
         this.url = url;
+        if (headers) {
+            this.headers = headers;
+            const retryAfterMs = retryAfterFromHeaders(headers);
+            if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
+        }
     }
+}
+
+/**
+ * A request that used up its time budget, raised by this library's HTTP layer.
+ * `kind: 'request'` is a unary call that ran past its total timeout; `'idle'`
+ * is a stream whose body went quiet for the idle budget (the timer resets on
+ * every received byte). A caller abort is never an `LLMTimeoutError`.
+ *
+ * The message keeps the historical wording (`Request timeout after Nms: <url>`,
+ * `Stream idle timeout after Nms: <url>`) so existing matchers keep working.
+ */
+export class LLMTimeoutError extends Error {
+    readonly kind: 'request' | 'idle';
+    readonly timeoutMs: number;
+    readonly url?: string;
+    readonly code = 'LLM_TIMEOUT' as const;
+
+    constructor(kind: 'request' | 'idle', timeoutMs: number, url?: string) {
+        const label = kind === 'idle' ? 'Stream idle timeout' : 'Request timeout';
+        super(url !== undefined ? `${label} after ${timeoutMs}ms: ${url}` : `${label} after ${timeoutMs}ms`);
+        this.name = 'LLMTimeoutError';
+        this.kind = kind;
+        this.timeoutMs = timeoutMs;
+        if (url !== undefined) this.url = url;
+    }
+}
+
+/**
+ * `Retry-After` (delta-seconds or HTTP-date) or `retry-after-ms`, in ms.
+ * Undefined when absent or unparsable. Never negative.
+ */
+export function retryAfterFromHeaders(headers: Headers, now: number = Date.now()): number | undefined {
+    const ms = headers.get('retry-after-ms');
+    if (ms !== null && /^\s*\d+(?:\.\d+)?\s*$/.test(ms)) return Math.max(0, Math.round(Number(ms)));
+    const value = headers.get('retry-after');
+    return value === null ? undefined : parseRetryAfter(value, now);
+}
+
+/**
+ * Parse a `Retry-After` value: delta-seconds (`"120"`, `"1.5"`) or an
+ * HTTP-date. Returns ms to wait (0 for a date already past), or undefined
+ * when the value is neither.
+ */
+export function parseRetryAfter(value: string, now: number = Date.now()): number | undefined {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) return Math.round(Number(trimmed) * 1000);
+    // Anything else must look like a date (a 4-digit year and a month name or
+    // ISO separators); `-1`, `5s` or `soon` are not valid header values.
+    if (!/\d{4}/.test(trimmed) || !/[a-z]/i.test(trimmed)) return undefined;
+    const at = Date.parse(trimmed);
+    if (Number.isNaN(at)) return undefined;
+    return Math.max(0, at - now);
 }
 
 /**
@@ -44,13 +108,61 @@ export class LLMProviderError extends Error {
     readonly provider: string;
     /** Hint for the failover engine: is retrying the SAME provider worthwhile? */
     readonly retryable: boolean;
+    /** The provider's own error type when it sent one (e.g. Anthropic `overloaded_error`). */
+    readonly errorType?: string;
+    /**
+     * The HTTP status this error stands for, when the provider reported the
+     * failure inside a 200 response or a stream (e.g. Anthropic
+     * `overloaded_error` → 529). `classifyFailure` reads it like an
+     * {@link LLMHttpError} status.
+     */
+    readonly status?: number;
 
-    constructor(provider: string, message: string, opts?: { retryable?: boolean }) {
+    constructor(
+        provider: string,
+        message: string,
+        opts?: { retryable?: boolean; errorType?: string; status?: number },
+    ) {
         super(message);
         this.name = 'LLMProviderError';
         this.provider = provider;
         this.retryable = opts?.retryable ?? false;
+        if (opts?.errorType !== undefined) this.errorType = opts.errorType;
+        if (opts?.status !== undefined) this.status = opts.status;
     }
+}
+
+/**
+ * Mark an error thrown by a stream with whether any event had already reached
+ * the consumer. Past that boundary a retry or failover would duplicate visible
+ * output, so callers that retry must discard what they showed first.
+ * The tag is a non-enumerable `afterFirstEvent` property; the error object,
+ * class and message are unchanged.
+ */
+export function tagStreamError<E>(error: E, afterFirstEvent: boolean): E {
+    if (error && typeof error === 'object') {
+        try {
+            Object.defineProperty(error, 'afterFirstEvent', {
+                value: afterFirstEvent,
+                enumerable: false,
+                configurable: true,
+                writable: true,
+            });
+        } catch {
+            // Frozen error object: leave it untagged.
+        }
+    }
+    return error;
+}
+
+/**
+ * The stream-phase tag set by {@link tagStreamError}: `true` when the stream
+ * had already emitted an event, `false` when it failed before the first one,
+ * `undefined` when the error did not come from a tagged stream.
+ */
+export function streamErrorPhase(error: unknown): { afterFirstEvent: boolean } | undefined {
+    const tag = (error as { afterFirstEvent?: unknown } | null)?.afterFirstEvent;
+    return typeof tag === 'boolean' ? { afterFirstEvent: tag } : undefined;
 }
 
 /**
@@ -134,6 +246,11 @@ export function classifyFailure(error: unknown): FailureDisposition {
         // Other 4xx (e.g. a malformed request): retrying the same node won't help,
         // but the node itself is fine — fail over without cooling it down.
         return { retry: false, cooldown: false };
+    }
+    if (error instanceof LLMProviderError && error.status !== undefined) {
+        // A provider error that names its HTTP meaning (e.g. Anthropic's
+        // mid-stream `overloaded_error`, 529) is classified like that status.
+        return classifyFailure(new LLMHttpError(error.status, error.message, undefined));
     }
     if (error instanceof LLMProviderError) {
         // A provider error (e.g. Ollama quota-as-content): cool it down unless the

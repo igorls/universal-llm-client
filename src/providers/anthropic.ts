@@ -17,7 +17,7 @@
 import { BaseLLMClient } from '../client.js';
 import { resolveThinking, anthropicThinkingBudget } from '../thinking.js';
 import { httpRequest, httpStream, parseSSE } from '../http.js';
-import { LLMHttpError } from '../errors.js';
+import { LLMHttpError, LLMProviderError } from '../errors.js';
 import { StandardChatDecoder } from '../stream-decoder.js';
 import type {
     LLMClientOptions,
@@ -526,7 +526,7 @@ export class AnthropicClient extends BaseLLMClient {
                     }
 
                     case 'error': {
-                        throw new Error(`Anthropic stream error: ${event.error.type} — ${event.error.message}`);
+                        throw anthropicStreamError(event.error.type, event.error.message);
                     }
                 }
             } catch (e) {
@@ -1199,4 +1199,40 @@ export class AnthropicClient extends BaseLLMClient {
             .map((p) => p.text)
             .join('');
     }
+}
+
+/**
+ * HTTP status each Anthropic error type stands for (docs: "Errors"). A stream
+ * reports these as an `error` event inside a 200 response, so the status is
+ * carried on the error for `classifyFailure` / `classifyTransient`.
+ * `overloaded_error` is 529: the provider is overloaded, not the caller's quota.
+ */
+const ANTHROPIC_ERROR_STATUS: Readonly<Record<string, number>> = {
+    invalid_request_error: 400,
+    authentication_error: 401,
+    billing_error: 402,
+    permission_error: 403,
+    not_found_error: 404,
+    request_too_large: 413,
+    rate_limit_error: 429,
+    api_error: 500,
+    timeout_error: 504,
+    overloaded_error: 529,
+};
+
+/**
+ * The error for an Anthropic stream `error` event. The message is unchanged.
+ * A known type becomes a typed {@link LLMProviderError} carrying its status;
+ * an unknown type stays a plain `Error`, as before, so its failover handling
+ * (retry, then fail over) does not change.
+ */
+export function anthropicStreamError(type: string, message: string): Error {
+    const text = `Anthropic stream error: ${type} — ${message}`;
+    const status = ANTHROPIC_ERROR_STATUS[type];
+    if (status === undefined) return new Error(text);
+    return new LLMProviderError('anthropic', text, {
+        retryable: status >= 500 || status === 408,
+        errorType: type,
+        status,
+    });
 }

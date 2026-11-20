@@ -224,13 +224,40 @@ export {
 export {
     LLMHttpError,
     LLMProviderError,
+    LLMTimeoutError,
     extractProviderErrorMessage,
     looksLikeErrorPayload,
     classifyFailure,
     isConnectivityFailure,
     isEndpointUnreachable,
+    retryAfterFromHeaders,
+    tagStreamError,
+    streamErrorPhase,
     type FailureDisposition,
 } from './errors.js';
+
+// ============================================================================
+// Transient failures: classification, Retry-After, backoff
+// ============================================================================
+
+export {
+    classifyTransient,
+    parseRetryAfter,
+    retryAfterFrom,
+    backoffDelay,
+    retryDelay,
+    sleep,
+    DEFAULT_RETRY_BASE_MS,
+    DEFAULT_RETRY_CAP_MS,
+    DEFAULT_RETRY_AFTER_CAP_MS,
+    DEFAULT_RETRY_AFTER_MIN_MS,
+    type TransientKind,
+    type TransientClassification,
+    type BackoffOptions,
+    type RetryPolicy,
+    type RetryEvent,
+    type RetryDelay,
+} from './retry.js';
 
 // ============================================================================
 // Decisions (the System One protocol)
